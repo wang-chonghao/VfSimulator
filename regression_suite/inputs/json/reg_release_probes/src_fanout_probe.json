@@ -1,0 +1,69 @@
+{
+  "dtype": "fp32",
+  "params": {
+    "I": 64
+  },
+  "program": [
+    {
+      "type": "loop",
+      "iters": "I",
+      "unroll": 1,
+      "body": [
+        {
+          "type": "inst",
+          "op": "VLD",
+          "dst": ["V1"],
+          "src": ["memA"]
+        },
+        {
+          "type": "inst",
+          "op": "VADDS",
+          "dst": ["V2"],
+          "src": ["V1"]
+        },
+        {
+          "type": "inst",
+          "op": "VADDS",
+          "dst": ["V3"],
+          "src": ["V1"]
+        },
+        {
+          "type": "inst",
+          "op": "VADDS",
+          "dst": ["V4"],
+          "src": ["V1"]
+        },
+        {
+          "type": "inst",
+          "op": "VADDS",
+          "dst": ["V5"],
+          "src": ["V1"]
+        },
+        {
+          "type": "inst",
+          "op": "VADD",
+          "dst": ["V6"],
+          "src": ["V2", "V3"]
+        },
+        {
+          "type": "inst",
+          "op": "VADD",
+          "dst": ["V7"],
+          "src": ["V4", "V5"]
+        },
+        {
+          "type": "inst",
+          "op": "VADD",
+          "dst": ["V8"],
+          "src": ["V6", "V7"]
+        },
+        {
+          "type": "inst",
+          "op": "VST",
+          "dst": ["memB"],
+          "src": ["V8"]
+        }
+      ]
+    }
+  ]
+}

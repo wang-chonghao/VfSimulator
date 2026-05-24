@@ -1,0 +1,5 @@
+﻿version: 1
+interface:
+  display_name: VF Optimization
+  short_description: Predict and optimize VF performance with CCE-calibrated configs
+  default_prompt: Use this skill to calibrate VF config parameters from CCE/CAModel logs, then support VF time prediction and optimization decisions.

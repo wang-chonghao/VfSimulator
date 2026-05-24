@@ -1,0 +1,41 @@
+results/
+.venv/
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+# Generated simulation/build artifacts
+results/
+cce_dump/
+trash/
+ascend_runner/build/
+ascend_runner/ascend_runner/
+
+# Optimization perf logs are local experiment records
+notes/perf*.md
+
+# Local dense softmax optimization candidates; keep baseline files tracked explicitly.
+cce_code/dense_softmax*/**
+tools/dense_softmax/
+
+# Large local optimization candidates and generated model logs
+cce_code/gelu_poly_I97_20260511/
+cce_code/gelu_poly_restart_20260429/
+cce_code/gelu_poly_r1_r15_archive_20260429/
+cce_code/codex_r11_r15_artifacts/
+cce_code/dense_softmax*/**
+!cce_code/dense_softmax_20260515/attention_softmax_M128_N1024_R0.dsl
+!cce_code/dense_softmax_20260515/attention_softmax_M8_N1024_pure_R0.dsl
+!cce_code/dense_softmax_20260515/attention_softmax_M8_N1024_R0.dsl
+!cce_code/dense_softmax_20260515/attention_softmax_R0.dsl
+!cce_code/dense_softmax_20260515/attention_softmax_R0_H1.dsl
+!cce_code/dense_softmax_20260515/dense_softmax_R0.dsl
+!cce_code/dense_softmax_cce_only_20260520/attention_softmax_M8_N1024_R0_baseline.dsl
+!cce_code/dense_softmax_vfsim_clean_20260518/attention_softmax_M8_N1024_R0_baseline.dsl
+!cce_code/dense_softmax_vfsim_guided_20260518/attention_softmax_M8_N1024_R0_baseline.dsl
+!cce_code/dense_softmax_vfsim_strict_20260519/attention_softmax_M8_N1024_R0_baseline.dsl
+ascend_runner/forwarding_param_suite/cases/
+ascend_runner/ii_param_suite/cases/
+ascend_runner/single_op_param_suite/cases/
+ipc_compare/
+gelu_poly_i16_u1_compare/

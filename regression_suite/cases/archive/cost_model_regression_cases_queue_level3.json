@@ -1,0 +1,258 @@
+{
+  "name": "vf_cost_model_regression_v1",
+  "defaults": {
+    "ooo_model": "queue_level3",
+    "run_theoretical": false,
+    "abs_tol": 30,
+    "rel_tol": 0.08,
+    "cce_error_abs_worse_tol": 3,
+    "cce_error_rel_worse_tol": 0.01
+  },
+  "cases": [
+    {
+      "id": "gelu_poly_i16_u1",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "VFtest/GeLU_poly.json",
+      "params": {
+        "I": 16,
+        "U": 1
+      },
+      "cce_vf_end": 446
+    },
+    {
+      "id": "gelu_poly_i64_u1",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "VFtest/GeLU_poly.json",
+      "params": {
+        "I": 64,
+        "U": 1
+      },
+      "cce_vf_end": 1502
+    },
+    {
+      "id": "gelu_poly_i96_u1",
+      "tier": "full",
+      "kind": "simulate",
+      "trace": "VFtest/GeLU_poly.json",
+      "params": {
+        "I": 96,
+        "U": 1
+      },
+      "cce_vf_end": 2245,
+      "cce_vf_end_source": "/home/lenovo/msprof_run/GeLU_poly_I96_unroll1_misched0_native_simexec/core0.veccore0.instr_log.dump vf_execute_time"
+    },
+    {
+      "id": "gelu_i16_u1",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "VFtest/GeLU.json",
+      "params": {
+        "I": 16,
+        "U": 1
+      },
+      "cce_vf_end": 187
+    },
+    {
+      "id": "online_update_i64_u1",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "VFtest/online_update.json",
+      "params": {
+        "I": 64,
+        "U": 1
+      },
+      "cce_vf_end": 443
+    },
+    {
+      "id": "probe_src_fanout",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "VFtest/reg_release_probes/src_fanout_probe.json",
+      "cce_vf_end": 285
+    },
+    {
+      "id": "probe_branch_live_range",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "VFtest/reg_release_probes/branch_live_range_probe.json",
+      "cce_vf_end": 221
+    },
+    {
+      "id": "probe_store_capture_reuse",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "VFtest/reg_release_probes/store_capture_reuse_probe.json",
+      "cce_vf_end": 319
+    },
+    {
+      "id": "vadds_longchain_i16_1x512",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "VFtest/vadd_fusion_singlev1_tests/I16/VADD_singleV1_fusion_1loops_512vadds.json",
+      "cce_vf_end": 21823
+    },
+    {
+      "id": "vadds_longchain_i64_8x64",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "VFtest/vadd_fusion_singlev1_tests/I64/VADD_singleV1_fusion_8loops_64vadds.json",
+      "cce_vf_end": 37281
+    },
+    {
+      "id": "vadds_longchain_i128_128x4",
+      "tier": "full",
+      "kind": "simulate",
+      "trace": "VFtest/vadd_fusion_singlev1_tests/I128/VADD_singleV1_fusion_128loops_4vadds.json",
+      "cce_vf_end": 36641,
+      "cce_vf_end_source": "/home/lenovo/msprof_run/reg_vadds_i128_4vadds_native_simexec/core0.veccore0.instr_log.dump vf_execute_time"
+    },
+    {
+      "id": "vexp_longchain_i16_1x512",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "VFtest/vadd_fusion_singlev1_tests/I16/VADD_singleV1_fusion_1loops_512vadds.json",
+      "transform": {
+        "replace_op": {
+          "from": "VADDS",
+          "to": "VEXP"
+        }
+      },
+      "cce_vf_end": 95492
+    },
+    {
+      "id": "vexp_longchain_i64_8x64",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "VFtest/vadd_fusion_singlev1_tests/I64/VADD_singleV1_fusion_8loops_64vadds.json",
+      "transform": {
+        "replace_op": {
+          "from": "VADDS",
+          "to": "VEXP"
+        }
+      },
+      "cce_vf_end_note": "cce_sim_aborted_on_vec_inf_nan"
+    },
+    {
+      "id": "vexp_longchain_i128_128x4",
+      "tier": "full",
+      "kind": "simulate",
+      "trace": "VFtest/vadd_fusion_singlev1_tests/I128/VADD_singleV1_fusion_128loops_4vadds.json",
+      "transform": {
+        "replace_op": {
+          "from": "VADDS",
+          "to": "VEXP"
+        }
+      }
+    },
+    {
+      "id": "gelu_poly_i96_u2",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "VFtest/GeLU_poly.json",
+      "params": {
+        "I": 96,
+        "U": 2
+      },
+      "cce_vf_end": 2021,
+      "cce_vf_end_source": "cce_misched0"
+    },
+    {
+      "id": "gelu_poly_i96_u4",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "VFtest/GeLU_poly.json",
+      "params": {
+        "I": 96,
+        "U": 4
+      },
+      "cce_vf_end": 1712,
+      "cce_vf_end_source": "cce_misched0"
+    },
+    {
+      "id": "gelu_poly_i96_u8",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "VFtest/GeLU_poly.json",
+      "params": {
+        "I": 96,
+        "U": 8
+      },
+      "cce_vf_end": 1718,
+      "cce_vf_end_source": "cce_misched0"
+    },
+    {
+      "id": "silu_i16_u1",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "VFtest/SiLU.json",
+      "params": {
+        "I": 16,
+        "U": 1
+      },
+      "cce_vf_end": 160,
+      "cce_vf_end_source": "core0.veccore0.instr_log.dump vf_execute_time"
+    },
+    {
+      "id": "swiglu_i16_u1",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "VFtest/SwiGLU.json",
+      "params": {
+        "I": 16,
+        "U": 1
+      },
+      "cce_vf_end": 180,
+      "cce_vf_end_source": "core0.veccore0.instr_log.dump vf_execute_time"
+    },
+    {
+      "id": "silu_i64_u1",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "VFtest/SiLU.json",
+      "params": {
+        "I": 64,
+        "U": 1
+      },
+      "cce_vf_end": 386,
+      "cce_vf_end_source": "/home/lenovo/msprof_run/SiLU_I64_native_simexec/core0.veccore0.instr_log.dump vf_execute_time"
+    },
+    {
+      "id": "silu_i96_u1",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "VFtest/SiLU.json",
+      "params": {
+        "I": 96,
+        "U": 1
+      },
+      "cce_vf_end": 538,
+      "cce_vf_end_source": "/home/lenovo/msprof_run/SiLU_I96_native_simexec/core0.veccore0.instr_log.dump vf_execute_time"
+    },
+    {
+      "id": "swiglu_i64_u1",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "VFtest/SwiGLU.json",
+      "params": {
+        "I": 64,
+        "U": 1
+      },
+      "cce_vf_end": 480,
+      "cce_vf_end_source": "/home/lenovo/msprof_run/SwiGLU_I64_native_simexec/core0.veccore0.instr_log.dump vf_execute_time"
+    },
+    {
+      "id": "swiglu_i96_u1",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "VFtest/SwiGLU.json",
+      "params": {
+        "I": 96,
+        "U": 1
+      },
+      "cce_vf_end": 678,
+      "cce_vf_end_source": "/home/lenovo/msprof_run/SwiGLU_I96_native_simexec/core0.veccore0.instr_log.dump vf_execute_time"
+    }
+  ]
+}

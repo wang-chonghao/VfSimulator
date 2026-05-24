@@ -1,0 +1,140 @@
+{
+  "dtype": "fp32",
+  "params": {
+    "I": 16,
+    "U": 1
+  },
+  "program": [
+    {
+      "type": "loop",
+      "iters": "I",
+      "unroll": "U",
+      "body": [
+        {
+          "type": "inst",
+          "op": "VLD",
+          "dst": [
+            "V1"
+          ],
+          "src": [
+            "memA"
+          ]
+        },
+        {
+          "type": "inst",
+          "op": "VABS",
+          "dst": [
+            "V2"
+          ],
+          "src": [
+            "V1"
+          ]
+        },
+        {
+          "type": "inst",
+          "op": "VMULS",
+          "dst": [
+            "V3"
+          ],
+          "src": [
+            "V2"
+          ]
+        },
+        {
+          "type": "inst",
+          "op": "VMULS",
+          "dst": [
+            "V4"
+          ],
+          "src": [
+            "V1"
+          ]
+        },
+        {
+          "type": "inst",
+          "op": "VEXP",
+          "dst": [
+            "V5"
+          ],
+          "src": [
+            "V4"
+          ]
+        },
+        {
+          "type": "inst",
+          "op": "VMUL",
+          "dst": [
+            "V6"
+          ],
+          "src": [
+            "V1",
+            "V5"
+          ]
+        },
+        {
+          "type": "inst",
+          "op": "VSUB",
+          "dst": [
+            "V7"
+          ],
+          "src": [
+            "V1",
+            "V2"
+          ]
+        },
+        {
+          "type": "inst",
+          "op": "VMUL",
+          "dst": [
+            "V8"
+          ],
+          "src": [
+            "V7",
+            "V6"
+          ]
+        },
+        {
+          "type": "inst",
+          "op": "VEXP",
+          "dst": [
+            "V9"
+          ],
+          "src": [
+            "V3"
+          ]
+        },
+        {
+          "type": "inst",
+          "op": "VADDS",
+          "dst": [
+            "V9"
+          ],
+          "src": [
+            "V9"
+          ]
+        },
+        {
+          "type": "inst",
+          "op": "VDIV",
+          "dst": [
+            "V10"
+          ],
+          "src": [
+            "V8",
+            "V9"
+          ]
+        },
+        {
+          "type": "inst",
+          "op": "VST",
+          "dst": [
+            "memB"
+          ],
+          "src": [
+            "V10"
+          ]
+        }
+      ]
+    }
+  ]
+}

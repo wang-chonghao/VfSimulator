@@ -1,0 +1,141 @@
+{
+  "meta": {
+    "suite": "vf_cost_model_regression_v1",
+    "tier": "full",
+    "generated_at": "2026-04-17T22:23:44"
+  },
+  "cases": {
+    "gelu_poly_i16_u1": {
+      "vf_end": 405,
+      "cce_vf_end": 446,
+      "error_to_cce_abs": 41.0,
+      "error_to_cce_rel": 0.09192825112107623
+    },
+    "gelu_poly_i64_u1": {
+      "vf_end": 1336,
+      "cce_vf_end": 1502,
+      "error_to_cce_abs": 166.0,
+      "error_to_cce_rel": 0.11051930758988016
+    },
+    "gelu_poly_i96_u1": {
+      "vf_end": 1957,
+      "cce_vf_end": 2245,
+      "error_to_cce_abs": 288.0,
+      "error_to_cce_rel": 0.12828507795100222
+    },
+    "gelu_i16_u1": {
+      "vf_end": 172,
+      "cce_vf_end": 187,
+      "error_to_cce_abs": 15.0,
+      "error_to_cce_rel": 0.08021390374331551
+    },
+    "online_update_i64_u1": {
+      "vf_end": 395,
+      "cce_vf_end": 443,
+      "error_to_cce_abs": 48.0,
+      "error_to_cce_rel": 0.10835214446952596
+    },
+    "probe_src_fanout": {
+      "vf_end": 282,
+      "cce_vf_end": 285,
+      "error_to_cce_abs": 3.0,
+      "error_to_cce_rel": 0.010526315789473684
+    },
+    "probe_branch_live_range": {
+      "vf_end": 218,
+      "cce_vf_end": 221,
+      "error_to_cce_abs": 3.0,
+      "error_to_cce_rel": 0.013574660633484163
+    },
+    "probe_store_capture_reuse": {
+      "vf_end": 317,
+      "cce_vf_end": 319,
+      "error_to_cce_abs": 2.0,
+      "error_to_cce_rel": 0.006269592476489028
+    },
+    "vadds_longchain_i16_1x512": {
+      "vf_end": 21838,
+      "cce_vf_end": 21823,
+      "error_to_cce_abs": 15.0,
+      "error_to_cce_rel": 0.0006873482106034917
+    },
+    "vadds_longchain_i64_8x64": {
+      "vf_end": 37704,
+      "cce_vf_end": 37281,
+      "error_to_cce_abs": 423.0,
+      "error_to_cce_rel": 0.011346262171079102
+    },
+    "vadds_longchain_i128_128x4": {
+      "vf_end": 36131,
+      "cce_vf_end": 36641,
+      "error_to_cce_abs": 510.0,
+      "error_to_cce_rel": 0.013918834092955978
+    },
+    "vexp_longchain_i16_1x512": {
+      "vf_end": 93827,
+      "cce_vf_end": 95492,
+      "error_to_cce_abs": 1665.0,
+      "error_to_cce_rel": 0.01743601558245717
+    },
+    "vexp_longchain_i64_8x64": {
+      "vf_end": 147350
+    },
+    "vexp_longchain_i128_128x4": {
+      "vf_end": 134947
+    },
+    "gelu_poly_i96_u2": {
+      "vf_end": 1829,
+      "cce_vf_end": 2021,
+      "error_to_cce_abs": 192.0,
+      "error_to_cce_rel": 0.095002474022761
+    },
+    "gelu_poly_i96_u4": {
+      "vf_end": 1758,
+      "cce_vf_end": 1712,
+      "error_to_cce_abs": 46.0,
+      "error_to_cce_rel": 0.026869158878504672
+    },
+    "gelu_poly_i96_u8": {
+      "vf_end": 2240,
+      "cce_vf_end": 1718,
+      "error_to_cce_abs": 522.0,
+      "error_to_cce_rel": 0.30384167636786963
+    },
+    "silu_i16_u1": {
+      "vf_end": 149,
+      "cce_vf_end": 160,
+      "error_to_cce_abs": 11.0,
+      "error_to_cce_rel": 0.06875
+    },
+    "swiglu_i16_u1": {
+      "vf_end": 169,
+      "cce_vf_end": 180,
+      "error_to_cce_abs": 11.0,
+      "error_to_cce_rel": 0.06111111111111111
+    },
+    "silu_i64_u1": {
+      "vf_end": 364,
+      "cce_vf_end": 386,
+      "error_to_cce_abs": 22.0,
+      "error_to_cce_rel": 0.05699481865284974
+    },
+    "silu_i96_u1": {
+      "vf_end": 506,
+      "cce_vf_end": 538,
+      "error_to_cce_abs": 32.0,
+      "error_to_cce_rel": 0.05947955390334572
+    },
+    "swiglu_i64_u1": {
+      "vf_end": 457,
+      "cce_vf_end": 480,
+      "error_to_cce_abs": 23.0,
+      "error_to_cce_rel": 0.04791666666666667
+    },
+    "swiglu_i96_u1": {
+      "vf_end": 648,
+      "cce_vf_end": 678,
+      "error_to_cce_abs": 30.0,
+      "error_to_cce_rel": 0.04424778761061947
+    }
+  }
+}

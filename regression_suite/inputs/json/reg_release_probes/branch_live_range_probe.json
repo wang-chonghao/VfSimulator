@@ -1,0 +1,63 @@
+{
+  "dtype": "fp32",
+  "params": {
+    "I": 64
+  },
+  "program": [
+    {
+      "type": "loop",
+      "iters": "I",
+      "unroll": 1,
+      "body": [
+        {
+          "type": "inst",
+          "op": "VLD",
+          "dst": ["V1"],
+          "src": ["memA"]
+        },
+        {
+          "type": "inst",
+          "op": "VLD",
+          "dst": ["V2"],
+          "src": ["memC"]
+        },
+        {
+          "type": "inst",
+          "op": "VADDS",
+          "dst": ["V3"],
+          "src": ["V1"]
+        },
+        {
+          "type": "inst",
+          "op": "VADDS",
+          "dst": ["V4"],
+          "src": ["V1"]
+        },
+        {
+          "type": "inst",
+          "op": "VADD",
+          "dst": ["V5"],
+          "src": ["V3", "V2"]
+        },
+        {
+          "type": "inst",
+          "op": "VADD",
+          "dst": ["V6"],
+          "src": ["V4", "V2"]
+        },
+        {
+          "type": "inst",
+          "op": "VADD",
+          "dst": ["V7"],
+          "src": ["V5", "V6"]
+        },
+        {
+          "type": "inst",
+          "op": "VST",
+          "dst": ["memB"],
+          "src": ["V7"]
+        }
+      ]
+    }
+  ]
+}

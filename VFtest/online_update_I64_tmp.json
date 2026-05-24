@@ -1,0 +1,113 @@
+{
+  "dtype": "fp32",
+  "params": {
+    "I": 64,
+    "U": 1
+  },
+  "program": [
+    {
+      "type": "loop",
+      "iters": "I",
+      "unroll": "U",
+      "body": [
+        {
+          "type": "inst",
+          "op": "VLD",
+          "dst": ["V1"],
+          "src": ["memA"]
+        },
+        {
+          "type": "inst",
+          "op": "VLD",
+          "dst": ["V2"],
+          "src": ["memB"]
+        },
+        {
+          "type": "inst",
+          "op": "VMAX",
+          "dst": ["V3"],
+          "src": ["V1", "V2"]
+        },
+        {
+          "type": "inst",
+          "op": "VST",
+          "dst": ["memE"],
+          "src": ["V3"]
+        },
+        {
+          "type": "inst",
+          "op": "VSUB",
+          "dst": ["V4"],
+          "src": ["V1", "V3"]
+        },
+        {
+          "type": "inst",
+          "op": "VEXP",
+          "dst": ["V5"],
+          "src": ["V4"]
+        },
+        {
+          "type": "inst",
+          "op": "VST",
+          "dst": ["memF"],
+          "src": ["V5"]
+        },
+        {
+          "type": "inst",
+          "op": "VSUB",
+          "dst": ["V6"],
+          "src": ["V2", "V3"]
+        },
+        {
+          "type": "inst",
+          "op": "VEXP",
+          "dst": ["V7"],
+          "src": ["V6"]
+        },
+        {
+          "type": "inst",
+          "op": "VST",
+          "dst": ["memG"],
+          "src": ["V7"]
+        },
+        {
+          "type": "inst",
+          "op": "VLD",
+          "dst": ["V8"],
+          "src": ["memC"]
+        },
+        {
+          "type": "inst",
+          "op": "VMUL",
+          "dst": ["V9"],
+          "src": ["V5", "V8"]
+        },
+        {
+          "type": "inst",
+          "op": "VLD",
+          "dst": ["V10"],
+          "src": ["memD"]
+        },
+        {
+          "type": "inst",
+          "op": "VMUL",
+          "dst": ["V11"],
+          "src": ["V10", "V7"]
+        },
+        {
+          "type": "inst",
+          "op": "VADD",
+          "dst": ["V12"],
+          "src": ["V9", "V11"]
+        },
+        {
+          "type": "inst",
+          "op": "VST",
+          "dst": ["memH"],
+          "src": ["V12"]
+        }
+      ]
+    }
+  ]
+}
+

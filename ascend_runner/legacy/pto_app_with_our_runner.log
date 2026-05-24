@@ -1,0 +1,6 @@
+[INFO] Running PTO-aligned simulator executable
+[INFO] App: /mnt/e/PTO/pass/ptoas_sample_cpp/ptoas_sample_cpp/online_update_fused_a5/build/online_update_fused_a5_sim
+ERROR: ld.so: object '/mnt/e/PTO/pass/ptoas_sample_cpp/ptoas_sample_cpp/online_update_fused_a5/build/libshim_axi_ctor.so' from LD_PRELOAD cannot be preloaded (cannot open shared object file): ignored.
+ERROR: ld.so: object '/mnt/e/PTO/pass/ptoas_sample_cpp/ptoas_sample_cpp/online_update_fused_a5/build/libshim_cfg_axi_abi0.so' from LD_PRELOAD cannot be preloaded (cannot open shared object file): ignored.
+ERROR: ld.so: object '/mnt/e/PTO/pass/ptoas_sample_cpp/ptoas_sample_cpp/online_update_fused_a5/build/libshim_catDiePortId_chiring_only.so' from LD_PRELOAD cannot be preloaded (cannot open shared object file): ignored.
+[ERROR] Failed to open input_v1.bin for read

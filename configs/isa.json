@@ -1,0 +1,360 @@
+{
+  "defaults": {
+    "vf_startup_cost": 23,
+    "vf_drain_cost": 12
+  },
+  "instructions": {
+    "VADDS": {
+      "fp32": {
+        "pipeline_startup_cost": 6,
+        "latency": 7,
+        "throughput": 1,
+        "pipeline_drain_cost": 5,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU01"
+      },
+      "fp16": {
+        "pipeline_startup_cost": 6,
+        "latency": 7,
+        "throughput": 1,
+        "pipeline_drain_cost": 5,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU01"
+      }
+    },
+    "VEXP": {
+      "fp32": {
+        "pipeline_startup_cost": 6,
+        "latency": 16,
+        "throughput": 4,
+        "pipeline_drain_cost": 14,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "SFU",
+        "dispatch_exu": "EXU01"
+      },
+      "fp16": {
+        "pipeline_startup_cost": 6,
+        "latency": 21,
+        "throughput": 4,
+        "pipeline_drain_cost": 19,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "SFU",
+        "dispatch_exu": "EXU01"
+      }
+    },
+    "VADD": {
+      "fp32": {
+        "pipeline_startup_cost": 6,
+        "latency": 7,
+        "throughput": 2,
+        "pipeline_drain_cost": 5,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU01"
+      },
+      "fp16": {
+        "pipeline_startup_cost": 6,
+        "latency": 7,
+        "throughput": 2,
+        "pipeline_drain_cost": 5,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU01"
+      }
+    },
+    "VMULS": {
+      "fp32": {
+        "pipeline_startup_cost": 6,
+        "latency": 8,
+        "throughput": 1,
+        "pipeline_drain_cost": 6,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU01"
+      },
+      "fp16": {
+        "pipeline_startup_cost": 6,
+        "latency": 8,
+        "throughput": 1,
+        "pipeline_drain_cost": 6,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU01"
+      }
+    },
+    "VDIV": {
+      "fp32": {
+        "pipeline_startup_cost": 6,
+        "latency": 17,
+        "throughput": 4,
+        "pipeline_drain_cost": 15,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "SFU",
+        "dispatch_exu": "EXU01"
+      },
+      "fp16": {
+        "pipeline_startup_cost": 6,
+        "latency": 22,
+        "throughput": 4,
+        "pipeline_drain_cost": 20,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "SFU",
+        "dispatch_exu": "EXU01"
+      }
+    },
+    "VABS": {
+      "fp32": {
+        "pipeline_startup_cost": 6,
+        "latency": 5,
+        "throughput": 1,
+        "pipeline_drain_cost": 3,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU01"
+      },
+      "fp16": {
+        "pipeline_startup_cost": 6,
+        "latency": 5,
+        "throughput": 1,
+        "pipeline_drain_cost": 3,
+        "data_load_cost": 9,
+        "data_store_cost": 10,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU01"
+      }
+    },
+    "VSUB": {
+      "fp32": {
+        "pipeline_startup_cost": 6,
+        "latency": 7,
+        "throughput": 2,
+        "pipeline_drain_cost": 5,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU01"
+      },
+      "fp16": {
+        "pipeline_startup_cost": 6,
+        "latency": 7,
+        "throughput": 2,
+        "pipeline_drain_cost": 5,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU01"
+      }
+    },
+    "VMUL": {
+      "fp32": {
+        "pipeline_startup_cost": 6,
+        "latency": 8,
+        "throughput": 2,
+        "pipeline_drain_cost": 6,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU01"
+      },
+      "fp16": {
+        "pipeline_startup_cost": 6,
+        "latency": 8,
+        "throughput": 2,
+        "pipeline_drain_cost": 6,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU01"
+      }
+    },
+    "VMAXS": {
+      "fp32": {
+        "pipeline_startup_cost": 6,
+        "latency": 6,
+        "throughput": 1,
+        "pipeline_drain_cost": 4,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU01"
+      },
+      "fp16": {
+        "pipeline_startup_cost": 6,
+        "latency": 6,
+        "throughput": 1,
+        "pipeline_drain_cost": 4,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU01"
+      }
+    },
+    "VMINS": {
+      "fp32": {
+        "pipeline_startup_cost": 6,
+        "latency": 6,
+        "throughput": 1,
+        "pipeline_drain_cost": 4,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU01"
+      },
+      "fp16": {
+        "pipeline_startup_cost": 6,
+        "latency": 6,
+        "throughput": 1,
+        "pipeline_drain_cost": 4,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU01"
+      }
+    },
+    "VMAX": {
+      "fp32": {
+        "pipeline_startup_cost": 6,
+        "latency": 6,
+        "throughput": 2,
+        "pipeline_drain_cost": 4,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU01"
+      },
+      "fp16": {
+        "pipeline_startup_cost": 6,
+        "latency": 6,
+        "throughput": 2,
+        "pipeline_drain_cost": 4,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU01"
+      }
+    },
+    "VMIN": {
+      "fp32": {
+        "pipeline_startup_cost": 6,
+        "latency": 6,
+        "throughput": 2,
+        "pipeline_drain_cost": 4,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU01"
+      },
+      "fp16": {
+        "pipeline_startup_cost": 6,
+        "latency": 6,
+        "throughput": 2,
+        "pipeline_drain_cost": 4,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU01"
+      }
+    },
+    "VCMAX": {
+      "fp32": {
+        "pipeline_startup_cost": 6,
+        "latency": 16,
+        "throughput": 1,
+        "pipeline_drain_cost": 14,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "SFU",
+        "dispatch_exu": "EXU0_ONLY"
+      },
+      "fp16": {
+        "pipeline_startup_cost": 6,
+        "latency": 17,
+        "throughput": 1,
+        "pipeline_drain_cost": 15,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "SFU",
+        "dispatch_exu": "EXU0_ONLY"
+      }
+    },
+    "VCMIN": {
+      "fp32": {
+        "pipeline_startup_cost": 6,
+        "latency": 16,
+        "throughput": 1,
+        "pipeline_drain_cost": 14,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "SFU",
+        "dispatch_exu": "EXU0_ONLY"
+      },
+      "fp16": {
+        "pipeline_startup_cost": 6,
+        "latency": 17,
+        "throughput": 1,
+        "pipeline_drain_cost": 15,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "SFU",
+        "dispatch_exu": "EXU0_ONLY"
+      }
+    },
+    "VCADD": {
+      "fp32": {
+        "pipeline_startup_cost": 6,
+        "latency": 22,
+        "throughput": 1,
+        "pipeline_drain_cost": 20,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "SFU",
+        "dispatch_exu": "EXU0_ONLY"
+      },
+      "fp16": {
+        "pipeline_startup_cost": 6,
+        "latency": 24,
+        "throughput": 1,
+        "pipeline_drain_cost": 22,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "SFU",
+        "dispatch_exu": "EXU0_ONLY"
+      }
+    },
+    "VDUP": {
+      "fp32": {
+        "pipeline_startup_cost": 2,
+        "latency": 6,
+        "throughput": 1,
+        "pipeline_drain_cost": 4,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU0_ONLY"
+      },
+      "fp16": {
+        "pipeline_startup_cost": 2,
+        "latency": 6,
+        "throughput": 1,
+        "pipeline_drain_cost": 4,
+        "data_load_cost": 9,
+        "data_store_cost": 9,
+        "EXU": "ALU",
+        "dispatch_exu": "EXU0_ONLY"
+      }
+    }
+  }
+}
