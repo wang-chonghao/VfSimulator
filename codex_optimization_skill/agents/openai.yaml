@@ -1,0 +1,3 @@
+display_name: CCE/CAModel Optimization
+short_description: Optimize CCE kernels with correctness-first CAModel rounds.
+default_prompt: Use this skill to optimize the target CCE/DSL kernel with one-hypothesis rounds, golden validation, CAModel VF timing, and structured perf logging.
