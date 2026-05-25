@@ -35,6 +35,7 @@ Use this skill for CCE/DSL kernel optimization when performance must be validate
 5. **Change direction on evidence**
    - After repeated ties/regressions, re-read logs and switch bottleneck class.
    - Prefer structural changes over random microtuning when local reorder/unroll attempts stop helping.
+   - After every 10 completed rounds, re-read this `SKILL.md` and the relevant references before proposing the next round.
 
 ## What To Read When
 

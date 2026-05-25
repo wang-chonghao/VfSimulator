@@ -66,7 +66,32 @@ A bounded candidate scan is allowed only when all candidates are variants of the
 - one VF fusion factor family
 - one independent processing order family
 
+When practical, variants of the same local hypothesis should be tested as one bounded scan instead of separate rounds. Examples include group2/group4, unroll2/unroll4, or store-first/reduce-first variants of the same stage.
+
 The round log must identify the chosen candidate and reject the others. If candidates reveal a different bottleneck, stop the scan and start a new round.
+
+## Plateau Reset
+
+If four consecutive valid rounds improve best-so-far CAModel total VF latency by less than 3% cumulatively, stop local tuning and re-read the optimization references before proposing the next round.
+
+The reset must record:
+
+- current best round and total VF latency
+- the four-round cumulative best improvement
+- hypotheses tried and rejected
+- current bottleneck classification
+- whether the search has been dominated by local tuning
+- next structural direction to try
+
+After a plateau reset, prefer structural changes over more local instruction-order, pragma, buffer-placement, or parameter tuning unless trace evidence strongly supports a local bottleneck.
+
+## Local-Tuning Budget
+
+Local tuning includes instruction reorder, pragma-only unroll changes, equivalent output grouping, buffer placement swaps with unchanged dataflow, and other changes that do not alter the main dataflow or stage structure.
+
+Do not run more than three consecutive local-tuning rounds from the same base unless at least one produces a measurable best-so-far improvement. If the local-tuning budget is exhausted, switch to a structural hypothesis or stop and summarize why no structural candidate is available.
+
+If a compiler ignores or neutralizes a pragma or scheduling hint, do not repeatedly try equivalent compiler-hint variants. The next related attempt must use manual expansion, loop-structure change, or a different hypothesis with explicit evidence.
 
 ## Correctness Gate
 
@@ -145,6 +170,8 @@ Each round should record:
 - resource side effects: UB, register pressure, sync count, movement pattern
 - decision: keep, reject, rollback, preserve
 - next action
+
+Use numeric round IDs for log headings and script inputs: `## Round 26`, not `## Round R26`. Display text may add an `R` prefix separately.
 
 ## Commit Gate
 

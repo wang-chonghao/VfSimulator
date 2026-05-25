@@ -29,6 +29,19 @@ Prefer this order unless trace evidence indicates a different bottleneck:
 
 This order is a default search bias, not a substitute for round-specific evidence.
 
+After a plateau, do not continue with local instruction-order or parameter tuning unless priority items 1-6 have been rechecked against current trace evidence.
+
+Structural optimization means changing the dataflow, stage boundaries, loop nest, VF scope layout, or synchronization placement in a way that changes the main execution structure. Examples:
+
+- move data movement or synchronization across an outer loop
+- batch work so multiple VFs run under fewer copy/barrier phases
+- reduce the number of full passes over the same data
+- change algorithmic dataflow to shorten dependency depth or reduce intermediate traffic
+- merge or split VF scopes when head/tail overhead, UB pressure, or live range evidence supports it
+- reshape loop nests to enable hardware loops or reduce scalar address work
+
+Local tuning means changing instruction order, pragma hints, small grouping factors, or buffer placement without changing the main dataflow. Use it after structural options have been checked, or when trace evidence points directly to a local stage.
+
 ## VF Fusion / Split
 
 Use when many small VFs create visible launch/head-tail overhead and UB/register resources can tolerate fusion.
