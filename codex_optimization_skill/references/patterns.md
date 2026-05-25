@@ -2,6 +2,33 @@
 
 These are reusable patterns, not operator-specific recipes. Apply only when bottleneck evidence supports them.
 
+## VF Programming Context
+
+On Ascend CCE vector kernels, a `__VEC_SCOPE__` commonly loads a vector-sized block from UB with `vlds`, performs vector operations in the vector-side register context, and stores results back with `vsts`. This reduces repeated UB-to-vector movement when multiple operations can be kept within the same VF scope.
+
+Hardware details vary by target, but common optimization signals include:
+
+- vector block granularity such as 256 bytes per operation group when the active ISA uses that width
+- dual EXU issue potential for many vector ALU instructions
+- EXU0-only or SFU-like pressure from reductions, broadcasts, transcendental, divide, or other long instructions
+- hardware-loop eligibility for simple branch-free loop forms
+
+Use active ISA/uarch evidence for exact instruction classes; do not infer target behavior from operator names.
+
+## Optimization Priority
+
+Prefer this order unless trace evidence indicates a different bottleneck:
+
+1. remove redundant data movement
+2. remove redundant computation
+3. adjust VF fusion/split structure
+4. improve algorithmic structure to reduce dependency depth, long operations, reductions, or intermediate traffic
+5. replace instruction patterns that overuse long, reduction, or EXU0-only operations
+6. restructure loops through merge, split, unroll, or hardware-loop-friendly forms
+7. tune local instruction order inside one loop or stage
+
+This order is a default search bias, not a substitute for round-specific evidence.
+
 ## VF Fusion / Split
 
 Use when many small VFs create visible launch/head-tail overhead and UB/register resources can tolerate fusion.
@@ -72,6 +99,7 @@ Guidelines:
 
 - tune one loop at a time
 - prefer bounded factors such as 1, 2, 4, 8
+- if the compiler does not unroll as intended, try manual unrolling as a separate candidate
 - monitor `instr_num`, register pressure, and long-op clustering
 - do not continue unroll tuning after repeated ties/regressions
 

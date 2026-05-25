@@ -39,6 +39,18 @@ Record at least:
 - VF instruction counts if available
 - benchmark reference if the task provides one
 
+## Required Correctness Fields
+
+Before using any performance number, record the task-local golden result. When available, include:
+
+- final `PASS` / `FAIL` status
+- `mismatches`
+- `max_abs_err`
+- `max_rel_err`
+- the unchanged absolute and relative tolerances used by the runner
+
+Valid performance requires the task's original golden check to pass. If the runner reports both a PASS marker and mismatch/error fields, preserve both in the log so later rounds can diagnose precision drift.
+
 ## Speedup and Benchmark Percent
 
 For latency-like metrics, lower is better.
