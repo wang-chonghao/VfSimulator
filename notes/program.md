@@ -88,7 +88,7 @@ grep -n "vf_execute_time" /home/lenovo/msprof_run/<case_name>_native_simexec/cor
 ```
 
 统一结论口径：
-- 最终性能结论以 CCE/CAModel 为准（`vf latency = VF_end - VF_start`）。
+- 最终性能结论以 CCE/CAModel 为准（`vf latency = VF_end - VF_start`）**注意** 对于多VF情况，选择instr_log中最后出现的VF时间作为VF_end，instr_popped_log中最先出现的VF时间作为VF_start。
 
 ---
 
