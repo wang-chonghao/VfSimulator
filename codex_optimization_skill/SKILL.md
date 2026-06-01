@@ -45,6 +45,7 @@ Use this skill for CCE/DSL kernel optimization when performance must be validate
 - Read [references/metrics.md](references/metrics.md) before parsing CAModel logs, reporting speedups, or plotting progress.
 - Read [references/bottlenecks.md](references/bottlenecks.md) before choosing a hypothesis.
 - Read [references/patterns.md](references/patterns.md) when selecting optimization candidates.
+- Read [references/stateful_tiled_ops.md](references/stateful_tiled_ops.md) when optimizing online, tiled, streaming, or pipelined operators whose state may be consumed by later tiles or downstream stages.
 
 ## Provided Scripts
 
