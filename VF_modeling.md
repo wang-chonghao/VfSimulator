@@ -44,7 +44,7 @@ VfSimulator/
 │  ├─ dynamic_trace.py                 # 动态指令辅助标注（last-use 等）
 │  ├─ vreg_live_range_normalization.py # 预处理 pass：规范化中间 vreg live range
 │  ├─ ooo.py                           # 基础 OoO 核心（单队列/基础 ready-execute）
-│  ├─ ooo_consumer_done.py             # 当前主力 OoO 实现，包含 queue level1~4
+│  ├─ ooo_mainline.py                  # 当前主力 OoO 实现，包含 queue level4 主路径
 │  ├─ ooo_factory.py                   # OoO model 选择与配置拼装
 │  └─ ooo_npu_hybrid.py                # 混合模型（非本文重点）
 ├─ VFtest/                             # trace JSON 样例
@@ -463,7 +463,7 @@ Historical names such as `classical-cpu-type`, `consumer-done`, `queue_level1/2/
 Current implementation split:
 
 - [`core/ooo.py`](/D:/VfSimulator/core/ooo.py): shared OoO state, config, ready/forwarding/II lookup, and logging helpers.
-- [`core/ooo_consumer_done.py`](/D:/VfSimulator/core/ooo_consumer_done.py): current mainline OoO core, including rename, preg lifecycle, SHQ/LSQ, VLD/VST, and the step loop.
+- [`core/ooo_mainline.py`](/D:/VfSimulator/core/ooo_mainline.py): current mainline OoO core, including rename, preg lifecycle, SHQ/LSQ, LSU/compute issue paths, and the step loop.
 - [`core/isu.py`](/D:/VfSimulator/core/isu.py): ISU/EXQ/EXU issue path for compute instructions.
 - [`core/uarch_normalize.py`](/D:/VfSimulator/core/uarch_normalize.py): normalizes `configs/uarch.json` and theoretical-limit overrides.
 
@@ -546,7 +546,7 @@ OoO 在 `accept(inst)` 时做寄存器重命名。
 
 ### 9.3 preg_consumer_count
 
-在 consumer-done / queue 系列模型中，模型会在 uop `accept` 时对每个 `preg_src` 做：
+在当前 queue_level4 主线模型中，模型会在 uop `accept` 时对每个 `preg_src` 做：
 
 - `preg_consumer_count[preg] += 1`
 
@@ -558,9 +558,8 @@ OoO 在 `accept(inst)` 时做寄存器重命名。
 
 ### 9.4 当前主释放规则
 
-当前主力模型的默认组合是：
+当前主力模型的默认释放参数是：
 
-- `consumer_release_from_start = true`
 - `consumer_release_start_offset = 4`
 
 也就是说，模型里实际采用的是：
@@ -911,7 +910,7 @@ For future model work, the easiest reading order is:
 5. [`core/ifu.py`](/D:/VfSimulator/core/ifu.py)
 6. [`core/idu.py`](/D:/VfSimulator/core/idu.py)
 7. [`core/ooo_factory.py`](/D:/VfSimulator/core/ooo_factory.py)
-8. [`core/ooo_consumer_done.py`](/D:/VfSimulator/core/ooo_consumer_done.py)
+8. [`core/ooo_mainline.py`](/D:/VfSimulator/core/ooo_mainline.py)
 9. [`core/isu.py`](/D:/VfSimulator/core/isu.py)
 10. [`core/vreg_live_range_normalization.py`](/D:/VfSimulator/core/vreg_live_range_normalization.py)
 

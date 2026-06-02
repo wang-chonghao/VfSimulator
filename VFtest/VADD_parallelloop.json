@@ -14,7 +14,7 @@
             "body": [
                 {
                     "type": "inst",
-                    "op": "VLD",
+                    "op": "VLDS",
                     "dst": [
                         "V1"
                     ],
@@ -2584,7 +2584,7 @@
                 },
                 {
                     "type": "inst",
-                    "op": "VST",
+                    "op": "VSTS",
                     "dst": [
                         "memB"
                     ],
@@ -2601,7 +2601,7 @@
             "body": [
                 {
                     "type": "inst",
-                    "op": "VLD",
+                    "op": "VLDS",
                     "dst": [
                         "V1"
                     ],
@@ -5171,7 +5171,7 @@
                 },
                 {
                     "type": "inst",
-                    "op": "VST",
+                    "op": "VSTS",
                     "dst": [
                         "memB"
                     ],

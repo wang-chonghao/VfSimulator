@@ -6,6 +6,8 @@ import os
 from collections import deque
 from typing import Any, Dict
 
+from core.isa_traits import uses_lsq, uses_shared_shq_credit, uses_shq_queue
+
 
 def _is_vreg_name(x: Any) -> bool:
     return isinstance(x, str) and x[:1].lower() == "v"
@@ -19,9 +21,9 @@ def _inst_reservation(inst: Dict[str, Any]) -> Dict[str, int]:
     if not isinstance(dsts, list):
         dsts = []
     preg = sum(1 for d in dsts if _is_vreg_name(d))
-    shq_queue = 0 if op in ("VLD", "VST") else 1
-    lsq = 1 if op in ("VLD", "VST") else 0
-    shq = 0 if op == "VLD" else 1
+    shq_queue = 1 if uses_shq_queue(op) else 0
+    lsq = 1 if uses_lsq(op) else 0
+    shq = 1 if uses_shared_shq_credit(op) else 0
     return {"preg": preg, "shq_queue": shq_queue, "lsq": lsq, "shq": shq}
 
 

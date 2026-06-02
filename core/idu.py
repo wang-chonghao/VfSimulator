@@ -4,6 +4,14 @@
 from collections import deque
 import json
 
+from core.isa_traits import (
+    is_load_op,
+    is_store_op,
+    uses_lsq,
+    uses_shared_shq_credit,
+    uses_shq_queue,
+)
+
 
 class IDU:
     def __init__(
@@ -14,6 +22,7 @@ class IDU:
         loop_bounds=None,
         total_top_blocks=1,
         top_block_loop_bounds=None,
+        dtype="fp32",
     ):
         self.window_width = uarch["IDU_window_width"]
         self.issue_width = uarch["IDU_issue_width"]
@@ -22,21 +31,25 @@ class IDU:
             uarch.get("theoretical_limit_vloop_only", False)
         )
         self.db = pdb
+        self.dtype = str(dtype)
 
         defaults = self.db.get_defaults()
         self.vf_startup_cost = int(defaults.get("vf_startup_cost", 0))
         self.idu_dispatch_start_advance = int(uarch.get("idu_dispatch_start_advance", 0))
         self.vloop_to_dispatch_delay = int(uarch.get("vloop_to_dispatch_delay", 4))
+        self.initial_top_block_vloop_start_cycle = int(
+            uarch.get("initial_top_block_vloop_start_cycle", 19)
+        )
+        self.nested_vloop_initial_start_gap = int(
+            uarch.get("nested_vloop_initial_start_gap", 1)
+        )
+        self.loop1_min_feedback_gap = int(uarch.get("loop1_min_feedback_gap", 7))
+        self.innermost_iter_dispatch_stride = int(
+            uarch.get("innermost_iter_dispatch_stride", 1)
+        )
         self.global_shq_preg_gate = bool(
             uarch.get("global_shq_preg_gate", False)
         )
-        # Empirical loop1 feedback calibration:
-        # initial VLOOP seeds keep their original timing, but for feedback-
-        # triggered next loop1 starts we enforce a minimum start interval of
-        # 7 cycles between consecutive loop1 instances. Physically this stands
-        # in for a coarse IDU/IFU control-path feedback delay observed in
-        # hardware-vs-simulator comparison.
-        self.loop1_min_feedback_gap = 7
 
         self.window = deque()
 
@@ -158,13 +171,19 @@ class IDU:
         # depth=1: loop0() = T
         self._set_vloop_start(self._make_key(tbid, "loop0", ()), T)
 
-        # depth=2: loop1(0) = T + 1
+        # depth=2: loop1(0) = T + nested_vloop_initial_start_gap
         if depth >= 2 and bounds[0] > 0:
-            self._set_vloop_start(self._make_key(tbid, "loop1", (0,)), T + 1)
+            self._set_vloop_start(
+                self._make_key(tbid, "loop1", (0,)),
+                T + self.nested_vloop_initial_start_gap,
+            )
 
-        # depth=3: loop2(0,0) = T + 2
+        # depth=3: loop2(0,0) = T + 2 * nested_vloop_initial_start_gap
         if depth >= 3 and bounds[0] > 0 and bounds[1] > 0:
-            self._set_vloop_start(self._make_key(tbid, "loop2", (0, 0)), T + 2)
+            self._set_vloop_start(
+                self._make_key(tbid, "loop2", (0, 0)),
+                T + 2 * self.nested_vloop_initial_start_gap,
+            )
 
     def _init_vloop_starts(self):
         """
@@ -174,8 +193,9 @@ class IDU:
         """
         if self.total_top_blocks <= 0:
             return
-        self._set_top_block_vloop(0, 19)
-        self._init_top_block_nested_starts(0, 19)
+        start_cycle = int(self.initial_top_block_vloop_start_cycle)
+        self._set_top_block_vloop(0, start_cycle)
+        self._init_top_block_nested_starts(0, start_cycle)
 
     def _normalize_block_key(self, raw_key, top_block_id: int):
         """
@@ -339,7 +359,7 @@ class IDU:
                     if M > 0:
                         self._set_vloop_start(
                             self._make_key(top_block_id, "loop2", (i + 1, 0)),
-                            next_loop1_start + 1,
+                            next_loop1_start + self.nested_vloop_initial_start_gap,
                         )
             return
 
@@ -424,16 +444,18 @@ class IDU:
                 if base_cy is None:
                     break
 
-                if cycle < base_cy + iter_id:
+                if cycle < base_cy + int(iter_id) * self.innermost_iter_dispatch_stride:
                     break
 
             # -------------------------------------------------
             # 2) SHQ / LSQ space gate
             # -------------------------------------------------
-            if op == "VLD":
+            is_load = is_load_op(op, self.db, self.dtype)
+            is_store = is_store_op(op, self.db, self.dtype)
+            if is_load:
                 if lsq_free <= 0:
                     break
-            elif op == "VST":
+            elif is_store:
                 if lsq_free <= 0:
                     break
                 if shq_free <= 0:
@@ -461,11 +483,11 @@ class IDU:
             dispatched.append(inst)
 
             credits -= dst_count
-            if op in ("VLD", "VST"):
+            if uses_lsq(op, self.db, self.dtype):
                 lsq_free -= 1
-                if op == "VST":
+                if uses_shared_shq_credit(op, self.db, self.dtype):
                     shq_free -= 1
-            else:
+            elif uses_shq_queue(op, self.db, self.dtype):
                 shq_queue_free -= 1
                 shq_free -= 1
 

@@ -65,7 +65,7 @@ Major modules:
 - `core/ifu.py`: produces dynamic unrolled instruction flow.
 - `core/idu.py`: dispatches instructions into the OOO side while respecting IDU and queue entry rules.
 - `core/ooo.py`: shared OOO state, rename table, physical register accounting, SHQ helpers, and logging helpers.
-- `core/ooo_consumer_done.py`: current mainline OOO implementation with consumer-done release semantics.
+- `core/ooo_mainline.py`: current mainline OOO implementation with start-based source release and queue-level4 timing.
 - `core/isu.py`: ISU, EXQ, EXU issue, EXU inflight limit, and per-cycle execution-start selection.
 - `core/ooo_factory.py`: constructs the mainline model and applies theoretical-limit overrides.
 - `core/simulator_runner.py`: cycle loop connecting IFU, IDU, OOO, and ISU.

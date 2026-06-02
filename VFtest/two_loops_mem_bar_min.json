@@ -10,9 +10,9 @@
       "iters": "I",
       "unroll": "U",
       "body": [
-        { "type": "inst", "op": "VLD",   "dst": ["V1"], "src": ["memA"] },
+        { "type": "inst", "op": "VLDS",   "dst": ["V1"], "src": ["memA"] },
         { "type": "inst", "op": "VADDS", "dst": ["V2"], "src": ["V1"] },
-        { "type": "inst", "op": "VST",   "dst": ["mem_inter_V2"], "src": ["V2"] }
+        { "type": "inst", "op": "VSTS",   "dst": ["mem_inter_V2"], "src": ["V2"] }
       ]
     },
     {
@@ -20,9 +20,9 @@
       "iters": "I",
       "unroll": "U",
       "body": [
-        { "type": "inst", "op": "VLD",   "dst": ["V3"], "src": ["mem_inter_V2"] },
+        { "type": "inst", "op": "VLDS",   "dst": ["V3"], "src": ["mem_inter_V2"] },
         { "type": "inst", "op": "VADDS", "dst": ["V4"], "src": ["V3"] },
-        { "type": "inst", "op": "VST",   "dst": ["memB"], "src": ["V4"] }
+        { "type": "inst", "op": "VSTS",   "dst": ["memB"], "src": ["V4"] }
       ]
     }
   ]

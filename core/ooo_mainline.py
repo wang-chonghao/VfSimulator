@@ -7,6 +7,7 @@ from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 from collections import deque
 
 from core import isu
+from core.isa_traits import is_load_op, is_store_op, uses_lsq, uses_shared_shq_credit
 from core.ooo import OoOCore, Uop, is_mem, is_vreg, make_mem_key
 
 
@@ -18,7 +19,7 @@ class SrcReleaseEvent:
 
 
 class PregLifecycleController:
-    def __init__(self, core: "OoOCoreConsumerDone") -> None:
+    def __init__(self, core: "OoOCoreMainline") -> None:
         self.core = core
 
     def is_current_mapping(self, preg: str) -> bool:
@@ -64,48 +65,18 @@ class PregLifecycleController:
                 ) + 1
         return True
 
-    def on_consumer_done(self, u: Uop) -> None:
-        if self.core.consumer_release_from_start:
-            if self.core.assert_start_release_integrity:
-                exp = int(self.core.src_release_expected.get(u.inst_id, 0))
-                seen = int(self.core.src_release_seen.get(u.inst_id, 0))
-                if seen != exp:
-                    raise AssertionError(
-                        f"start-release mismatch at done: inst_id={u.inst_id}, seen={seen}, expected={exp}"
-                    )
-            self.core.src_release_expected.pop(u.inst_id, None)
-            self.core.src_release_seen.pop(u.inst_id, None)
-            return
-
-        done_cycle = u.done_cycle if u.done_cycle is not None else self.core.cycle
-        src_gens: List[Optional[int]] = list(
-            getattr(u, "preg_src_gen", [None] * len(u.preg_src))
-        )
-        for idx, preg in enumerate(u.preg_src):
-            if preg is None:
-                continue
-            exp_gen = src_gens[idx] if idx < len(src_gens) else None
-            if self.core.consumer_release_from_start and exp_gen is not None:
-                cur_gen = int(self.core.preg_generation.get(preg, 0))
-                if cur_gen != int(exp_gen):
-                    continue
-            if preg in self.core.preg_consumer_count:
-                self.core.preg_consumer_count[preg] = max(
-                    0, self.core.preg_consumer_count[preg] - 1
+    def on_uop_done(self, u: Uop) -> None:
+        if self.core.assert_start_release_integrity:
+            exp = int(self.core.src_release_expected.get(u.inst_id, 0))
+            seen = int(self.core.src_release_seen.get(u.inst_id, 0))
+            if seen != exp:
+                raise AssertionError(
+                    f"start-release mismatch at done: inst_id={u.inst_id}, seen={seen}, expected={exp}"
                 )
-                if self.core.preg_consumer_count[preg] == 0:
-                    if self.core.consumer_release_from_start:
-                        prev = self.core.preg_release_eligible_cycle.get(preg, -1)
-                        eligible = prev if prev >= 0 else int(done_cycle)
-                    else:
-                        eligible = int(done_cycle) + self.core.release_done_delay
-                    prev = self.core.preg_release_eligible_cycle.get(preg, -1)
-                    self.core.preg_release_eligible_cycle[preg] = max(prev, eligible)
-            self.try_free_preg(preg)
+        self.core.src_release_expected.pop(u.inst_id, None)
+        self.core.src_release_seen.pop(u.inst_id, None)
 
     def schedule_src_release_from_start(self, u: Uop) -> None:
-        if not self.core.consumer_release_from_start:
-            return
         key = int(u.inst_id)
         if key in self.core.src_release_scheduled_inst_ids:
             return
@@ -150,8 +121,6 @@ class PregLifecycleController:
         )
 
     def run_src_release_events(self, cycle: int) -> None:
-        if not self.core.consumer_release_from_start:
-            return
         evs = self.core.src_release_events.pop(cycle, None)
         if not evs:
             return
@@ -214,7 +183,7 @@ class PregLifecycleController:
 
 
 class SHQResourceController:
-    def __init__(self, core: "OoOCoreConsumerDone") -> None:
+    def __init__(self, core: "OoOCoreMainline") -> None:
         self.core = core
 
     def run_shq_release_events(self, cycle: int) -> None:
@@ -286,7 +255,7 @@ class SHQResourceController:
 
 
 class RenameController:
-    def __init__(self, core: "OoOCoreConsumerDone") -> None:
+    def __init__(self, core: "OoOCoreMainline") -> None:
         self.core = core
 
     def accept(self, inst: Dict[str, Any]) -> None:
@@ -363,7 +332,7 @@ class RenameController:
         )
         setattr(u, "preg_src_gen", preg_src_gen)
 
-        if op == "VLD":
+        if is_load_op(op, self.core.db, self.core.dtype):
             for s in srcs:
                 if is_mem(s):
                     pred_uop = self.core.mem_last_store_uop.get(make_mem_key(s, iter_stack))
@@ -373,11 +342,14 @@ class RenameController:
         for pd in preg_dst:
             self.core.preg_pending.add(pd)
 
-        if op in ("VLD", "VST"):
+        if uses_lsq(op, self.core.db, self.core.dtype):
             self.core.LSQ.append(u)
         else:
             self.core.SHQ.append(u)
-        if self.core.enable_shq_credit_model and op != "VLD":
+        if (
+            self.core.enable_shq_credit_model
+            and uses_shared_shq_credit(op, self.core.db, self.core.dtype)
+        ):
             self.core.shq_used += 1
             if self.core.enable_credit_visibility_delay:
                 self.core.visible_shq_used += 1
@@ -385,7 +357,7 @@ class RenameController:
         else:
             setattr(u, "shq_tracked", False)
 
-        if op == "VST":
+        if is_store_op(op, self.core.db, self.core.dtype):
             for d in dsts:
                 if is_mem(d):
                     self.core.mem_last_store_uop[make_mem_key(d, iter_stack)] = u
@@ -413,9 +385,9 @@ class RenameController:
             print("[ACCEPT]", op, inst_id, srcs, dsts, preg_src, preg_dst, preg_old)
 
 
-class OoOCoreConsumerDone(OoOCore):
+class OoOCoreMainline(OoOCore):
     """
-    Mainline OoO core with consumer-done + closeout preg recycling.
+    Mainline queue-level OoO core with start-based source release.
 
     Once a younger write overwrites architectural vreg Vn, the older preg is
     sealed and will never gain new consumers. Consumers already bound to that
@@ -436,17 +408,8 @@ class OoOCoreConsumerDone(OoOCore):
         self.shq_resources = SHQResourceController(self)
         self.rename_unit = RenameController(self)
         self.preg_consumer_count: Dict[str, int] = {}
-        # Optional conservative knob:
-        # after the last bound consumer is done, wait extra k cycles before
-        # allowing old preg recycle. Default k=0 keeps current behavior.
-        self.release_done_delay: int = int(uarch.get("consumer_done_release_delay", 0))
-        # Optional experimental rule:
-        # release eligibility is anchored to consumer start cycle instead of
-        # consumer done cycle:
+        # Mainline source release rule:
         #   eligible = consumer.start_cycle + consumer_release_start_offset
-        self.consumer_release_from_start: bool = bool(
-            uarch.get("consumer_release_from_start", False)
-        )
         self.consumer_release_start_offset: int = int(
             uarch.get("consumer_release_start_offset", 0)
         )
@@ -567,8 +530,8 @@ class OoOCoreConsumerDone(OoOCore):
     def _try_free_preg(self, preg: str) -> bool:
         return self.preg_lifecycle.try_free_preg(preg)
 
-    def _on_consumer_done(self, u: Uop) -> None:
-        self.preg_lifecycle.on_consumer_done(u)
+    def _on_uop_done(self, u: Uop) -> None:
+        self.preg_lifecycle.on_uop_done(u)
 
     def _schedule_src_release_from_start(self, u: Uop) -> None:
         self.preg_lifecycle.schedule_src_release_from_start(u)
@@ -603,7 +566,7 @@ class OoOCoreConsumerDone(OoOCore):
 
         not_done_stores: List[Uop] = []
         for u in self.ROB:
-            if u.op != "VST" or u.state == "done":
+            if not is_store_op(u.op, self.db, self.dtype) or u.state == "done":
                 continue
             not_done_stores.append(u)
 
@@ -665,7 +628,7 @@ class OoOCoreConsumerDone(OoOCore):
                 if u.exu_port is not None and 0 <= u.exu_port < self.issue_ports:
                     self.exq_inflight[u.exu_port] = max(0, self.exq_inflight[u.exu_port] - 1)
                     u.exu_port = None
-                if u.op == "VST":
+                if is_store_op(u.op, self.db, self.dtype):
                     remain = self.block_outstanding_stores.get(u.top_block_id, 0) - 1
                     self.block_outstanding_stores[u.top_block_id] = max(0, remain)
                     iter_key = self._top_iter_key_from_stack(u.top_block_id, list(u.iter_stack))
@@ -686,7 +649,7 @@ class OoOCoreConsumerDone(OoOCore):
                 self._log("done", u)
                 self._log_done_simple(u)
                 self.last_done_cycle = max(self.last_done_cycle, u.done_cycle)
-                self._on_consumer_done(u)
+                self._on_uop_done(u)
                 self._try_free_dests(u)
 
         while self.ROB and self.ROB[0].state == "done":
@@ -701,7 +664,7 @@ class OoOCoreConsumerDone(OoOCore):
         for u in self.LSQ:
             if u.state in ("running", "done"):
                 continue
-            if u.op == "VLD":
+            if is_load_op(u.op, self.db, self.dtype):
                 u.ready_cycle = self._load_ready_cycle(u)
             else:
                 u.ready_cycle, u.producer_op_for_store, u.producer_start_for_store = self._store_ready_cycle(u)
@@ -717,7 +680,7 @@ class OoOCoreConsumerDone(OoOCore):
 
         issued_ld: List[Any] = []
         for u in self.LSQ:
-            if u.state != "ready" or u.op != "VLD":
+            if u.state != "ready" or not is_load_op(u.op, self.db, self.dtype):
                 continue
             if ld >= self.load_ports:
                 break
@@ -725,7 +688,7 @@ class OoOCoreConsumerDone(OoOCore):
                 break
 
             u.start_cycle = c
-            u.done_cycle = c + self.VLD_COST
+            u.done_cycle = c + self.load_done_latency
             u.state = "running"
             self._schedule_src_release_from_start(u)
             self._log("start", u)
@@ -733,7 +696,7 @@ class OoOCoreConsumerDone(OoOCore):
             ld += 1
 
             for pd in u.preg_dst:
-                self.preg_producer[pd] = ("VLD", u.start_cycle, "VLD")
+                self.preg_producer[pd] = (u.op, u.start_cycle, "LOAD")
                 self.preg_producer_uop[pd] = u
                 self.preg_pending.discard(pd)
 
@@ -750,7 +713,7 @@ class OoOCoreConsumerDone(OoOCore):
         for u in self.LSQ:
             if u.state in ("running", "done"):
                 continue
-            if u.op != "VST":
+            if not is_store_op(u.op, self.db, self.dtype):
                 continue
             u.ready_cycle, u.producer_op_for_store, u.producer_start_for_store = self._store_ready_cycle(u)
             u.state = "ready" if c >= u.ready_cycle else "blocked"
@@ -777,14 +740,14 @@ class OoOCoreConsumerDone(OoOCore):
         for u in self.LSQ:
             if u.state in ("running", "done"):
                 continue
-            if u.op != "VST":
+            if not is_store_op(u.op, self.db, self.dtype):
                 continue
             u.ready_cycle, u.producer_op_for_store, u.producer_start_for_store = self._store_ready_cycle(u)
             u.state = "ready" if c >= u.ready_cycle else "blocked"
 
         issued_st: List[Any] = []
         for u in self.LSQ:
-            if u.state != "ready" or u.op != "VST":
+            if u.state != "ready" or not is_store_op(u.op, self.db, self.dtype):
                 continue
             if st >= self.store_ports:
                 break
@@ -797,8 +760,7 @@ class OoOCoreConsumerDone(OoOCore):
             u.done_cycle = c + self._data_store_cost(u.producer_op_for_store)
             u.state = "running"
             self._schedule_src_release_from_start(u)
-            # SHQ credit release:
-            # VST leaves SHQ one cycle after VST starts execution.
+            # SHQ credit release for store-like LSU ops.
             if self.enable_shq_credit_model and bool(getattr(u, "shq_tracked", False)):
                 self._schedule_shq_release(c, 1)
                 setattr(u, "shq_tracked", False)

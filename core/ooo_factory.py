@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from core.ooo_consumer_done import OoOCoreConsumerDone
+from core.ooo_mainline import OoOCoreMainline
 from core.uarch_normalize import (
     MAINLINE_MODEL_NAME,
     apply_theoretical_limit_overrides,
@@ -28,4 +28,4 @@ def create_ooo_core(uarch: Dict[str, Any], pdb, dtype: str = "fp32"):
     Build the single supported OoO core from a normalized mainline uarch.
     """
     resolved = dict(uarch) if bool(uarch.get("_ooo_uarch_resolved", False)) else resolve_model_uarch(uarch)
-    return OoOCoreConsumerDone(resolved, pdb, dtype=dtype)
+    return OoOCoreMainline(resolved, pdb, dtype=dtype)

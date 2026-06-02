@@ -49,9 +49,9 @@ class CoreVfCostModel(VfCostModel):
         top_block_loop_bounds = analyzer.infer_top_block_loop_bounds(program)
         loop_bounds = top_block_loop_bounds.get(0, [])
         linear = Flattener(params).flatten(program)
-        ifu = IFUUnroll(linear, params)
 
         db = ParamDB(base_dir=str(base_dir))
+        ifu = IFUUnroll(linear, params, pdb=db, dtype=dtype)
         uarch = dict(db.get_uarch())
         trace_uarch = payload.get("uarch", {}) or {}
         if not isinstance(trace_uarch, dict):
@@ -66,6 +66,7 @@ class CoreVfCostModel(VfCostModel):
             loop_bounds=loop_bounds,
             total_top_blocks=len(top_block_loop_bounds),
             top_block_loop_bounds=top_block_loop_bounds,
+            dtype=dtype,
         )
         ooo = create_ooo_core(uarch, db, dtype=dtype)
 
@@ -88,9 +89,6 @@ class CoreVfCostModel(VfCostModel):
     @staticmethod
     def _mainline_uarch(uarch: Dict[str, Any]) -> Dict[str, Any]:
         uarch["ooo_model"] = "queue_level4"
-        uarch["consumer_done_release_delay"] = 0
-        uarch["consumer_release_from_start"] = True
-        uarch["consumer_release_start_offset"] = 4
         return resolve_model_uarch(uarch)
 
 

@@ -51,6 +51,20 @@ def normalize_mainline_uarch(uarch: Dict[str, Any]) -> Dict[str, Any]:
     cfg["idu_to_ooo_delay"] = int(cfg.get("idu_to_ooo_delay", 1))
     cfg["vloop_to_dispatch_delay"] = int(cfg.get("vloop_to_dispatch_delay", 2))
     cfg["idu_dispatch_start_advance"] = int(cfg.get("idu_dispatch_start_advance", 2))
+    cfg["initial_top_block_vloop_start_cycle"] = int(
+        cfg.get("initial_top_block_vloop_start_cycle", 19)
+    )
+    cfg["nested_vloop_initial_start_gap"] = int(
+        cfg.get("nested_vloop_initial_start_gap", 1)
+    )
+    cfg["loop1_min_feedback_gap"] = int(cfg.get("loop1_min_feedback_gap", 7))
+    cfg["innermost_iter_dispatch_stride"] = int(
+        cfg.get("innermost_iter_dispatch_stride", 1)
+    )
+    cfg["consumer_release_start_offset"] = int(
+        cfg.get("consumer_release_start_offset", 4)
+    )
+    cfg["load_done_latency"] = int(cfg.get("load_done_latency", 9))
     cfg["global_shq_preg_gate"] = bool(cfg.get("global_shq_preg_gate", False))
     cfg["use_explicit_idu_credit_bank"] = bool(
         cfg.get("use_explicit_idu_credit_bank", False)

@@ -15,6 +15,8 @@ _FUNC_RE = re.compile(
 _PRAGMA_UNROLL_RE = re.compile(r"#\s*pragma\s+unroll\s*\(\s*(\d+)\s*\)")
 _VECTOR_DECL_RE = re.compile(r"\bvector_[A-Za-z0-9_]+\s+([A-Za-z_]\w*)\s*;")
 _CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\((.*)\)\s*;", re.DOTALL)
+_LOAD_OPS = {"VLD", "VLDS"}
+_STORE_OPS = {"VST", "VSTS", "VSTUS", "VSTAS"}
 
 
 @dataclass(frozen=True)
@@ -166,7 +168,7 @@ class _VFScopeParser:
             return None
 
         op = _normalize_op(callee)
-        if op == "VLD":
+        if op in _LOAD_OPS:
             if len(args) < 2:
                 raise ValueError(f"{callee} expects at least dst and UB source")
             return VFInst(
@@ -174,7 +176,7 @@ class _VFScopeParser:
                 dst=[MemInfo(args[0], "Register")],
                 src=[MemInfo(args[1], "UB")],
             )
-        if op == "VST":
+        if op in _STORE_OPS:
             if len(args) < 2:
                 raise ValueError(f"{callee} expects at least register source and UB dst")
             return VFInst(
@@ -311,12 +313,7 @@ def _resolve_loop_step(step_expr: str, var: str, loop_params: Dict[str, int]) ->
 
 
 def _normalize_op(callee: str) -> str:
-    op = callee.upper()
-    if op in {"VLDS", "VLD"}:
-        return "VLD"
-    if op in {"VSTS", "VST"}:
-        return "VST"
-    return op
+    return callee.upper()
 
 
 def _split_args(text: str) -> List[str]:

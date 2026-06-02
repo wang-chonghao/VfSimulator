@@ -242,7 +242,7 @@ The implementation should not require callers to know about:
 - `core.flatten.Flattener`
 - `core.ifu.IFUUnroll`
 - `core.idu.IDU`
-- `core.ooo_consumer_done.OoOCoreConsumerDone`
+- `core.ooo_mainline.OoOCoreMainline`
 - JSON trace internals
 
 Those details stay behind the API boundary.

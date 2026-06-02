@@ -15,10 +15,10 @@ The project has two related tracks:
 The current mainline simulator defaults to:
 
 - `queue_level4` behavior.
-- consumer-done physical-register release with `consumer start + 4`.
+- start-based physical-register release with `consumer start + 4`.
 - vreg live-range normalization enabled by default.
 - SHQ/EXQ depth, queue delay, EXU inflight limit, issue ports, load/store ports, and related queue parameters configured through `configs/uarch.json`.
-- OOO/rename/SHQ logic in `core/ooo.py` and `core/ooo_consumer_done.py`; EXQ/EXU issue logic in `core/isu.py`.
+- OOO/rename/SHQ logic in `core/ooo.py` and `core/ooo_mainline.py`; EXQ/EXU issue logic in `core/isu.py`.
 
 ## Common Commands
 

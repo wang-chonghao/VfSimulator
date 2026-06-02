@@ -28,12 +28,13 @@ These are intended for IDU-side dynamic VLOOP scheduling for:
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.isa_traits import is_load_op, is_store_op
 
-def _classify_op(op: str) -> str:
-    opu = (op or "").upper()
-    if opu == "VLD":
+
+def _classify_op(op: str, pdb=None, dtype: str = "fp32") -> str:
+    if is_load_op(op, pdb, dtype):
         return "LD"
-    if opu == "VST":
+    if is_store_op(op, pdb, dtype):
         return "ST"
     return "ALU"
 
@@ -82,9 +83,17 @@ class LoopFrame:
 
 
 class IFUUnroll:
-    def __init__(self, linear_nodes: List[Dict[str, Any]], params: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        linear_nodes: List[Dict[str, Any]],
+        params: Optional[Dict[str, Any]] = None,
+        pdb=None,
+        dtype: str = "fp32",
+    ):
         self.nodes = [dict(x) for x in (linear_nodes or [])]
         self.params = dict(params or {})
+        self.db = pdb
+        self.dtype = str(dtype)
 
         # loop matching
         self.begin_to_end: Dict[int, int] = {}
@@ -282,9 +291,18 @@ class IFUUnroll:
     def _build_pending_unrolled(self, frame: LoopFrame) -> None:
         body = self.loop_body_cache.get(frame.begin_idx, [])
 
-        loads  = [x for x in body if _classify_op(str(x.get("op"))) == "LD"]
-        alus   = [x for x in body if _classify_op(str(x.get("op"))) == "ALU"]
-        stores = [x for x in body if _classify_op(str(x.get("op"))) == "ST"]
+        loads = [
+            x for x in body
+            if _classify_op(str(x.get("op")), self.db, self.dtype) == "LD"
+        ]
+        alus = [
+            x for x in body
+            if _classify_op(str(x.get("op")), self.db, self.dtype) == "ALU"
+        ]
+        stores = [
+            x for x in body
+            if _classify_op(str(x.get("op")), self.db, self.dtype) == "ST"
+        ]
 
         loop_stack, iter_stack = self._snapshot()
         U = frame.unroll

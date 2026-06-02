@@ -10,9 +10,9 @@
       "iters": "I",
       "unroll": "U",
       "body": [
-        { "type": "inst", "op": "VLD", "dst": ["V1"], "src": ["memA"] },
+        { "type": "inst", "op": "VLDS", "dst": ["V1"], "src": ["memA"] },
         { "type": "inst", "op": "VADDS", "dst": ["V2"], "src": ["V1"] },
-        { "type": "inst", "op": "VST", "dst": ["memB"], "src": ["V2"] }
+        { "type": "inst", "op": "VSTS", "dst": ["memB"], "src": ["V2"] }
       ]
     }
   ]

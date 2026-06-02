@@ -12,13 +12,13 @@
       "body": [
         {
           "type": "inst",
-          "op": "VLD",
+          "op": "VLDS",
           "dst": ["V1"],
           "src": ["memA"]
         },
         {
           "type": "inst",
-          "op": "VLD",
+          "op": "VLDS",
           "dst": ["V2"],
           "src": ["memB"]
         },
@@ -30,7 +30,7 @@
         },
         {
           "type": "inst",
-          "op": "VST",
+          "op": "VSTS",
           "dst": ["memE"],
           "src": ["V3"]
         },
@@ -48,7 +48,7 @@
         },
         {
           "type": "inst",
-          "op": "VST",
+          "op": "VSTS",
           "dst": ["memF"],
           "src": ["V5"]
         },
@@ -66,13 +66,13 @@
         },
         {
           "type": "inst",
-          "op": "VST",
+          "op": "VSTS",
           "dst": ["memG"],
           "src": ["V7"]
         },
         {
           "type": "inst",
-          "op": "VLD",
+          "op": "VLDS",
           "dst": ["V8"],
           "src": ["memC"]
         },
@@ -84,7 +84,7 @@
         },
         {
           "type": "inst",
-          "op": "VLD",
+          "op": "VLDS",
           "dst": ["V10"],
           "src": ["memD"]
         },
@@ -102,7 +102,7 @@
         },
         {
           "type": "inst",
-          "op": "VST",
+          "op": "VSTS",
           "dst": ["memH"],
           "src": ["V12"]
         }

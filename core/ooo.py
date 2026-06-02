@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional, Tuple, Deque
 from collections import deque
 import json
 
+from core.isa_traits import is_compute_op, is_load_op
+
 
 def is_vreg(name: Any) -> bool:
     return isinstance(name, str) and name[:1].lower() == "v"
@@ -103,7 +105,7 @@ class OoOCore:
         self.debug = bool(uarch.get("debug", False))
 
         self.preg_pending = set()
-        self.VLD_COST = int(uarch.get("VLD_COST", 9))
+        self.load_done_latency = int(uarch.get("load_done_latency", 9))
         self.mem_last_store_uop: Dict[Tuple[str, Tuple[int, ...]], Uop] = {}
         self.mem_bar_mode = str(uarch.get("mem_bar_mode", "weak")).strip().lower()
         self.enforce_same_cycle_src_hazard = bool(uarch.get("enforce_same_cycle_src_hazard", True))
@@ -218,12 +220,6 @@ class OoOCore:
             return 1
         return int(self.db.get_ii(prev_op, cur_op, dtype=self.dtype))
 
-    def _startup_cost(self, op: str) -> int:
-        return int(self._inst_params(op).get("pipeline_startup_cost", 0))
-
-    def _drain_cost(self, op: str) -> int:
-        return int(self._inst_params(op).get("pipeline_drain_cost", 0))
-
     def _data_store_cost(self, producer_op: str) -> int:
         return int(self._inst_params(producer_op).get("data_store_cost", 1))
 
@@ -269,19 +265,14 @@ class OoOCore:
 
     # -------- readiness --------
     def _ready_time_for_src(self, producer_info: Tuple[str, int, str], consumer_op: str) -> int:
-        prod_op, prod_start, kind = producer_info
-        if kind == "VLD":
-            if bool(getattr(self, "enable_isu_queue_model", False)) and not self.theoretical_limit_legacy_forwarding:
-                # Queue model aligns SHQ wakeup to VLD start + (startup_cost - 1).
-                return prod_start + max(0, self._startup_cost(consumer_op) - 1)
-            return prod_start + self._startup_cost(consumer_op)
+        prod_op, prod_start, _kind = producer_info
         fwd = int(self.db.get_forwarding_cycles(prod_op, consumer_op, dtype=self.dtype))
         # Queue-level timing alignment:
         # In SHQ wakeup modeling, consumer wakeup-ready follows
         #   producer_EXQ_ISSUE - 1 + forwarding
         # where prod_start is producer_EXQ_ISSUE/start_cycle.
         if (
-            kind == "COMPUTE"
+            is_compute_op(consumer_op, self.db, self.dtype)
             and bool(getattr(self, "enable_isu_queue_model", False))
             and not self.theoretical_limit_legacy_forwarding
         ):
@@ -338,9 +329,12 @@ class OoOCore:
             if info is None:
                 continue
             prod_op, prod_start, kind = info
-            if kind != "COMPUTE":
+            if kind not in ("COMPUTE", "LOAD") and not (
+                is_compute_op(prod_op, self.db, self.dtype)
+                or is_load_op(prod_op, self.db, self.dtype)
+            ):
                 continue
-            cand = prod_start + self._drain_cost(prod_op)
+            cand = self._ready_time_for_src(info, u.op)
             if cand > best_t:
                 best_t = cand
                 pop = prod_op

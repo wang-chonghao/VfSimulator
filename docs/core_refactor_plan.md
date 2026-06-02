@@ -53,7 +53,7 @@ VfSimulator/
     uarch_normalize.py
     simulator_runner.py
     ooo.py
-    ooo_consumer_done.py
+    ooo_mainline.py
     isu.py
 ```
 
@@ -68,7 +68,7 @@ Already completed:
 5. `npu_hybrid` and separate `last_use` backend were removed
 6. theoretical-limit CLI was reduced to two kept variants
 7. compute-side issue logic after `SHQ` was extracted into [core/isu.py](/D:/VfSimulator/core/isu.py)
-8. SHQ credit bookkeeping was folded back into [core/ooo_consumer_done.py](/D:/VfSimulator/core/ooo_consumer_done.py) because it is naturally part of OOO
+8. SHQ credit bookkeeping was folded back into [core/ooo_mainline.py](/D:/VfSimulator/core/ooo_mainline.py) because it is naturally part of OOO
 
 Current structure after the latest cleanup:
 
@@ -77,7 +77,7 @@ Current structure after the latest cleanup:
 - [core/uarch_normalize.py](/D:/VfSimulator/core/uarch_normalize.py): mainline config normalization and theoretical-limit override
 - [core/simulator_runner.py](/D:/VfSimulator/core/simulator_runner.py): simulation orchestration
 - [core/ooo.py](/D:/VfSimulator/core/ooo.py): base OOO utilities and shared state
-- [core/ooo_consumer_done.py](/D:/VfSimulator/core/ooo_consumer_done.py): mainline OOO-side logic
+- [core/ooo_mainline.py](/D:/VfSimulator/core/ooo_mainline.py): mainline OOO-side logic
 - [core/isu.py](/D:/VfSimulator/core/isu.py): EXQ / issue / EXU dispatch path
 
 ## OOO / ISU Boundary
@@ -111,7 +111,7 @@ In [core/isu.py](/D:/VfSimulator/core/isu.py):
 - `issue_exq_to_exu(...)`
 - `remove_issued(...)`
 
-In [core/ooo_consumer_done.py](/D:/VfSimulator/core/ooo_consumer_done.py):
+In [core/ooo_mainline.py](/D:/VfSimulator/core/ooo_mainline.py):
 
 - OOO-side state
 - accept / rename / source release
@@ -123,10 +123,10 @@ In [core/ooo_consumer_done.py](/D:/VfSimulator/core/ooo_consumer_done.py):
 
 ### Step 1: tighten module documentation
 
-- add clear module-level comments to `ooo_consumer_done.py` and `isu.py`
+- add clear module-level comments to `ooo_mainline.py` and `isu.py`
 - keep future readers from re-deriving the boundary
 
-### Step 2: reduce glue inside `ooo_consumer_done.step()`
+### Step 2: reduce glue inside `ooo_mainline.step()`
 
 - keep behavior the same
 - gradually turn large inline blocks into named OOO-side helpers
@@ -136,7 +136,7 @@ In [core/ooo_consumer_done.py](/D:/VfSimulator/core/ooo_consumer_done.py):
 
 Current choice:
 
-- keep SHQ credit bookkeeping inside `ooo_consumer_done.py`
+- keep SHQ credit bookkeeping inside `ooo_mainline.py`
 - only split it out again if it starts growing independently and hurts readability
 
 ## Validation Checklist

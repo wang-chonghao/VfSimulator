@@ -334,6 +334,46 @@
         "dispatch_exu": "EXU0_ONLY"
       }
     },
+    "VLDS": {
+      "fp32": {
+        "op_class": "LOAD",
+        "pipeline_startup_cost": 0,
+        "latency": 9,
+        "throughput": 1,
+        "pipeline_drain_cost": 0,
+        "data_load_cost": 9,
+        "data_store_cost": 0
+      },
+      "fp16": {
+        "op_class": "LOAD",
+        "pipeline_startup_cost": 0,
+        "latency": 9,
+        "throughput": 1,
+        "pipeline_drain_cost": 0,
+        "data_load_cost": 9,
+        "data_store_cost": 0
+      }
+    },
+    "VSTS": {
+      "fp32": {
+        "op_class": "STORE",
+        "pipeline_startup_cost": 0,
+        "latency": 9,
+        "throughput": 1,
+        "pipeline_drain_cost": 0,
+        "data_load_cost": 0,
+        "data_store_cost": 9
+      },
+      "fp16": {
+        "op_class": "STORE",
+        "pipeline_startup_cost": 0,
+        "latency": 9,
+        "throughput": 1,
+        "pipeline_drain_cost": 0,
+        "data_load_cost": 0,
+        "data_store_cost": 9
+      }
+    },
     "VDUP": {
       "fp32": {
         "pipeline_startup_cost": 2,
