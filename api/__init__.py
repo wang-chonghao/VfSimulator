@@ -2,6 +2,7 @@
 
 from api.input_api import InputAPI
 from api.json_adapter import JsonVfInfoAdapter
+from api.program_api import predict_from_program
 from api.vf_info import (
     Membar,
     MemInfo,
@@ -24,4 +25,5 @@ __all__ = [
     "VFInst",
     "VFLoop",
     "canonicalize_vf_info",
+    "predict_from_program",
 ]

@@ -2,7 +2,7 @@ import argparse
 import json
 from typing import Any, Dict, List
 
-from core.program_ir import VfSimInst, VfSimLoop, VfSimMembar, VfSimProgram, to_trace_node
+from vfsimulator.core.program_ir import VfSimInst, VfSimLoop, VfSimMembar, VfSimProgram, to_trace_node
 
 
 def is_number(x: Any) -> bool:
