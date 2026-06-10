@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -137,6 +138,97 @@ class ProgramApiTest(unittest.TestCase):
                     )
                     self.assertEqual(result["model"], expected_model)
                     self.assertEqual(result["cycles"], expected_cycles)
+
+    def test_ooo_to_lsq_delay_affects_lsu_issue(self) -> None:
+        program = VfSimProgram(
+            dtype="fp32",
+            body=[
+                VfSimLoop(
+                    count=4,
+                    body=[
+                        VfSimInst(op="VLDS", dst=["V1"], src=["memA"]),
+                        VfSimInst(op="VADDS", dst=["V2"], src=["V1"]),
+                        VfSimInst(op="VSTS", dst=["memB"], src=["V2"]),
+                    ],
+                )
+            ],
+            config={"has_barrier": False, "tile_unroll": 1},
+        )
+
+        with tempfile.TemporaryDirectory(prefix="vfsim_test_lsq_delay_") as tmp:
+            tmp_root = Path(tmp)
+            cfg0 = tmp_root / "cfg0"
+            cfg3 = tmp_root / "cfg3"
+            shutil.copytree(ROOT / "configs", cfg0)
+            shutil.copytree(ROOT / "configs", cfg3)
+
+            for cfg, delay in [(cfg0, 0), (cfg3, 3)]:
+                uarch_path = cfg / "uarch.json"
+                with uarch_path.open("r", encoding="utf-8") as f:
+                    uarch = json.load(f)
+                uarch["ooo_to_lsq_delay"] = delay
+                with uarch_path.open("w", encoding="utf-8") as f:
+                    json.dump(uarch, f)
+
+            delay0 = predict_from_program(
+                program,
+                config_root=cfg0,
+                out_dir=tmp_root / "delay0",
+                model="mainline",
+            )
+            delay3 = predict_from_program(
+                program,
+                config_root=cfg3,
+                out_dir=tmp_root / "delay3",
+                model="mainline",
+            )
+
+        self.assertLess(delay0["cycles"], delay3["cycles"])
+
+    def test_ooo_to_shq_delay_affects_compute_issue(self) -> None:
+        program = VfSimProgram(
+            dtype="fp32",
+            body=[
+                VfSimLoop(
+                    count=4,
+                    body=[
+                        VfSimInst(op="VADDS", dst=["V1"], src=["V0"]),
+                        VfSimInst(op="VADDS", dst=["V2"], src=["V1"]),
+                    ],
+                )
+            ],
+            config={"has_barrier": False, "tile_unroll": 1},
+        )
+
+        with tempfile.TemporaryDirectory(prefix="vfsim_test_shq_delay_") as tmp:
+            tmp_root = Path(tmp)
+            cfg0 = tmp_root / "cfg0"
+            cfg3 = tmp_root / "cfg3"
+            shutil.copytree(ROOT / "configs", cfg0)
+            shutil.copytree(ROOT / "configs", cfg3)
+
+            for cfg, delay in [(cfg0, 0), (cfg3, 3)]:
+                uarch_path = cfg / "uarch.json"
+                with uarch_path.open("r", encoding="utf-8") as f:
+                    uarch = json.load(f)
+                uarch["ooo_to_shq_delay"] = delay
+                with uarch_path.open("w", encoding="utf-8") as f:
+                    json.dump(uarch, f)
+
+            delay0 = predict_from_program(
+                program,
+                config_root=cfg0,
+                out_dir=tmp_root / "delay0",
+                model="mainline",
+            )
+            delay3 = predict_from_program(
+                program,
+                config_root=cfg3,
+                out_dir=tmp_root / "delay3",
+                model="mainline",
+            )
+
+        self.assertLess(delay0["cycles"], delay3["cycles"])
 
     def test_model_aliases_and_invalid_model(self) -> None:
         self.assertEqual(normalize_model_name("queue_level4"), "mainline")

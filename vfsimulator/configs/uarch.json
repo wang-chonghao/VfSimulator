@@ -27,6 +27,8 @@
   "innermost_iter_dispatch_stride": 1,
   "consumer_release_start_offset": 4,
   "load_done_latency": 9,
+  "ooo_to_shq_delay": 1,
+  "ooo_to_lsq_delay": 1,
   "exq_recv_delay": 1,
   "shq_to_exq_port_per_cycle": 1,
   "compute_inflight_cap": 0,

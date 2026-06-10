@@ -65,6 +65,8 @@ def normalize_mainline_uarch(uarch: Dict[str, Any]) -> Dict[str, Any]:
         cfg.get("consumer_release_start_offset", 4)
     )
     cfg["load_done_latency"] = int(cfg.get("load_done_latency", 9))
+    cfg["ooo_to_shq_delay"] = int(cfg.get("ooo_to_shq_delay", 1))
+    cfg["ooo_to_lsq_delay"] = int(cfg.get("ooo_to_lsq_delay", 1))
     cfg["global_shq_preg_gate"] = bool(cfg.get("global_shq_preg_gate", False))
     cfg["use_explicit_idu_credit_bank"] = bool(
         cfg.get("use_explicit_idu_credit_bank", False)
@@ -110,6 +112,8 @@ def apply_theoretical_limit_overrides(uarch: Dict[str, Any]) -> Dict[str, Any]:
     cfg["exq_depth"] = int(cfg.get("theoretical_limit_exq_depth", huge))
 
     cfg["idu_to_ooo_delay"] = int(cfg.get("theoretical_limit_idu_to_ooo_delay", 0))
+    cfg["ooo_to_shq_delay"] = int(cfg.get("theoretical_limit_ooo_to_shq_delay", 0))
+    cfg["ooo_to_lsq_delay"] = int(cfg.get("theoretical_limit_ooo_to_lsq_delay", 0))
     cfg["exq_recv_delay"] = int(cfg.get("theoretical_limit_exq_recv_delay", 0))
     cfg["shq_release_delay"] = int(cfg.get("theoretical_limit_shq_release_delay", 0))
     cfg["idu_visible_preg_delay"] = int(
