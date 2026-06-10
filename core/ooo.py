@@ -50,6 +50,8 @@ class Uop:
     iter_stack: List[Any] = field(default_factory=list)
     is_last_in_top_block: bool = False
     exu_port: Optional[int] = None
+    shq_ready_cycle: int = 0
+    lsq_ready_cycle: int = 0
 
 
 class OoOCore:
@@ -106,6 +108,8 @@ class OoOCore:
 
         self.preg_pending = set()
         self.load_done_latency = int(uarch.get("load_done_latency", 9))
+        self.ooo_to_shq_delay = int(uarch.get("ooo_to_shq_delay", 1))
+        self.ooo_to_lsq_delay = int(uarch.get("ooo_to_lsq_delay", 1))
         self.mem_last_store_uop: Dict[Tuple[str, Tuple[int, ...]], Uop] = {}
         self.mem_bar_mode = str(uarch.get("mem_bar_mode", "weak")).strip().lower()
         self.enforce_same_cycle_src_hazard = bool(uarch.get("enforce_same_cycle_src_hazard", True))
@@ -281,7 +285,7 @@ class OoOCore:
 
     def _compute_ready_cycle(self, u: Uop) -> int:
         # dependency-only ready time
-        t = self.vf_startup_cost
+        t = max(self.vf_startup_cost, int(getattr(u, "shq_ready_cycle", 0)))
         for ps in u.preg_src:
             if ps is None:
                 continue
@@ -294,7 +298,7 @@ class OoOCore:
         return t
 
     def _load_ready_cycle(self, u: Uop) -> int:
-        t = self.vf_startup_cost
+        t = max(self.vf_startup_cost, int(getattr(u, "lsq_ready_cycle", 0)))
         for pred_u in u.mem_dep_uops:
             if pred_u.done_cycle is None:
                 return 10 ** 9
@@ -342,6 +346,7 @@ class OoOCore:
 
         if best_t < 0:
             return 10 ** 9, None, None
+        best_t = max(best_t, int(getattr(u, "lsq_ready_cycle", 0)))
         return best_t, pop, pst
 
     # -------- retire helper --------

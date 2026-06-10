@@ -343,8 +343,10 @@ class RenameController:
             self.core.preg_pending.add(pd)
 
         if uses_lsq(op, self.core.db, self.core.dtype):
+            u.lsq_ready_cycle = int(self.core.cycle) + max(0, int(self.core.ooo_to_lsq_delay))
             self.core.LSQ.append(u)
         else:
+            u.shq_ready_cycle = int(self.core.cycle) + max(0, int(self.core.ooo_to_shq_delay))
             self.core.SHQ.append(u)
         if (
             self.core.enable_shq_credit_model
