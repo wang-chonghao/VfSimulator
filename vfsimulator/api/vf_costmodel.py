@@ -13,6 +13,7 @@ VFNode: TypeAlias = "VFLoop | VFInst | Membar"
 class MemInfo:
     name: str
     location: OperandLocation = "Register"
+    dtype: str | None = None
 
 
 @dataclass
@@ -20,6 +21,7 @@ class VFInst:
     name: str
     src: list[MemInfo]
     dst: list[MemInfo]
+    form: str | None = None
 
 
 @dataclass
