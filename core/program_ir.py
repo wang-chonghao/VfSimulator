@@ -20,6 +20,7 @@ class VfSimInst:
     op: str
     src: List[str] = field(default_factory=list)
     dst: List[str] = field(default_factory=list)
+    form: str | None = None
     config: Dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
@@ -27,6 +28,8 @@ class VfSimInst:
             raise ValueError("VfSimInst.op must be a non-empty string")
         _validate_str_list(self.src, "VfSimInst.src")
         _validate_str_list(self.dst, "VfSimInst.dst")
+        if self.form is not None and (not isinstance(self.form, str) or not self.form):
+            raise ValueError("VfSimInst.form must be a non-empty string when provided")
         if self.config is not None and not isinstance(self.config, dict):
             raise TypeError("VfSimInst.config must be a dict when provided")
 
@@ -37,6 +40,8 @@ class VfSimInst:
             "src": list(self.src),
             "dst": list(self.dst),
         }
+        if self.form:
+            node["form"] = self.form
         if self.config:
             node["config"] = dict(self.config)
         return node

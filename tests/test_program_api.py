@@ -73,6 +73,30 @@ class ProgramApiTest(unittest.TestCase):
             },
         )
 
+    def test_program_payload_preserves_inst_form(self) -> None:
+        program = VfSimProgram(
+            dtype="fp32",
+            body=[
+                VfSimLoop(
+                    count=1,
+                    body=[
+                        VfSimInst(op="VCVT_F32_TO_F16", dst=["V2"], src=["V1"], form="f32_to_f16"),
+                    ],
+                )
+            ],
+        )
+
+        self.assertEqual(
+            program.to_payload()["program"][0]["body"][0],
+            {
+                "type": "inst",
+                "op": "VCVT_F32_TO_F16",
+                "src": ["V1"],
+                "dst": ["V2"],
+                "form": "f32_to_f16",
+            },
+        )
+
     def test_flattener_program_matches_legacy_json_trace(self) -> None:
         trace_path = ROOT / "VFtest" / "VADD_oneloop.json"
         with trace_path.open("r", encoding="utf-8") as f:

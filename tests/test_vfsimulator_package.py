@@ -39,6 +39,34 @@ class VfsimulatorPackageTest(unittest.TestCase):
     def test_theory_alias_in_namespaced_package(self) -> None:
         self.assertEqual(normalize_model_name("theory"), "theory_direct_issue")
 
+    def test_namespaced_program_preserves_inst_form(self) -> None:
+        program = VfSimProgram(
+            dtype="fp32",
+            params={"I": 16, "U": 1},
+            body=[
+                VfSimLoop(
+                    count="I",
+                    unroll="U",
+                    body=[
+                        VfSimInst(op="VLDS", dst=["V1"], src=["mem0"], form="fp32"),
+                        VfSimInst(op="VCVT_F32_TO_F16", dst=["V2"], src=["V1"], form="f32_to_f16"),
+                        VfSimInst(op="VSTS", dst=["mem1"], src=["V2"], form="fp16"),
+                    ],
+                )
+            ],
+        )
+
+        body = program.to_payload()["program"][0]["body"]
+
+        self.assertEqual(
+            [(inst["op"], inst.get("form")) for inst in body],
+            [
+                ("VLDS", "fp32"),
+                ("VCVT_F32_TO_F16", "f32_to_f16"),
+                ("VSTS", "fp16"),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
