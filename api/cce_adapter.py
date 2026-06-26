@@ -13,7 +13,7 @@ _FUNC_RE = re.compile(
     re.DOTALL,
 )
 _PRAGMA_UNROLL_RE = re.compile(r"#\s*pragma\s+unroll\s*\(\s*(\d+)\s*\)")
-_VECTOR_DECL_RE = re.compile(r"\bvector_[A-Za-z0-9_]+\s+([A-Za-z_]\w*)\s*;")
+_VECTOR_DECL_RE = re.compile(r"\bvector_([A-Za-z0-9_]+)\s+([A-Za-z_]\w*)\s*;")
 _CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\((.*)\)\s*;", re.DOTALL)
 _LOAD_OPS = {"VLD", "VLDS"}
 _STORE_OPS = {"VST", "VSTS", "VSTUS", "VSTAS"}
@@ -94,7 +94,11 @@ class _VFScopeParser:
     def __init__(self, scope: CCEVFScope, loop_params: Dict[str, int]) -> None:
         self.scope = scope
         self.loop_params = loop_params
-        self.register_names = set(_VECTOR_DECL_RE.findall(scope.source))
+        self.register_dtypes = {
+            name: _vector_dtype_to_form(dtype)
+            for dtype, name in _VECTOR_DECL_RE.findall(scope.source)
+        }
+        self.register_names = set(self.register_dtypes)
         self.ub_names = set(_ub_param_names(scope.params))
 
     def parse(self) -> List[VFNode]:
@@ -171,30 +175,39 @@ class _VFScopeParser:
         if op in _LOAD_OPS:
             if len(args) < 2:
                 raise ValueError(f"{callee} expects at least dst and UB source")
+            dst = self._register_operand(args[0])
             return VFInst(
                 name=op,
-                dst=[MemInfo(args[0], "Register")],
+                form=dst.dtype,
+                dst=[dst],
                 src=[MemInfo(args[1], "UB")],
             )
         if op in _STORE_OPS:
             if len(args) < 2:
                 raise ValueError(f"{callee} expects at least register source and UB dst")
+            src = self._register_operand(args[0])
             return VFInst(
                 name=op,
-                src=[MemInfo(args[0], "Register")],
+                form=src.dtype,
+                src=[src],
                 dst=[MemInfo(args[1], "UB")],
             )
 
         if not args:
             raise ValueError(f"{callee} expects at least one destination operand")
-        dst = [MemInfo(args[0], "Register")]
+        dst = [self._register_operand(args[0])]
         src = [operand for arg in args[1:] if (operand := self._operand_for_arg(arg))]
-        return VFInst(name=op, src=src, dst=dst)
+        form = _infer_inst_form(op, dst, src)
+        return VFInst(name=_specialize_op_for_form(op, form), form=form, src=src, dst=dst)
+
+    def _register_operand(self, arg: str) -> MemInfo:
+        name = _base_identifier(arg)
+        return MemInfo(name, "Register", self.register_dtypes.get(name))
 
     def _operand_for_arg(self, arg: str) -> MemInfo | None:
         name = _base_identifier(arg)
         if name in self.register_names:
-            return MemInfo(name, "Register")
+            return MemInfo(name, "Register", self.register_dtypes.get(name))
         if name in self.ub_names:
             return MemInfo(name, "UB")
         return None
@@ -314,6 +327,62 @@ def _resolve_loop_step(step_expr: str, var: str, loop_params: Dict[str, int]) ->
 
 def _normalize_op(callee: str) -> str:
     return callee.upper()
+
+
+def _vector_dtype_to_form(dtype: str) -> str:
+    text = dtype.lower()
+    mapping = {
+        "f32": "fp32",
+        "float32": "fp32",
+        "fp32": "fp32",
+        "f16": "fp16",
+        "float16": "fp16",
+        "fp16": "fp16",
+        "s32": "int32",
+        "i32": "int32",
+        "int32": "int32",
+        "u32": "uint32",
+        "uint32": "uint32",
+    }
+    return mapping.get(text, text)
+
+
+def _infer_inst_form(op: str, dst: Sequence[MemInfo], src: Sequence[MemInfo]) -> str | None:
+    op = op.upper()
+    src_dtype = next((operand.dtype for operand in src if operand.dtype), None)
+    dst_dtype = next((operand.dtype for operand in dst if operand.dtype), None)
+    if op in {"VCVT_F32_TO_F16", "VCVT_F16_TO_F32", "VCVT_F32_TO_S32", "VCVT_S32_TO_F32"}:
+        explicit = {
+            "VCVT_F32_TO_F16": "f32_to_f16",
+            "VCVT_F16_TO_F32": "f16_to_f32",
+            "VCVT_F32_TO_S32": "f32_to_s32",
+            "VCVT_S32_TO_F32": "s32_to_f32",
+        }
+        return explicit[op]
+    if op == "VCVT" and src_dtype and dst_dtype:
+        compact = {
+            "fp32": "f32",
+            "fp16": "f16",
+            "int32": "s32",
+        }
+        src_key = compact.get(src_dtype)
+        dst_key = compact.get(dst_dtype)
+        if src_key and dst_key:
+            return f"{src_key}_to_{dst_key}"
+    return dst_dtype or src_dtype
+
+
+def _specialize_op_for_form(op: str, form: str | None) -> str:
+    op = op.upper()
+    if op != "VCVT" or not form:
+        return op
+    mapping = {
+        "f32_to_f16": "VCVT_F32_TO_F16",
+        "f16_to_f32": "VCVT_F16_TO_F32",
+        "f32_to_s32": "VCVT_F32_TO_S32",
+        "s32_to_f32": "VCVT_S32_TO_F32",
+    }
+    return mapping.get(form, op)
 
 
 def _split_args(text: str) -> List[str]:

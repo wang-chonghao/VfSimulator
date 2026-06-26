@@ -32,6 +32,7 @@ def make_mem_key(name: str, iter_stack: List[Any]) -> Tuple[str, Tuple[int, ...]
 class Uop:
     inst_id: int
     op: str
+    form: str
     src: List[Any]
     dst: List[Any]
     preg_src: List[Optional[str]]
@@ -44,6 +45,7 @@ class Uop:
     done_cycle: Optional[int] = None
 
     producer_op_for_store: Optional[str] = None
+    producer_form_for_store: Optional[str] = None
     producer_start_for_store: Optional[int] = None
     mem_dep_uops: List["Uop"] = field(default_factory=list)
     top_block_id: int = 0
@@ -83,7 +85,7 @@ class OoOCore:
         self.ROB: Deque[Uop] = deque()
 
         # dependency tracking
-        self.preg_producer: Dict[str, Tuple[str, int, str]] = {}
+        self.preg_producer: Dict[str, Tuple[str, str, int, str]] = {}
         self.preg_producer_uop: Dict[str, Uop] = {}
 
         # EXU issue history.
@@ -98,8 +100,13 @@ class OoOCore:
             "ALU": [None] * self.issue_ports,
             "SFU": [None] * self.issue_ports,
         }
+        self.last_form = {
+            "ALU": [None] * self.issue_ports,
+            "SFU": [None] * self.issue_ports,
+        }
         self.last_issue_cycle_exu = [-10**9] * self.issue_ports
         self.last_op_exu = [None] * self.issue_ports
+        self.last_form_exu = [None] * self.issue_ports
 
         self.cycle: int = 0
         self.last_done_cycle: int = 0
@@ -139,6 +146,7 @@ class OoOCore:
             "event": event,
             "id": u.inst_id,
             "op": u.op,
+            "form": u.form,
             "state": u.state,
             "ready": u.ready_cycle,
             "start": u.start_cycle,
@@ -149,6 +157,7 @@ class OoOCore:
             "preg_dst": u.preg_dst,
             "preg_old": u.preg_old,
             "producer_op_for_store": u.producer_op_for_store,
+            "producer_form_for_store": u.producer_form_for_store,
             "producer_start_for_store": u.producer_start_for_store,
         })
 
@@ -157,6 +166,7 @@ class OoOCore:
             "cy": self.cycle,
             "inst_id": u.inst_id,
             "op": u.op,
+            "form": u.form,
             "dst": u.dst,
             "src": u.src,
         })
@@ -166,6 +176,7 @@ class OoOCore:
             "cy": u.done_cycle if u.done_cycle is not None else self.cycle,
             "inst_id": u.inst_id,
             "op": u.op,
+            "form": u.form,
             "dst": u.dst,
             "src": u.src,
         })
@@ -213,30 +224,46 @@ class OoOCore:
         return {"preg_free": 0, "shq_release": 0}
 
     # -------- ISA --------
-    def _inst_params(self, op: str) -> Dict[str, Any]:
-        return self.db.get_inst(op, dtype=self.dtype)
+    def _inst_params(self, op: str, form: Optional[str] = None) -> Dict[str, Any]:
+        if hasattr(self.db, "get_inst_form"):
+            return self.db.get_inst_form(op, form=form, dtype=self.dtype)
+        return self.db.get_inst(op, dtype=form or self.dtype)
 
-    def _latency(self, op: str) -> int:
-        return int(self._inst_params(op).get("latency", 1))
+    def _latency(self, op: str, form: Optional[str] = None) -> int:
+        return int(self._inst_params(op, form=form).get("latency", 1))
 
-    def _get_ii(self, prev_op: Optional[str], cur_op: str) -> int:
+    def _get_ii(
+        self,
+        prev_op: Optional[str],
+        cur_op: str,
+        prev_form: Optional[str] = None,
+        cur_form: Optional[str] = None,
+    ) -> int:
         if prev_op is None:
             return 1
-        return int(self.db.get_ii(prev_op, cur_op, dtype=self.dtype))
+        return int(
+            self.db.get_ii(
+                prev_op,
+                cur_op,
+                dtype=self.dtype,
+                prev_form=prev_form,
+                cur_form=cur_form,
+            )
+        )
 
-    def _data_store_cost(self, producer_op: str) -> int:
-        return int(self._inst_params(producer_op).get("data_store_cost", 1))
+    def _data_store_cost(self, producer_op: str, producer_form: Optional[str] = None) -> int:
+        return int(self._inst_params(producer_op, form=producer_form).get("data_store_cost", 1))
 
-    def _get_fu_type(self, op: str) -> str:
+    def _get_fu_type(self, op: str, form: Optional[str] = None) -> str:
         try:
-            fu = str(self._inst_params(op).get("EXU", "ALU")).upper()
+            fu = str(self._inst_params(op, form=form).get("EXU", "ALU")).upper()
         except Exception:
             fu = "ALU"
         if fu not in ("ALU", "SFU"):
             fu = "ALU"
         return fu
 
-    def _eligible_exu_ports(self, op: str) -> List[int]:
+    def _eligible_exu_ports(self, op: str, form: Optional[str] = None) -> List[int]:
         """
         Restrict which EXU/EXQ ports an op may use according to isa.json.
 
@@ -249,7 +276,7 @@ class OoOCore:
         - missing / unknown tag => all available ports
         """
         try:
-            dispatch_exu = str(self._inst_params(op).get("dispatch_exu", "")).upper()
+            dispatch_exu = str(self._inst_params(op, form=form).get("dispatch_exu", "")).upper()
         except Exception:
             dispatch_exu = ""
 
@@ -268,15 +295,28 @@ class OoOCore:
         raise NotImplementedError("OoOCore.accept() must be implemented by a concrete OOO model")
 
     # -------- readiness --------
-    def _ready_time_for_src(self, producer_info: Tuple[str, int, str], consumer_op: str) -> int:
-        prod_op, prod_start, _kind = producer_info
-        fwd = int(self.db.get_forwarding_cycles(prod_op, consumer_op, dtype=self.dtype))
+    def _ready_time_for_src(
+        self,
+        producer_info: Tuple[str, str, int, str],
+        consumer_op: str,
+        consumer_form: Optional[str] = None,
+    ) -> int:
+        prod_op, prod_form, prod_start, _kind = producer_info
+        fwd = int(
+            self.db.get_forwarding_cycles(
+                prod_op,
+                consumer_op,
+                dtype=self.dtype,
+                producer_form=prod_form,
+                consumer_form=consumer_form,
+            )
+        )
         # Queue-level timing alignment:
         # In SHQ wakeup modeling, consumer wakeup-ready follows
         #   producer_EXQ_ISSUE - 1 + forwarding
         # where prod_start is producer_EXQ_ISSUE/start_cycle.
         if (
-            is_compute_op(consumer_op, self.db, self.dtype)
+            is_compute_op(consumer_op, self.db, consumer_form or self.dtype)
             and bool(getattr(self, "enable_isu_queue_model", False))
             and not self.theoretical_limit_legacy_forwarding
         ):
@@ -294,7 +334,7 @@ class OoOCore:
                 if ps in self.preg_pending:
                     return 10 ** 9
                 continue
-            t = max(t, self._ready_time_for_src(info, u.op))
+            t = max(t, self._ready_time_for_src(info, u.op, u.form))
         return t
 
     def _load_ready_cycle(self, u: Uop) -> int:
@@ -316,15 +356,16 @@ class OoOCore:
                 t = max(t, release_cycle)
         return t
 
-    def _store_ready_cycle(self, u: Uop) -> Tuple[int, Optional[str], Optional[int]]:
+    def _store_ready_cycle(self, u: Uop) -> Tuple[int, Optional[str], Optional[str], Optional[int]]:
         for ps in u.preg_src:
             if ps is None:
                 continue
             if ps in self.preg_pending and ps not in self.preg_producer:
-                return 10 ** 9, None, None
+                return 10 ** 9, None, None, None
 
         best_t = -1
         pop = None
+        pform = None
         pst = None
         for ps in u.preg_src:
             if ps is None:
@@ -332,22 +373,23 @@ class OoOCore:
             info = self.preg_producer.get(ps)
             if info is None:
                 continue
-            prod_op, prod_start, kind = info
+            prod_op, prod_form, prod_start, kind = info
             if kind not in ("COMPUTE", "LOAD") and not (
-                is_compute_op(prod_op, self.db, self.dtype)
-                or is_load_op(prod_op, self.db, self.dtype)
+                is_compute_op(prod_op, self.db, prod_form or self.dtype)
+                or is_load_op(prod_op, self.db, prod_form or self.dtype)
             ):
                 continue
-            cand = self._ready_time_for_src(info, u.op)
+            cand = self._ready_time_for_src(info, u.op, u.form)
             if cand > best_t:
                 best_t = cand
                 pop = prod_op
+                pform = prod_form
                 pst = prod_start
 
         if best_t < 0:
-            return 10 ** 9, None, None
+            return 10 ** 9, None, None, None
         best_t = max(best_t, int(getattr(u, "lsq_ready_cycle", 0)))
-        return best_t, pop, pst
+        return best_t, pop, pform, pst
 
     # -------- retire helper --------
     def _free_old_pregs(self, u: Uop) -> None:
@@ -355,8 +397,15 @@ class OoOCore:
             "OoOCore._free_old_pregs() must be implemented by a concrete OOO model"
         )
 
-    def _pick_exu_port(self, fu_type: str, cur_op: str, c: int, exu_used_this_cycle: List[bool]) -> Optional[int]:
-        legal_ports = set(self._eligible_exu_ports(cur_op))
+    def _pick_exu_port(
+        self,
+        fu_type: str,
+        cur_op: str,
+        c: int,
+        exu_used_this_cycle: List[bool],
+        cur_form: Optional[str] = None,
+    ) -> Optional[int]:
+        legal_ports = set(self._eligible_exu_ports(cur_op, cur_form))
         if not self.enable_exq_greedy_balance:
             for port in range(self.issue_ports):
                 if port not in legal_ports:
@@ -365,11 +414,13 @@ class OoOCore:
                     continue
                 if self.enable_cross_fu_ii:
                     prev_op = self.last_op_exu[port]
+                    prev_form = self.last_form_exu[port]
                     prev_issue = self.last_issue_cycle_exu[port]
                 else:
                     prev_op = self.last_op[fu_type][port]
+                    prev_form = self.last_form[fu_type][port]
                     prev_issue = self.last_issue_cycle[fu_type][port]
-                ii = self._get_ii(prev_op, cur_op)
+                ii = self._get_ii(prev_op, cur_op, prev_form=prev_form, cur_form=cur_form)
                 if c >= prev_issue + ii:
                     return port
             return None
@@ -382,11 +433,13 @@ class OoOCore:
                 continue
             if self.enable_cross_fu_ii:
                 prev_op = self.last_op_exu[port]
+                prev_form = self.last_form_exu[port]
                 prev_issue = self.last_issue_cycle_exu[port]
             else:
                 prev_op = self.last_op[fu_type][port]
+                prev_form = self.last_form[fu_type][port]
                 prev_issue = self.last_issue_cycle[fu_type][port]
-            ii = self._get_ii(prev_op, cur_op)
+            ii = self._get_ii(prev_op, cur_op, prev_form=prev_form, cur_form=cur_form)
             avail = max(c, prev_issue + ii)
             candidates.append((port, avail))
 

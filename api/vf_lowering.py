@@ -37,12 +37,15 @@ class VFInfoLowerer:
 
     def _lower_node(self, node: VFNode) -> Dict[str, Any]:
         if isinstance(node, VFInst):
-            return {
+            inst = {
                 "type": "inst",
                 "op": str(node.name),
                 "src": [self._lower_operand(operand) for operand in node.src],
                 "dst": [self._lower_operand(operand) for operand in node.dst],
             }
+            if node.form:
+                inst["form"] = str(node.form)
+            return inst
         if isinstance(node, VFLoop):
             return {
                 "type": "loop",
