@@ -7,7 +7,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 cmake_minimum_required(VERSION 3.20)
-project(VfSimulatorNative LANGUAGES CXX)
+project(VfSimulatorNative LANGUAGES C CXX)
 
 if(PROJECT_IS_TOP_LEVEL)
   include(CTest)
@@ -17,6 +17,7 @@ else()
 endif()
 
 option(VFSIM_BUILD_TESTS "Build native VfSimulator tests" ${VFSIM_BUILD_TESTS_DEFAULT})
+option(VFSIM_ENABLE_MLIR_PLANNER "Build MLIR IR planner entry point" OFF)
 
 set(VFSIM_NATIVE_CORE_SOURCES
   Json.cpp
@@ -46,6 +47,28 @@ target_compile_features(vfsim_native_core PUBLIC cxx_std_17)
 target_compile_definitions(vfsim_native_core PUBLIC
   VFSIM_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+
+if(VFSIM_ENABLE_MLIR_PLANNER)
+  if(NOT TARGET MLIRIR)
+    find_package(MLIR REQUIRED CONFIG)
+  endif()
+
+  add_library(vfsim_ir_planner STATIC
+    IRPlanner.cpp
+  )
+
+  add_library(vfsim::ir_planner ALIAS vfsim_ir_planner)
+
+  target_link_libraries(vfsim_ir_planner PUBLIC
+    vfsim::native_core
+    MLIRIR
+    MLIRSupport
+  )
+  target_include_directories(vfsim_ir_planner PUBLIC
+    ${MLIR_INCLUDE_DIRS}
+    ${LLVM_INCLUDE_DIRS}
+  )
+endif()
 
 if(NOT VFSIM_BUILD_TESTS)
   return()
