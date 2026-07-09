@@ -9,14 +9,16 @@
 cmake_minimum_required(VERSION 3.20)
 project(VfSimulatorNative LANGUAGES CXX)
 
-include(CTest)
-
-if(NOT BUILD_TESTING)
-  return()
+if(PROJECT_IS_TOP_LEVEL)
+  include(CTest)
+  set(VFSIM_BUILD_TESTS_DEFAULT ON)
+else()
+  set(VFSIM_BUILD_TESTS_DEFAULT OFF)
 endif()
 
-add_executable(vfsim_native_smoke_test
-  VfsimNativeSmokeTest.cpp
+option(VFSIM_BUILD_TESTS "Build native VfSimulator tests" ${VFSIM_BUILD_TESTS_DEFAULT})
+
+set(VFSIM_NATIVE_CORE_SOURCES
   Json.cpp
   ParamDB.cpp
   ISATraits.cpp
@@ -28,15 +30,37 @@ add_executable(vfsim_native_smoke_test
   SimulatorRunner.cpp
 )
 
-target_include_directories(vfsim_native_smoke_test PRIVATE
+add_library(vfsim_native_core STATIC
+  ${VFSIM_NATIVE_CORE_SOURCES}
+)
+
+add_library(vfsim::native_core ALIAS vfsim_native_core)
+
+target_include_directories(vfsim_native_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 
-target_compile_features(vfsim_native_smoke_test PRIVATE cxx_std_17)
+target_compile_features(vfsim_native_core PUBLIC cxx_std_17)
 
-target_compile_definitions(vfsim_native_smoke_test PRIVATE
+target_compile_definitions(vfsim_native_core PUBLIC
   VFSIM_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+if(NOT VFSIM_BUILD_TESTS)
+  return()
+endif()
+
+if(PROJECT_IS_TOP_LEVEL AND NOT BUILD_TESTING)
+  return()
+endif()
+
+add_executable(vfsim_native_smoke_test
+  VfsimNativeSmokeTest.cpp
+)
+
+target_link_libraries(vfsim_native_smoke_test PRIVATE
+  vfsim::native_core
 )
 
 set_target_properties(vfsim_native_smoke_test PROPERTIES
@@ -49,26 +73,10 @@ add_test(NAME vfsim_native_smoke_test
 
 add_executable(vfsim_tadd_tmul_trace
   VfsimTaddTmulTrace.cpp
-  Json.cpp
-  ParamDB.cpp
-  ISATraits.cpp
-  ProgramAnalysis.cpp
-  ProgramFlatten.cpp
-  IFU.cpp
-  IDU.cpp
-  OOO.cpp
-  SimulatorRunner.cpp
 )
 
-target_include_directories(vfsim_tadd_tmul_trace PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}
-  ${CMAKE_CURRENT_SOURCE_DIR}/..
-)
-
-target_compile_features(vfsim_tadd_tmul_trace PRIVATE cxx_std_17)
-
-target_compile_definitions(vfsim_tadd_tmul_trace PRIVATE
-  VFSIM_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+target_link_libraries(vfsim_tadd_tmul_trace PRIVATE
+  vfsim::native_core
 )
 
 set_target_properties(vfsim_tadd_tmul_trace PROPERTIES
@@ -81,26 +89,10 @@ add_test(NAME vfsim_tadd_tmul_trace
 
 add_executable(vfsim_native_json_runner
   VfsimNativeJsonRunner.cpp
-  Json.cpp
-  ParamDB.cpp
-  ISATraits.cpp
-  ProgramAnalysis.cpp
-  ProgramFlatten.cpp
-  IFU.cpp
-  IDU.cpp
-  OOO.cpp
-  SimulatorRunner.cpp
 )
 
-target_include_directories(vfsim_native_json_runner PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}
-  ${CMAKE_CURRENT_SOURCE_DIR}/..
-)
-
-target_compile_features(vfsim_native_json_runner PRIVATE cxx_std_17)
-
-target_compile_definitions(vfsim_native_json_runner PRIVATE
-  VFSIM_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+target_link_libraries(vfsim_native_json_runner PRIVATE
+  vfsim::native_core
 )
 
 set_target_properties(vfsim_native_json_runner PROPERTIES
