@@ -58,6 +58,7 @@ if(VFSIM_ENABLE_MLIR_PLANNER)
 
   add_library(vfsim_ir_planner STATIC
     IRPlanner.cpp
+    TileOpTemplates.cpp
   )
 
   add_library(vfsim::ir_planner ALIAS vfsim_ir_planner)
