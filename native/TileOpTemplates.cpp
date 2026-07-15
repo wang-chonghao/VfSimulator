@@ -30,6 +30,14 @@ struct ElementwiseTemplate {
   bool scalarAsVector = false;
 };
 
+struct TileShapeInfo {
+  int64_t rows = 0;
+  int64_t cols = 0;
+  std::string dtype = "fp32";
+
+  bool valid() const { return rows > 0 && cols > 0; }
+};
+
 static std::string stripPtoPrefix(llvm::StringRef opName) {
   if (opName.starts_with("pto."))
     return opName.drop_front(4).str();
@@ -83,12 +91,13 @@ static std::string typeToString(mlir::Type type) {
   return os.str();
 }
 
-static std::optional<int64_t> parseStaticTileElements(mlir::Type type) {
+static std::optional<TileShapeInfo> parseStaticTileShape(mlir::Type type) {
   const std::string text = typeToString(type);
   const std::size_t xPos = text.find('x');
-  const std::size_t elemPos = text.find("xf", xPos == std::string::npos ? 0 : xPos);
-  if (xPos == std::string::npos || elemPos == std::string::npos ||
-      elemPos <= xPos + 1)
+  const std::size_t dtypeSep =
+      text.find('x', xPos == std::string::npos ? 0 : xPos + 1);
+  if (xPos == std::string::npos || dtypeSep == std::string::npos ||
+      dtypeSep <= xPos + 1)
     return std::nullopt;
 
   std::size_t firstStart = xPos;
@@ -99,7 +108,7 @@ static std::optional<int64_t> parseStaticTileElements(mlir::Type type) {
     return std::nullopt;
 
   const std::string rowsText = text.substr(firstStart, xPos - firstStart);
-  const std::string colsText = text.substr(xPos + 1, elemPos - (xPos + 1));
+  const std::string colsText = text.substr(xPos + 1, dtypeSep - (xPos + 1));
   if (rowsText.empty() || colsText.empty())
     return std::nullopt;
   if (!llvm::all_of(rowsText, [](char c) {
@@ -114,16 +123,22 @@ static std::optional<int64_t> parseStaticTileElements(mlir::Type type) {
   const int64_t cols = std::stoll(colsText);
   if (rows <= 0 || cols <= 0)
     return std::nullopt;
-  return rows * cols;
+  TileShapeInfo info;
+  info.rows = rows;
+  info.cols = cols;
+  if (text.find("xf16") != std::string::npos ||
+      text.find("xbf16") != std::string::npos) {
+    info.dtype = "fp16";
+  } else {
+    info.dtype = "fp32";
+  }
+  return info;
 }
 
-static std::string inferDType(mlir::Type type) {
-  const std::string text = typeToString(type);
-  if (text.find("xf16") != std::string::npos)
-    return "fp16";
-  if (text.find("xbf16") != std::string::npos)
-    return "fp16";
-  return "fp32";
+static int64_t lanesForDType(const std::string &dtype) {
+  if (dtype == "fp16")
+    return 128;
+  return 64;
 }
 
 static std::string nextVreg(unsigned &nextId) {
@@ -164,6 +179,17 @@ static void materializeExternalStores(
   }
 }
 
+static ProgramNode makeLoopNode(std::string name, int64_t iters,
+                                std::string unroll,
+                                std::vector<ProgramNode> body) {
+  ProgramLoopNode loop;
+  loop.name = std::move(name);
+  loop.iters = std::to_string(iters);
+  loop.unroll = std::move(unroll);
+  loop.body = std::move(body);
+  return ProgramNode::makeLoop(std::move(loop));
+}
+
 } // namespace
 
 bool isSupportedElementwiseTileOp(llvm::StringRef opName) {
@@ -171,7 +197,7 @@ bool isSupportedElementwiseTileOp(llvm::StringRef opName) {
 }
 
 LoweredTileGroupProgram
-lowerElementwiseTileGroup(llvm::ArrayRef<PlannedTileOpIR> orderedOps) {
+lowerTileGroupWithPerformanceTemplates(llvm::ArrayRef<PlannedTileOpIR> orderedOps) {
   LoweredTileGroupProgram lowered;
   if (orderedOps.empty()) {
     lowered.unsupportedReason = "empty fusion group";
@@ -181,8 +207,10 @@ lowerElementwiseTileGroup(llvm::ArrayRef<PlannedTileOpIR> orderedOps) {
   llvm::DenseMap<mlir::Value, std::string> valueToVreg;
   llvm::DenseMap<mlir::Value, unsigned> internalUseCount;
   llvm::SmallVector<mlir::Value, 8> producedValues;
+  TileShapeInfo loopShape;
   unsigned nextVregId = 0;
   unsigned nextMemId = 0;
+  std::vector<ProgramNode> innerBody;
 
   for (const PlannedTileOpIR &tileOp : orderedOps) {
     const auto templ =
@@ -219,7 +247,7 @@ lowerElementwiseTileGroup(llvm::ArrayRef<PlannedTileOpIR> orderedOps) {
             tileOp.op->getName().getStringRef().str();
         return lowered;
       }
-      srcRegs.push_back(materializeInput(operand, lowered.body, valueToVreg,
+      srcRegs.push_back(materializeInput(operand, innerBody, valueToVreg,
                                          nextVregId, nextMemId));
     }
 
@@ -228,7 +256,7 @@ lowerElementwiseTileGroup(llvm::ArrayRef<PlannedTileOpIR> orderedOps) {
         srcRegs.push_back("scalar");
       } else {
         const std::string scalarReg = nextVreg(nextVregId);
-        lowered.body.push_back(makeInstNode("VBR", {scalarReg}, {"scalar"}));
+        innerBody.push_back(makeInstNode("VBR", {scalarReg}, {"scalar"}));
         srcRegs.push_back(scalarReg);
       }
     }
@@ -241,26 +269,50 @@ lowerElementwiseTileGroup(llvm::ArrayRef<PlannedTileOpIR> orderedOps) {
       return lowered;
     }
 
-    if (lowered.tripCount == 0) {
-      auto elements = parseStaticTileElements(dstValue.getType());
-      if (!elements) {
+    if (!loopShape.valid()) {
+      auto shape = parseStaticTileShape(dstValue.getType());
+      if (!shape) {
         lowered.unsupportedReason =
-            "cannot infer static trip count for tile op: " +
+            "cannot infer static loop shape for tile op: " +
             tileOp.op->getName().getStringRef().str();
         return lowered;
       }
-      lowered.tripCount = (*elements + 63) / 64;
-      lowered.dtype = inferDType(dstValue.getType());
+      loopShape = *shape;
+      lowered.dtype = loopShape.dtype;
+      const int64_t lanes = lanesForDType(lowered.dtype);
+      const int64_t colTripCount = (loopShape.cols + lanes - 1) / lanes;
+      lowered.unrollTripCount =
+          colTripCount == 1 ? loopShape.rows : colTripCount;
     }
 
     const std::string dstReg = nextVreg(nextVregId);
-    lowered.body.push_back(makeInstNode(templ->microOp.str(), {dstReg}, srcRegs));
+    innerBody.push_back(makeInstNode(templ->microOp.str(), {dstReg}, srcRegs));
     valueToVreg[dstValue] = dstReg;
     producedValues.push_back(dstValue);
   }
 
   materializeExternalStores(producedValues, internalUseCount, valueToVreg,
-                            lowered.body, nextMemId);
+                            innerBody, nextMemId);
+  if (!loopShape.valid() || lowered.unrollTripCount <= 0) {
+    lowered.unsupportedReason = "cannot construct loop structure";
+    return lowered;
+  }
+
+  const int64_t lanes = lanesForDType(lowered.dtype);
+  const int64_t colTripCount = (loopShape.cols + lanes - 1) / lanes;
+  if (colTripCount == 1) {
+    lowered.program.push_back(makeLoopNode("tile_flattened_row_loop",
+                                           loopShape.rows,
+                                           "vfsim_inner_unroll",
+                                           std::move(innerBody)));
+    return lowered;
+  }
+
+  std::vector<ProgramNode> rowBody;
+  rowBody.push_back(makeLoopNode("tile_col_loop", colTripCount,
+                                 "vfsim_inner_unroll", std::move(innerBody)));
+  lowered.program.push_back(
+      makeLoopNode("tile_row_loop", loopShape.rows, "1", std::move(rowBody)));
   return lowered;
 }
 

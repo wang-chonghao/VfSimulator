@@ -28,8 +28,8 @@ struct PlannedTileOpIR {
 };
 
 struct LoweredTileGroupProgram {
-  std::vector<ProgramNode> body;
-  int64_t tripCount = 0;
+  std::vector<ProgramNode> program;
+  int64_t unrollTripCount = 0;
   std::string dtype = "fp32";
   std::string unsupportedReason;
 
@@ -39,7 +39,7 @@ struct LoweredTileGroupProgram {
 bool isSupportedElementwiseTileOp(llvm::StringRef opName);
 
 LoweredTileGroupProgram
-lowerElementwiseTileGroup(llvm::ArrayRef<PlannedTileOpIR> orderedOps);
+lowerTileGroupWithPerformanceTemplates(llvm::ArrayRef<PlannedTileOpIR> orderedOps);
 
 } // namespace vfsim
 

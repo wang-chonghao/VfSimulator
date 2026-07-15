@@ -62,16 +62,6 @@ static void dumpPlannerGroups(
   }
 }
 
-static vfsim::ProgramNode makeLoopNode(int64_t tripCount, unsigned unroll,
-                                       std::vector<vfsim::ProgramNode> body) {
-  vfsim::ProgramLoopNode loop;
-  loop.iters = std::to_string(tripCount);
-  loop.unroll = std::to_string(unroll);
-  loop.name = "vfsim_fusion_loop";
-  loop.body = std::move(body);
-  return vfsim::ProgramNode::makeLoop(std::move(loop));
-}
-
 static int countTopLevelLoops(const std::vector<vfsim::ProgramNode> &program) {
   int count = 0;
   for (const auto &node : program)
@@ -96,15 +86,15 @@ static std::optional<int64_t>
 simulateCandidate(const vfsim::LoweredTileGroupProgram &lowered,
                   const vfsim::ParamDB &db, unsigned unroll) {
   try {
-    std::vector<vfsim::ProgramNode> program;
-    program.push_back(makeLoopNode(lowered.tripCount, unroll, lowered.body));
+    vfsim::ProgramAnalysis::ParamMap params;
+    params.emplace("vfsim_inner_unroll", static_cast<int64_t>(unroll));
 
-    vfsim::ProgramAnalysis analysis;
-    const auto loopBounds = analysis.inferTopBlockLoopBounds(program);
-    vfsim::ProgramFlatten flattener;
-    const auto &linear = flattener.flatten(program);
+    vfsim::ProgramAnalysis analysis(params);
+    const auto loopBounds = analysis.inferTopBlockLoopBounds(lowered.program);
+    vfsim::ProgramFlatten flattener(params);
+    const auto &linear = flattener.flatten(lowered.program);
 
-    const int topBlocks = countTopLevelLoops(program);
+    const int topBlocks = countTopLevelLoops(lowered.program);
     vfsim::IFU ifu(linear, {}, &db, loopBounds, topBlocks, lowered.dtype);
     vfsim::IDU idu(db.uarch(), db, {}, {}, topBlocks, loopBounds,
                    lowered.dtype);
@@ -122,16 +112,17 @@ static std::optional<unsigned>
 chooseBestUnroll(const vfsim::LoweredTileGroupProgram &lowered,
                  const vfsim::ParamDB &db, unsigned maxUnroll,
                  bool dumpCandidates) {
-  if (lowered.tripCount <= 0)
+  if (lowered.unrollTripCount <= 0)
     return std::nullopt;
 
   std::optional<unsigned> bestUnroll;
   int64_t bestCycles = std::numeric_limits<int64_t>::max();
   for (unsigned unroll :
-       enumerateUnrollCandidates(lowered.tripCount, maxUnroll)) {
+       enumerateUnrollCandidates(lowered.unrollTripCount, maxUnroll)) {
     std::optional<int64_t> cycles = simulateCandidate(lowered, db, unroll);
     if (dumpCandidates) {
-      llvm::errs() << "  unroll=" << unroll << " trip=" << lowered.tripCount
+      llvm::errs() << "  unroll=" << unroll
+                   << " trip=" << lowered.unrollTripCount
                    << " dtype=" << lowered.dtype << " cycles=";
       if (cycles)
         llvm::errs() << *cycles;
@@ -193,7 +184,8 @@ mlir::LogicalResult planTileFusionIR(mlir::Operation *candidateIR,
       return lhs.order < rhs.order;
     });
 
-    LoweredTileGroupProgram lowered = lowerElementwiseTileGroup(ordered);
+    LoweredTileGroupProgram lowered =
+        lowerTileGroupWithPerformanceTemplates(ordered);
     if (!lowered.supported())
       continue;
 
