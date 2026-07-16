@@ -26,6 +26,9 @@
 #include <limits>
 #include <optional>
 #include <filesystem>
+#include <cctype>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace {
 
@@ -41,13 +44,16 @@ static int64_t getI64Attr(mlir::Operation *op, llvm::StringRef name,
 }
 
 static void dumpPlannerGroups(
-    const llvm::DenseMap<int64_t, llvm::SmallVector<vfsim::PlannedTileOpIR, 8>> &groups,
-    unsigned selectedUnroll) {
+    const llvm::DenseMap<int64_t, llvm::SmallVector<vfsim::PlannedTileOpIR, 8>> &groups) {
   llvm::errs() << "VfSim IR planner: " << groups.size()
-               << " fusion group(s), selected unroll=" << selectedUnroll
-               << "\n";
+               << " fusion group(s)\n";
   for (const auto &entry : groups) {
-    llvm::errs() << "  group " << entry.first << ":";
+    int64_t selectedUnroll =
+        entry.second.empty()
+            ? -1
+            : getI64Attr(entry.second.front().op, kFusionUnrollAttr, -1);
+    llvm::errs() << "  group " << entry.first
+                 << " selected_unroll=" << selectedUnroll << ":";
     llvm::SmallVector<vfsim::PlannedTileOpIR, 8> ordered(entry.second.begin(),
                                                          entry.second.end());
     llvm::sort(ordered, [](const vfsim::PlannedTileOpIR &lhs,
@@ -82,6 +88,8 @@ static std::vector<unsigned> enumerateUnrollCandidates(int64_t tripCount,
   return candidates;
 }
 
+static void normalizeVregLiveRanges(std::vector<vfsim::ProgramNode> &program);
+
 static std::optional<int64_t>
 simulateCandidate(const vfsim::LoweredTileGroupProgram &lowered,
                   const vfsim::ParamDB &db, unsigned unroll) {
@@ -89,13 +97,16 @@ simulateCandidate(const vfsim::LoweredTileGroupProgram &lowered,
     vfsim::ProgramAnalysis::ParamMap params;
     params.emplace("vfsim_inner_unroll", static_cast<int64_t>(unroll));
 
-    vfsim::ProgramAnalysis analysis(params);
-    const auto loopBounds = analysis.inferTopBlockLoopBounds(lowered.program);
-    vfsim::ProgramFlatten flattener(params);
-    const auto &linear = flattener.flatten(lowered.program);
+    std::vector<vfsim::ProgramNode> program = lowered.program;
+    normalizeVregLiveRanges(program);
 
-    const int topBlocks = countTopLevelLoops(lowered.program);
-    vfsim::IFU ifu(linear, {}, &db, loopBounds, topBlocks, lowered.dtype);
+    vfsim::ProgramAnalysis analysis(params);
+    const auto loopBounds = analysis.inferTopBlockLoopBounds(program);
+    vfsim::ProgramFlatten flattener(params);
+    const auto &linear = flattener.flatten(program);
+
+    const int topBlocks = countTopLevelLoops(program);
+    vfsim::IFU ifu(linear, params, &db, loopBounds, topBlocks, lowered.dtype);
     vfsim::IDU idu(db.uarch(), db, {}, {}, topBlocks, loopBounds,
                    lowered.dtype);
     vfsim::OoOCoreMainline ooo(db.uarch(), db, lowered.dtype);
@@ -105,6 +116,205 @@ simulateCandidate(const vfsim::LoweredTileGroupProgram &lowered,
     return result.vfEndCycle;
   } catch (...) {
     return std::nullopt;
+  }
+}
+
+struct VregVersion {
+  std::string name;
+  int64_t generation = 0;
+};
+
+static std::string makeVersionKey(const VregVersion &version) {
+  return version.name + "#" + std::to_string(version.generation);
+}
+
+static std::pair<int64_t, std::string> vregSortKey(const std::string &name) {
+  if (name.size() <= 1)
+    return {std::numeric_limits<int64_t>::max(), name};
+  int64_t value = 0;
+  for (size_t i = 1; i < name.size(); ++i) {
+    if (!std::isdigit(static_cast<unsigned char>(name[i])))
+      return {std::numeric_limits<int64_t>::max(), name};
+    value = value * 10 + static_cast<int64_t>(name[i] - '0');
+  }
+  return {value, name};
+}
+
+static bool containsSlot(const std::vector<std::string> &slots,
+                         llvm::StringRef slot) {
+  return llvm::is_contained(slots, slot);
+}
+
+static std::string nextFreshVreg(const std::vector<std::string> &slotPool) {
+  std::unordered_set<std::string> used(slotPool.begin(), slotPool.end());
+  int64_t maxIndex = -1;
+  for (const std::string &name : slotPool) {
+    auto key = vregSortKey(name);
+    if (key.first != std::numeric_limits<int64_t>::max())
+      maxIndex = std::max(maxIndex, key.first);
+  }
+
+  for (int64_t candidate = maxIndex + 1;; ++candidate) {
+    std::string name = "v" + std::to_string(candidate);
+    if (!used.count(name))
+      return name;
+  }
+}
+
+static void normalizeFlatLoopVregs(std::vector<vfsim::ProgramNode> &body) {
+  std::unordered_map<std::string, VregVersion> currentVersionByVreg;
+  std::unordered_map<std::string, int64_t> versionCounter;
+  std::vector<std::vector<std::optional<std::string>>> srcVersions(body.size());
+  std::vector<std::vector<std::optional<std::string>>> dstVersions(body.size());
+  std::unordered_map<std::string, int64_t> lastUse;
+
+  for (size_t idx = 0; idx < body.size(); ++idx) {
+    vfsim::ProgramInstNode &inst = body[idx].inst;
+    srcVersions[idx].reserve(inst.src.size());
+    for (const std::string &src : inst.src) {
+      if (!vfsim::ProgramAnalysis::isVregName(src)) {
+        srcVersions[idx].push_back(std::nullopt);
+        continue;
+      }
+      auto it = currentVersionByVreg.find(src);
+      if (it == currentVersionByVreg.end()) {
+        srcVersions[idx].push_back(std::nullopt);
+        continue;
+      }
+      std::string key = makeVersionKey(it->second);
+      srcVersions[idx].push_back(key);
+      lastUse[key] = static_cast<int64_t>(idx);
+    }
+
+    dstVersions[idx].reserve(inst.dst.size());
+    for (const std::string &dst : inst.dst) {
+      if (!vfsim::ProgramAnalysis::isVregName(dst)) {
+        dstVersions[idx].push_back(std::nullopt);
+        continue;
+      }
+      int64_t &generation = versionCounter[dst];
+      ++generation;
+      VregVersion version{dst, generation};
+      currentVersionByVreg[dst] = version;
+      dstVersions[idx].push_back(makeVersionKey(version));
+    }
+  }
+
+  std::unordered_map<std::string, std::string> currentSlotByVreg;
+  std::unordered_map<std::string, std::string> slotOfVersion;
+  std::unordered_map<std::string, std::optional<std::string>> slotOccupant;
+  std::vector<std::string> slotPool;
+
+  for (size_t idx = 0; idx < body.size(); ++idx) {
+    vfsim::ProgramInstNode &inst = body[idx].inst;
+    std::vector<std::string> newSrcs = inst.src;
+
+    for (size_t pos = 0; pos < inst.src.size(); ++pos) {
+      const std::string &src = inst.src[pos];
+      if (!vfsim::ProgramAnalysis::isVregName(src))
+        continue;
+
+      std::string slot = src;
+      const std::optional<std::string> &version =
+          pos < srcVersions[idx].size() ? srcVersions[idx][pos] : std::nullopt;
+      if (version) {
+        auto slotIt = slotOfVersion.find(*version);
+        if (slotIt != slotOfVersion.end()) {
+          slot = slotIt->second;
+        } else {
+          size_t hash = version->find('#');
+          std::string versionName =
+              hash == std::string::npos ? src : version->substr(0, hash);
+          auto curIt = currentSlotByVreg.find(versionName);
+          slot = curIt == currentSlotByVreg.end() ? versionName
+                                                  : curIt->second;
+        }
+      } else {
+        auto curIt = currentSlotByVreg.find(src);
+        if (curIt != currentSlotByVreg.end())
+          slot = curIt->second;
+      }
+
+      newSrcs[pos] = slot;
+    }
+
+    std::vector<std::string> newDsts = inst.dst;
+    if (inst.dst.size() == 1 &&
+        vfsim::ProgramAnalysis::isVregName(inst.dst.front())) {
+      const std::string &dstName = inst.dst.front();
+      const std::optional<std::string> &dstVersion =
+          dstVersions[idx].empty() ? std::nullopt : dstVersions[idx].front();
+      if (dstVersion) {
+        std::vector<std::string> candidateSlots;
+        for (const std::string &slot : slotPool) {
+          auto occIt = slotOccupant.find(slot);
+          bool reusable = occIt == slotOccupant.end() || !occIt->second;
+          if (!reusable) {
+            auto lastIt = lastUse.find(*occIt->second);
+            int64_t last = lastIt == lastUse.end() ? -1 : lastIt->second;
+            reusable = last < static_cast<int64_t>(idx);
+          }
+          if (reusable)
+            candidateSlots.push_back(slot);
+        }
+
+        for (size_t pos = 0; pos < srcVersions[idx].size(); ++pos) {
+          const std::optional<std::string> &version = srcVersions[idx][pos];
+          if (!version)
+            continue;
+          auto lastIt = lastUse.find(*version);
+          if (lastIt == lastUse.end() ||
+              lastIt->second != static_cast<int64_t>(idx))
+            continue;
+          if (pos < newSrcs.size() &&
+              !containsSlot(candidateSlots, newSrcs[pos]))
+            candidateSlots.push_back(newSrcs[pos]);
+        }
+
+        std::string chosenSlot;
+        if (newSrcs.size() == 1 && containsSlot(candidateSlots, newSrcs[0])) {
+          chosenSlot = newSrcs[0];
+        } else if (!candidateSlots.empty()) {
+          llvm::sort(candidateSlots, [](const std::string &lhs,
+                                        const std::string &rhs) {
+            return vregSortKey(lhs) < vregSortKey(rhs);
+          });
+          chosenSlot = candidateSlots.front();
+        } else if (!containsSlot(slotPool, dstName)) {
+          chosenSlot = dstName;
+          slotPool.push_back(chosenSlot);
+        } else {
+          chosenSlot = nextFreshVreg(slotPool);
+          slotPool.push_back(chosenSlot);
+        }
+
+        if (!containsSlot(slotPool, chosenSlot))
+          slotPool.push_back(chosenSlot);
+        slotOfVersion[*dstVersion] = chosenSlot;
+        currentSlotByVreg[dstName] = chosenSlot;
+        slotOccupant[chosenSlot] = *dstVersion;
+        newDsts[0] = chosenSlot;
+      }
+    }
+
+    inst.src = std::move(newSrcs);
+    inst.dst = std::move(newDsts);
+  }
+}
+
+static void normalizeVregLiveRanges(std::vector<vfsim::ProgramNode> &program) {
+  for (vfsim::ProgramNode &node : program) {
+    if (node.kind != vfsim::ProgramNode::Kind::Loop || !node.loop)
+      continue;
+
+    const bool flatInstBody = llvm::all_of(node.loop->body, [](const auto &op) {
+      return op.kind == vfsim::ProgramNode::Kind::Inst;
+    });
+    if (flatInstBody) {
+      normalizeFlatLoopVregs(node.loop->body);
+      continue;
+    }
+    normalizeVregLiveRanges(node.loop->body);
   }
 }
 
@@ -202,7 +412,7 @@ mlir::LogicalResult planTileFusionIR(mlir::Operation *candidateIR,
   }
 
   if (options.dumpCandidates)
-    dumpPlannerGroups(groups, options.maxUnroll);
+    dumpPlannerGroups(groups);
 
   return mlir::success();
 }
