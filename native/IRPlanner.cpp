@@ -34,7 +34,10 @@ namespace {
 
 constexpr llvm::StringLiteral kFusionGroupIdAttr = "pto.fusion.group_id";
 constexpr llvm::StringLiteral kFusionOrderAttr = "pto.fusion.order";
-constexpr llvm::StringLiteral kFusionUnrollAttr = "pto.fusion.unroll";
+constexpr llvm::StringLiteral kFusionRowUnrollAttr =
+    "pto.fusion.row_unroll_factor";
+constexpr llvm::StringLiteral kFusionColUnrollAttr =
+    "pto.fusion.col_unroll_factor";
 
 static int64_t getI64Attr(mlir::Operation *op, llvm::StringRef name,
                           int64_t fallback = 0) {
@@ -48,12 +51,17 @@ static void dumpPlannerGroups(
   llvm::errs() << "VfSim IR planner: " << groups.size()
                << " fusion group(s)\n";
   for (const auto &entry : groups) {
-    int64_t selectedUnroll =
+    int64_t rowUnroll =
         entry.second.empty()
             ? -1
-            : getI64Attr(entry.second.front().op, kFusionUnrollAttr, -1);
+            : getI64Attr(entry.second.front().op, kFusionRowUnrollAttr, -1);
+    int64_t colUnroll =
+        entry.second.empty()
+            ? -1
+            : getI64Attr(entry.second.front().op, kFusionColUnrollAttr, -1);
     llvm::errs() << "  group " << entry.first
-                 << " selected_unroll=" << selectedUnroll << ":";
+                 << " row_unroll=" << rowUnroll
+                 << " col_unroll=" << colUnroll << ":";
     llvm::SmallVector<vfsim::PlannedTileOpIR, 8> ordered(entry.second.begin(),
                                                          entry.second.end());
     llvm::sort(ordered, [](const vfsim::PlannedTileOpIR &lhs,
@@ -404,11 +412,27 @@ mlir::LogicalResult planTileFusionIR(mlir::Operation *candidateIR,
                          options.dumpCandidates);
     if (!selectedUnroll)
       continue;
-    auto unrollAttr = mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
-                                             *selectedUnroll);
+    int64_t rowUnroll = 1;
+    int64_t colUnroll = 1;
+    switch (lowered.unrollDimension) {
+    case UnrollLoopDimension::Row:
+      rowUnroll = *selectedUnroll;
+      break;
+    case UnrollLoopDimension::Col:
+      colUnroll = *selectedUnroll;
+      break;
+    case UnrollLoopDimension::None:
+      continue;
+    }
+    auto rowUnrollAttr = mlir::IntegerAttr::get(
+        mlir::IntegerType::get(ctx, 64), rowUnroll);
+    auto colUnrollAttr = mlir::IntegerAttr::get(
+        mlir::IntegerType::get(ctx, 64), colUnroll);
 
-    for (const PlannedTileOpIR &tileOp : ordered)
-      tileOp.op->setAttr(kFusionUnrollAttr, unrollAttr);
+    for (const PlannedTileOpIR &tileOp : ordered) {
+      tileOp.op->setAttr(kFusionRowUnrollAttr, rowUnrollAttr);
+      tileOp.op->setAttr(kFusionColUnrollAttr, colUnrollAttr);
+    }
   }
 
   if (options.dumpCandidates)

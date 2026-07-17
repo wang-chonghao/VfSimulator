@@ -27,9 +27,16 @@ struct PlannedTileOpIR {
   int64_t order = 0;
 };
 
+enum class UnrollLoopDimension {
+  None,
+  Row,
+  Col,
+};
+
 struct LoweredTileGroupProgram {
   std::vector<ProgramNode> program;
   int64_t unrollTripCount = 0;
+  UnrollLoopDimension unrollDimension = UnrollLoopDimension::None;
   std::string dtype = "fp32";
   std::string unsupportedReason;
 

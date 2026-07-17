@@ -281,8 +281,13 @@ lowerTileGroupWithPerformanceTemplates(llvm::ArrayRef<PlannedTileOpIR> orderedOp
       lowered.dtype = loopShape.dtype;
       const int64_t lanes = lanesForDType(lowered.dtype);
       const int64_t colTripCount = (loopShape.cols + lanes - 1) / lanes;
-      lowered.unrollTripCount =
-          colTripCount == 1 ? loopShape.rows : colTripCount;
+      if (colTripCount == 1) {
+        lowered.unrollTripCount = loopShape.rows;
+        lowered.unrollDimension = UnrollLoopDimension::Row;
+      } else {
+        lowered.unrollTripCount = colTripCount;
+        lowered.unrollDimension = UnrollLoopDimension::Col;
+      }
     }
 
     const std::string dstReg = nextVreg(nextVregId);
