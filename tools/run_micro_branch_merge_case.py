@@ -74,7 +74,7 @@ def write_trace(case_dir: Path, I: int, U: int) -> Path:
                 "iters": "I",
                 "unroll": "U",
                 "body": [
-                    {"type": "inst", "op": "VLD", "dst": ["V0"], "src": ["memA"]},
+                    {"type": "inst", "op": "VLDS", "dst": ["V0"], "src": ["memA"]},
                     {"type": "inst", "op": "VMULS", "dst": ["V1"], "src": ["V0"]},
                     {"type": "inst", "op": "VEXP", "dst": ["V2"], "src": ["V1"]},
                     {"type": "inst", "op": "VADDS", "dst": ["V2"], "src": ["V2"]},
@@ -82,7 +82,7 @@ def write_trace(case_dir: Path, I: int, U: int) -> Path:
                     {"type": "inst", "op": "VADDS", "dst": ["V3"], "src": ["V3"]},
                     {"type": "inst", "op": "VDIV", "dst": ["V4"], "src": ["V3", "V2"]},
                     {"type": "inst", "op": "VMUL", "dst": ["V5"], "src": ["V0", "V4"]},
-                    {"type": "inst", "op": "VST", "dst": ["memB"], "src": ["V5"]},
+                    {"type": "inst", "op": "VSTS", "dst": ["memB"], "src": ["V5"]},
                 ],
             }
         ],

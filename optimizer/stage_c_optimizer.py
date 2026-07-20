@@ -296,9 +296,9 @@ def _generate_trace_with_reorder(
                         incoming[d] = (pred_id, mem_map[(pred_id, d)])
 
         for reg, (_pred_id, mem_name) in sorted(incoming_reload.items()):
-            body.append({"type": "inst", "op": "VLD", "dst": [reg], "src": [mem_name]})
+            body.append({"type": "inst", "op": "VLDS", "dst": [reg], "src": [mem_name]})
         for reg, (_pred_id, mem_name) in sorted(incoming.items()):
-            body.append({"type": "inst", "op": "VLD", "dst": [reg], "src": [mem_name]})
+            body.append({"type": "inst", "op": "VLDS", "dst": [reg], "src": [mem_name]})
 
         for nid in ordered_node_ids:
             node = dag.nodes[nid]
@@ -318,7 +318,7 @@ def _generate_trace_with_reorder(
                 mem_name = mem_map.get((nid, d))
                 if mem_name is None or (nid, d) in outgoing_added:
                     continue
-                body.append({"type": "inst", "op": "VST", "dst": [mem_name], "src": [d]})
+                body.append({"type": "inst", "op": "VSTS", "dst": [mem_name], "src": [d]})
                 outgoing_added.add((nid, d))
 
         program.append({"type": "loop", "iters": "I", "unroll": 1, "body": body})
@@ -332,7 +332,7 @@ def _simulate_trace(trace_obj: Dict[str, Any], pdb: ParamDB, ooo_model: str, dty
     program = trace_obj.get("program", [])
     linear = Flattener(params).flatten(program)
     top_block_loop_bounds = infer_top_block_loop_bounds(program, params)
-    ifu = IFUUnroll(linear, params)
+    ifu = IFUUnroll(linear, params, pdb=pdb, dtype=dtype)
     uarch = dict(pdb.get_uarch())
     uarch["ooo_model"] = ooo_model
 
@@ -343,6 +343,7 @@ def _simulate_trace(trace_obj: Dict[str, Any], pdb: ParamDB, ooo_model: str, dty
         loop_bounds=top_block_loop_bounds.get(0, []),
         total_top_blocks=len(top_block_loop_bounds),
         top_block_loop_bounds=top_block_loop_bounds,
+        dtype=dtype,
     )
     ooo = create_ooo_core(uarch, pdb, dtype=dtype)
     cycle = 0

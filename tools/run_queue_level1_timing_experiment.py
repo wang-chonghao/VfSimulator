@@ -103,9 +103,9 @@ def run_once(
     loop_bounds = top_block_loop_bounds.get(0, [])
 
     linear = Flattener(params).flatten(program)
-    ifu = IFUUnroll(linear, params)
 
     db = ParamDB(base_dir=base_dir)
+    ifu = IFUUnroll(linear, params, pdb=db, dtype=dtype)
     uarch = dict(db.get_uarch())
     uarch["ooo_model"] = ooo_model
     uarch["consumer_done_release_delay"] = 0
@@ -119,6 +119,7 @@ def run_once(
         loop_bounds=loop_bounds,
         total_top_blocks=total_top_blocks,
         top_block_loop_bounds=top_block_loop_bounds,
+        dtype=dtype,
         body_open_offset=body_open_offset,
     )
     ooo = create_ooo_core(uarch, db, dtype=dtype)

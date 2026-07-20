@@ -284,9 +284,9 @@ def generate_partitioned_trace_with_slot_reuse(
                         incoming[d] = (pred_id, mem_map[(pred_id, d)])
 
         for reg, (_pred_id, mem_name) in sorted(incoming_reload.items()):
-            body.append({"type": "inst", "op": "VLD", "dst": [reg], "src": [mem_name]})
+            body.append({"type": "inst", "op": "VLDS", "dst": [reg], "src": [mem_name]})
         for reg, (_pred_id, mem_name) in sorted(incoming.items()):
-            body.append({"type": "inst", "op": "VLD", "dst": [reg], "src": [mem_name]})
+            body.append({"type": "inst", "op": "VLDS", "dst": [reg], "src": [mem_name]})
 
         for nid in ordered_node_ids:
             node = dag.nodes[nid]
@@ -306,7 +306,7 @@ def generate_partitioned_trace_with_slot_reuse(
                 mem_name = mem_map.get((nid, d))
                 if mem_name is None or (nid, d) in outgoing_added:
                     continue
-                body.append({"type": "inst", "op": "VST", "dst": [mem_name], "src": [d]})
+                body.append({"type": "inst", "op": "VSTS", "dst": [mem_name], "src": [d]})
                 outgoing_added.add((nid, d))
 
         program.append({"type": "loop", "iters": "I", "unroll": 1, "body": body})
@@ -377,7 +377,8 @@ class SplitOnlyOptimizer:
         program = trace_obj.get("program", [])
         linear = Flattener(params).flatten(program)
         top_block_loop_bounds = infer_top_block_loop_bounds(program, params)
-        ifu = IFUUnroll(linear, params)
+        dtype = trace_obj.get("dtype", self.dtype)
+        ifu = IFUUnroll(linear, params, pdb=self.db, dtype=dtype)
         idu = IDU(
             self.uarch,
             self.db,
@@ -385,8 +386,9 @@ class SplitOnlyOptimizer:
             loop_bounds=top_block_loop_bounds.get(0, []),
             total_top_blocks=len(top_block_loop_bounds),
             top_block_loop_bounds=top_block_loop_bounds,
+            dtype=dtype,
         )
-        ooo = create_ooo_core(self.uarch, self.db, dtype=trace_obj.get("dtype", self.dtype))
+        ooo = create_ooo_core(self.uarch, self.db, dtype=dtype)
         cycle = 0
         max_cycles = int(params.get("max_cycles", 2_000_000))
         while cycle < max_cycles:

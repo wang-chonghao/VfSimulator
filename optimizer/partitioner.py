@@ -427,7 +427,7 @@ class JsonGenerator:
                 mem_name = f"mem_inter_{reg}"
                 body_insts.append({
                     "type": "inst",
-                    "op": "VLD",
+                    "op": "VLDS",
                     "dst": [reg],
                     "src": [mem_name]
                 })
@@ -480,7 +480,7 @@ class JsonGenerator:
                 mem_name = f"mem_inter_{reg}"
                 body_insts.append({
                     "type": "inst",
-                    "op": "VST",
+                    "op": "VSTS",
                     "dst": [mem_name],
                     "src": [reg]
                 })

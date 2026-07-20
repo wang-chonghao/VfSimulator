@@ -41,9 +41,9 @@ def write_trace(case_dir: Path, I: int, U: int) -> Path:
                 "iters": "I",
                 "unroll": "U",
                 "body": [
-                    {"type": "inst", "op": "VLD", "dst": ["V0"], "src": ["memA"]},
+                    {"type": "inst", "op": "VLDS", "dst": ["V0"], "src": ["memA"]},
                     {"type": "inst", "op": "VADDS", "dst": ["V1"], "src": ["V0"]},
-                    {"type": "inst", "op": "VST", "dst": ["memB"], "src": ["V1"]},
+                    {"type": "inst", "op": "VSTS", "dst": ["memB"], "src": ["V1"]},
                 ],
             }
         ],

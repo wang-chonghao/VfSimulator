@@ -37,7 +37,7 @@ def generate_trace(branch_width: int, segments: int, trip_count: int) -> dict:
 
         for idx, reg in enumerate(regs):
             dst_mem = f"mem_out_{idx}" if seg == segments - 1 else f"mem_inter_{idx}"
-            body.append({"type": "inst", "op": "VST", "dst": [dst_mem], "src": [reg]})
+            body.append({"type": "inst", "op": "VSTS", "dst": [dst_mem], "src": [reg]})
 
         program.append({"type": "loop", "iters": "I", "unroll": 1, "body": body})
 

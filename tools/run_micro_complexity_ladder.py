@@ -12,10 +12,10 @@ CASES = [
     {
         "name": "ladder_ld_vexp_vadds_inplace_st",
         "body": [
-            {"type": "inst", "op": "VLD", "dst": ["V0"], "src": ["memA"]},
+            {"type": "inst", "op": "VLDS", "dst": ["V0"], "src": ["memA"]},
             {"type": "inst", "op": "VEXP", "dst": ["V1"], "src": ["V0"]},
             {"type": "inst", "op": "VADDS", "dst": ["V1"], "src": ["V1"]},
-            {"type": "inst", "op": "VST", "dst": ["memB"], "src": ["V1"]},
+            {"type": "inst", "op": "VSTS", "dst": ["memB"], "src": ["V1"]},
         ],
         "dsl_body": [
             "vlds(vec_0, memA, 64 * i, NORM);",
@@ -27,11 +27,11 @@ CASES = [
     {
         "name": "ladder_ld_vmuls_vexp_vadds_inplace_st",
         "body": [
-            {"type": "inst", "op": "VLD", "dst": ["V0"], "src": ["memA"]},
+            {"type": "inst", "op": "VLDS", "dst": ["V0"], "src": ["memA"]},
             {"type": "inst", "op": "VMULS", "dst": ["V1"], "src": ["V0"]},
             {"type": "inst", "op": "VEXP", "dst": ["V2"], "src": ["V1"]},
             {"type": "inst", "op": "VADDS", "dst": ["V2"], "src": ["V2"]},
-            {"type": "inst", "op": "VST", "dst": ["memB"], "src": ["V2"]},
+            {"type": "inst", "op": "VSTS", "dst": ["memB"], "src": ["V2"]},
         ],
         "dsl_body": [
             "vlds(vec_0, memA, 64 * i, NORM);",

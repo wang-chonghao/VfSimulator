@@ -36,9 +36,9 @@ def generate_vf_fusion_tests(output_dir=os.path.join("VFtest", "vadd_fusion_test
             # If this is the very first loop, load from memA. 
             # Otherwise, load from the intermediate memory block written by the previous loop.
             if loop_idx == 0:
-                body_insts.append({"type": "inst", "op": "VLD", "dst": ["V0"], "src": ["memA"]})
+                body_insts.append({"type": "inst", "op": "VLDS", "dst": ["V0"], "src": ["memA"]})
             else:
-                body_insts.append({"type": "inst", "op": "VLD", "dst": ["V0"], "src": [f"mem_inter_{loop_idx-1}"]})
+                body_insts.append({"type": "inst", "op": "VLDS", "dst": ["V0"], "src": [f"mem_inter_{loop_idx-1}"]})
             
             current_src = "V0" 
             next_dst = "V1"
@@ -56,9 +56,9 @@ def generate_vf_fusion_tests(output_dir=os.path.join("VFtest", "vadd_fusion_test
                 
             # Store the result. If it's the last loop, store to memC, otherwise store to intermediate memory.
             if loop_idx == num_loops - 1:
-                body_insts.append({"type": "inst", "op": "VST", "dst": ["memC"], "src": [current_src]})
+                body_insts.append({"type": "inst", "op": "VSTS", "dst": ["memC"], "src": [current_src]})
             else:
-                body_insts.append({"type": "inst", "op": "VST", "dst": [f"mem_inter_{loop_idx}"], "src": [current_src]})
+                body_insts.append({"type": "inst", "op": "VSTS", "dst": [f"mem_inter_{loop_idx}"], "src": [current_src]})
                 
             loop_node = {
                 "type": "loop",

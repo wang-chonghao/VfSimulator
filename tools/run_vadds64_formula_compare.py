@@ -32,14 +32,14 @@ def build_trace(trip_count: int, loops: int):
         if idx == 0:
             body.append({
                 "type": "inst",
-                "op": "VLD",
+                "op": "VLDS",
                 "dst": ["V1"],
                 "src": ["memA"],
             })
         else:
             body.append({
                 "type": "inst",
-                "op": "VLD",
+                "op": "VLDS",
                 "dst": ["V1"],
                 "src": [f"mem_inter_{idx % 2}"],
             })
@@ -52,7 +52,7 @@ def build_trace(trip_count: int, loops: int):
             })
         body.append({
             "type": "inst",
-            "op": "VST",
+            "op": "VSTS",
             "dst": ["memB" if idx == loops - 1 else f"mem_inter_{(idx + 1) % 2}"],
             "src": ["V1"],
         })

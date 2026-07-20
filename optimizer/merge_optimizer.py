@@ -204,7 +204,8 @@ class MergeAwareOptimizer:
         linear = Flattener(params).flatten(program)
         top_block_loop_bounds = infer_top_block_loop_bounds(program, params)
 
-        ifu = IFUUnroll(linear, params)
+        dtype = trace_obj.get("dtype", "fp32")
+        ifu = IFUUnroll(linear, params, pdb=self.db, dtype=dtype)
         idu = IDU(
             self.uarch,
             self.db,
@@ -212,8 +213,9 @@ class MergeAwareOptimizer:
             loop_bounds=top_block_loop_bounds.get(0, []),
             total_top_blocks=len(top_block_loop_bounds),
             top_block_loop_bounds=top_block_loop_bounds,
+            dtype=dtype,
         )
-        ooo = create_ooo_core(self.uarch, self.db, dtype=trace_obj.get("dtype", "fp32"))
+        ooo = create_ooo_core(self.uarch, self.db, dtype=dtype)
 
         cycle = 0
         max_cycles = int(params.get("max_cycles", 1_000_000))

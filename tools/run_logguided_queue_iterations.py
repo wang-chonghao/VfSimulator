@@ -174,8 +174,8 @@ def run_case(trace_path: Path, uarch_override: Dict[str, Any]) -> int:
     loop_bounds = top_block_loop_bounds.get(0, [])
 
     linear = Flattener(params).flatten(program)
-    ifu = IFUUnroll(linear, params)
     db = ParamDB(base_dir=base_dir)
+    ifu = IFUUnroll(linear, params, pdb=db, dtype=dtype)
     uarch = dict(db.get_uarch())
     uarch.update(uarch_override)
     uarch = resolve_model_uarch(uarch)
@@ -187,6 +187,7 @@ def run_case(trace_path: Path, uarch_override: Dict[str, Any]) -> int:
         loop_bounds=loop_bounds,
         total_top_blocks=total_top_blocks,
         top_block_loop_bounds=top_block_loop_bounds,
+        dtype=dtype,
     )
     ooo = create_ooo_core(uarch, db, dtype=dtype)
     idu_to_ooo_delay = int(uarch.get("idu_to_ooo_delay", 0))

@@ -53,7 +53,7 @@ def generate_trace(branch_count: int, branch_depth: int, group_size: int, segmen
                     dst_mem = f"mem_out_{global_branch_idx}"
                 else:
                     dst_mem = f"mem_inter_g{group_idx}_b{global_branch_idx}"
-                body.append({"type": "inst", "op": "VST", "dst": [dst_mem], "src": [reg]})
+                body.append({"type": "inst", "op": "VSTS", "dst": [dst_mem], "src": [reg]})
 
             program.append({"type": "loop", "iters": "I", "unroll": 1, "body": body})
 

@@ -101,13 +101,13 @@ extern "C" __global__ __aicore__ void foo_add(
 
 
 def build_case_json(case_dir: Path, I: int, J: int, chain_len: int):
-    body = [{"type": "inst", "op": "VLD", "dst": ["V1"], "src": ["memA"]}]
+    body = [{"type": "inst", "op": "VLDS", "dst": ["V1"], "src": ["memA"]}]
     if chain_len == 1:
-        body.append({"type": "inst", "op": "VST", "dst": ["memB"], "src": ["V1"]})
+        body.append({"type": "inst", "op": "VSTS", "dst": ["memB"], "src": ["V1"]})
     else:
         for i in range(2, chain_len + 2):
             body.append({"type": "inst", "op": "VADDS", "dst": [f"V{i}"], "src": [f"V{i-1}"]})
-        body.append({"type": "inst", "op": "VST", "dst": ["memB"], "src": [f"V{chain_len + 1}"]})
+        body.append({"type": "inst", "op": "VSTS", "dst": ["memB"], "src": [f"V{chain_len + 1}"]})
 
     obj = {
         "dtype": "fp32",
