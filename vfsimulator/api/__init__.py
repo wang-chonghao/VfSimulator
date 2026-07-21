@@ -1,11 +1,29 @@
-"""
-Simulator input API package.
+"""Typed VfSimulator input API and frontend adapters."""
 
-This package will host user-facing input adapters, including:
-- CCE file input
-- legacy JSON input
-"""
-
+from vfsimulator.api.input_api import InputAPI
+from vfsimulator.api.json_adapter import JsonVfInfoAdapter
 from vfsimulator.api.program_api import predict_from_program
+from vfsimulator.api.vf_info import (
+    Membar,
+    MemInfo,
+    ValueInfo,
+    ValueStorageKind,
+    VFInfo,
+    VFInst,
+    VFLoop,
+    canonicalize_vf_info,
+)
 
-__all__ = ["predict_from_program"]
+__all__ = [
+    "InputAPI",
+    "JsonVfInfoAdapter",
+    "Membar",
+    "MemInfo",
+    "ValueInfo",
+    "ValueStorageKind",
+    "VFInfo",
+    "VFInst",
+    "VFLoop",
+    "canonicalize_vf_info",
+    "predict_from_program",
+]

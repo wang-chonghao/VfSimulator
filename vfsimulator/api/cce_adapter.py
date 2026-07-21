@@ -5,7 +5,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from vfsimulator.api.vf_costmodel import Membar, MemInfo, VFInfo, VFInst, VFLoop, VFNode
+from vfsimulator.api.vf_info import (
+    Membar,
+    MemInfo,
+    VFInfo,
+    VFInst,
+    VFLoop,
+    VFNode,
+    canonicalize_vf_info,
+)
 
 
 _FUNC_RE = re.compile(
@@ -13,7 +21,7 @@ _FUNC_RE = re.compile(
     re.DOTALL,
 )
 _PRAGMA_UNROLL_RE = re.compile(r"#\s*pragma\s+unroll\s*\(\s*(\d+)\s*\)")
-_VECTOR_DECL_RE = re.compile(r"\bvector_([A-Za-z0-9_]+)\s+([A-Za-z_]\w*)\s*;")
+_VECTOR_DECL_RE = re.compile(r"\bvector_([A-Za-z0-9_]+)\s+([^;]+);")
 _CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\((.*)\)\s*;", re.DOTALL)
 _LOAD_OPS = {"VLD", "VLDS"}
 _STORE_OPS = {"VST", "VSTS", "VSTUS", "VSTAS"}
@@ -87,17 +95,14 @@ def parse_cce_vf_info(
     resolved_loop_params = dict(loop_params or {})
     resolved_loop_params.update(_infer_call_argument_constants(source, scope))
     parser = _VFScopeParser(scope, resolved_loop_params)
-    return VFInfo(context=parser.parse())
+    return canonicalize_vf_info(VFInfo(context=parser.parse()))
 
 
 class _VFScopeParser:
     def __init__(self, scope: CCEVFScope, loop_params: Dict[str, int]) -> None:
         self.scope = scope
         self.loop_params = loop_params
-        self.register_dtypes = {
-            name: _vector_dtype_to_form(dtype)
-            for dtype, name in _VECTOR_DECL_RE.findall(scope.source)
-        }
+        self.register_dtypes = _extract_vector_decls(scope.source)
         self.register_names = set(self.register_dtypes)
         self.ub_names = set(_ub_param_names(scope.params))
 
@@ -345,6 +350,17 @@ def _vector_dtype_to_form(dtype: str) -> str:
         "uint32": "uint32",
     }
     return mapping.get(text, text)
+
+
+def _extract_vector_decls(source: str) -> Dict[str, str]:
+    register_dtypes: Dict[str, str] = {}
+    for dtype, names_text in _VECTOR_DECL_RE.findall(source):
+        form = _vector_dtype_to_form(dtype)
+        for raw_name in names_text.split(","):
+            name = _base_identifier(raw_name)
+            if name:
+                register_dtypes[name] = form
+    return register_dtypes
 
 
 def _infer_inst_form(op: str, dst: Sequence[MemInfo], src: Sequence[MemInfo]) -> str | None:
