@@ -10,38 +10,13 @@
 #define VFSIM_NATIVE_PROGRAM_ANALYSIS_H
 
 #include <cstdint>
-#include <memory>
+#include "api/native/VfInfo.h"
+
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace vfsim {
-
-struct ProgramInstNode {
-  std::string op;
-  std::vector<std::string> src;
-  std::vector<std::string> dst;
-};
-
-struct ProgramLoopNode;
-
-struct ProgramNode {
-  enum class Kind { Inst, Loop };
-
-  Kind kind = Kind::Inst;
-  ProgramInstNode inst;
-  std::shared_ptr<ProgramLoopNode> loop;
-
-  static ProgramNode makeInst(ProgramInstNode value);
-  static ProgramNode makeLoop(ProgramLoopNode value);
-};
-
-struct ProgramLoopNode {
-  std::string iters;
-  std::string unroll = "1";
-  std::string name;
-  std::vector<ProgramNode> body;
-};
 
 struct VregCapacityWarning {
   std::string kind;

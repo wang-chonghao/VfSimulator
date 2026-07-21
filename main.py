@@ -7,6 +7,8 @@ import os
 from typing import Any, Dict
 
 from api.input_api import InputAPI
+from api.vf_info import VFInfo
+from api.vf_lowering import VFInfoLowerer
 from core.flatten import Flattener
 from core.idu import IDU
 from core.ifu import IFUUnroll
@@ -83,7 +85,7 @@ def resolve_input_path(base_dir: str, path_arg: str) -> str:
     return os.path.join(base_dir, path_arg)
 
 
-def load_input_payload(base_dir: str, args: argparse.Namespace) -> tuple[Dict[str, Any], str]:
+def load_input_vf_info(base_dir: str, args: argparse.Namespace) -> tuple[VFInfo, str]:
     if args.trace and args.cce:
         raise RuntimeError("Please provide only one input: --trace or --cce")
 
@@ -186,10 +188,12 @@ def main():
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
     try:
-        trace, _ = load_input_payload(base_dir, args)
+        vf_info, _ = load_input_vf_info(base_dir, args)
     except Exception as exc:
         print(f"[ERROR] {exc}")
         return
+
+    trace = VFInfoLowerer().lower(vf_info)
 
     dtype = trace.get("dtype", "fp32")
     params = trace.get("params", {}) or {}

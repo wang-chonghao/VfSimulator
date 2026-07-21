@@ -305,8 +305,9 @@ std::vector<DynamicInst> IDU::dispatch(int64_t cycle, const IDUDispatchBudget &b
       }
     }
 
-    const bool isLoad = isLoadOp(db_, inst.op, dtype_);
-    const bool isStore = isStoreOp(db_, inst.op, dtype_);
+    const std::string &form = inst.form.empty() ? dtype_ : inst.form;
+    const bool isLoad = isLoadOp(db_, inst.op, form);
+    const bool isStore = isStoreOp(db_, inst.op, form);
     if (isLoad) {
       if (lsqFree <= 0)
         break;
@@ -328,11 +329,11 @@ std::vector<DynamicInst> IDU::dispatch(int64_t cycle, const IDUDispatchBudget &b
 
     dispatched.push_back(inst);
     credits -= dstCount;
-    if (usesLsq(db_, inst.op, dtype_)) {
+    if (usesLsq(db_, inst.op, form)) {
       --lsqFree;
-      if (usesSharedShqCredit(db_, inst.op, dtype_))
+      if (usesSharedShqCredit(db_, inst.op, form))
         --shqFree;
-    } else if (usesShqQueue(db_, inst.op, dtype_)) {
+    } else if (usesShqQueue(db_, inst.op, form)) {
       --shqQueueFree;
       --shqFree;
     }

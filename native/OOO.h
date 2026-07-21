@@ -23,6 +23,7 @@ namespace vfsim {
 struct Uop {
   int64_t instId = 0;
   std::string op;
+  std::string form;
   std::vector<std::string> src;
   std::vector<std::string> dst;
   std::vector<std::optional<std::string>> pregSrc;
@@ -36,6 +37,7 @@ struct Uop {
   std::optional<int64_t> doneCycle;
 
   std::optional<std::string> producerOpForStore;
+  std::optional<std::string> producerFormForStore;
   std::optional<int64_t> producerStartForStore;
   std::vector<Uop *> memDepUops;
   int64_t topBlockId = 0;
@@ -53,6 +55,13 @@ struct SrcReleaseEvent {
   int64_t instId = 0;
   std::string preg;
   int64_t gen = 0;
+};
+
+struct ProducerInfo {
+  std::string op;
+  std::string form;
+  int64_t startCycle = 0;
+  std::string kind;
 };
 
 struct HistoryRecord {
@@ -126,13 +135,16 @@ protected:
   std::deque<Uop> lsq_;
   std::deque<Uop> rob_;
 
-  std::unordered_map<std::string, std::tuple<std::string, int64_t, std::string>> pregProducer_;
+  std::unordered_map<std::string, ProducerInfo> pregProducer_;
   std::vector<int64_t> lastIssueCycleALU_;
   std::vector<int64_t> lastIssueCycleSFU_;
   std::vector<std::string> lastOpALU_;
+  std::vector<std::string> lastFormALU_;
   std::vector<std::string> lastOpSFU_;
+  std::vector<std::string> lastFormSFU_;
   std::vector<int64_t> lastIssueCycleExu_;
   std::vector<std::string> lastOpExu_;
+  std::vector<std::string> lastFormExu_;
   std::vector<int> exqInflight_;
 
   int loadDoneLatency_ = 9;
@@ -178,16 +190,22 @@ protected:
   std::vector<SimpleLogRecord> startLogs_;
   std::vector<SimpleLogRecord> doneLogs_;
 
-  virtual std::string classifyOpClass(const std::string &op) const;
-  int64_t computeReadyTimeForSrc(const std::tuple<std::string, int64_t, std::string> &producerInfo,
-                                 const std::string &consumerOp) const;
+  virtual std::string classifyOpClass(const std::string &op,
+                                      const std::string &form) const;
+  int64_t computeReadyTimeForSrc(const ProducerInfo &producerInfo,
+                                 const std::string &consumerOp,
+                                 const std::string &consumerForm) const;
   int64_t computeLoadReadyCycle(const Uop &u) const;
-  std::tuple<int64_t, std::optional<std::string>, std::optional<int64_t>>
+  std::tuple<int64_t, std::optional<std::string>,
+             std::optional<std::string>, std::optional<int64_t>>
   computeStoreReadyCycle(const Uop &u) const;
-  int64_t dataStoreCost(const std::string &producerOp) const;
-  std::string getFuType(const std::string &op) const;
-  std::vector<int> eligibleExuPorts(const std::string &op) const;
-  int64_t getIi(const std::string *prevOp, const std::string &curOp) const;
+  int64_t dataStoreCost(const std::string &producerOp,
+                        const std::string &producerForm) const;
+  std::string getFuType(const std::string &op, const std::string &form) const;
+  std::vector<int> eligibleExuPorts(const std::string &op,
+                                    const std::string &form) const;
+  int64_t getIi(const std::string *prevOp, const std::string *prevForm,
+                const std::string &curOp, const std::string &curForm) const;
   void log(const std::string &event, const Uop &u);
   void logStartSimple(const Uop &u);
   void logDoneSimple(const Uop &u);
@@ -200,7 +218,8 @@ protected:
   int exqOccupancy(int port) const;
   int totalComputeInflight() const;
   int64_t predictExqIssueCycle(int port, const std::string &fuType,
-                               const std::string &op, int64_t recvCycle) const;
+                               const std::string &op, const std::string &form,
+                               int64_t recvCycle) const;
   void scheduleShqRelease(int64_t cycle, int count = 1);
   void runShqReleaseEvents(int64_t cycle);
 

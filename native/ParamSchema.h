@@ -80,6 +80,8 @@ struct ParamBundle {
   std::unordered_map<OpName, std::unordered_map<DTypeName, InstConfig>> isa;
   std::unordered_map<DTypeName, std::unordered_map<OpName, std::unordered_map<OpName, int64_t>>> forwarding;
   std::unordered_map<DTypeName, std::unordered_map<OpName, std::unordered_map<OpName, int64_t>>> initiationInterval;
+  std::unordered_map<std::string, std::unordered_map<std::string, int64_t>> forwardingByForm;
+  std::unordered_map<std::string, std::unordered_map<std::string, int64_t>> initiationIntervalByForm;
   UarchConfig uarch;
 };
 

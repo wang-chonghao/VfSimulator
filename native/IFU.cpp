@@ -255,6 +255,7 @@ DynamicInst IFU::emitNormalInst(const LinearProgramNode &node) {
   out.instId = instId_++;
   out.type = node.type;
   out.op = node.op;
+  out.form = node.form.empty() ? dtype_ : node.form;
   out.src = node.src;
   out.dst = node.dst;
 
@@ -292,6 +293,7 @@ void IFU::buildPendingUnrolled(LoopFrame &frame) {
       inst.instId = instId_++;
       inst.type = ins.type;
       inst.op = ins.op;
+      inst.form = ins.form.empty() ? dtype_ : ins.form;
       inst.src = ins.src;
       inst.dst = ins.dst;
       inst.loopStack = loopStack;

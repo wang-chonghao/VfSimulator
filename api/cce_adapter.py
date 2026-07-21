@@ -5,7 +5,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from api.vf_costmodel import Membar, MemInfo, VFInfo, VFInst, VFLoop, VFNode
+from api.vf_info import (
+    Membar,
+    MemInfo,
+    VFInfo,
+    VFInst,
+    VFLoop,
+    VFNode,
+    canonicalize_vf_info,
+)
 
 
 _FUNC_RE = re.compile(
@@ -87,7 +95,7 @@ def parse_cce_vf_info(
     resolved_loop_params = dict(loop_params or {})
     resolved_loop_params.update(_infer_call_argument_constants(source, scope))
     parser = _VFScopeParser(scope, resolved_loop_params)
-    return VFInfo(context=parser.parse())
+    return canonicalize_vf_info(VFInfo(context=parser.parse()))
 
 
 class _VFScopeParser:

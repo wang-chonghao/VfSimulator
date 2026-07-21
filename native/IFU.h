@@ -24,6 +24,7 @@ struct DynamicInst {
   int64_t instId = 0;
   std::string type = "inst";
   std::string op;
+  std::string form;
   std::vector<std::string> src;
   std::vector<std::string> dst;
 

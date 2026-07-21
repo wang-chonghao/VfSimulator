@@ -53,6 +53,10 @@ std::pair<std::string, std::string> splitQualifiedOp(const std::string &name) {
   return {name.substr(0, dot), name.substr(dot + 1)};
 }
 
+std::string qualifyOp(const std::string &op, const std::string &form) {
+  return form.empty() ? op : op + "." + form;
+}
+
 InstConfig readInstConfig(const JsonValue::Object &object) {
   InstConfig cfg;
   cfg.pipelineStartupCost = readIntField(object, "pipeline_startup_cost");
@@ -244,6 +248,7 @@ ParamDB::ParamDB(std::filesystem::path baseDir)
         auto &consMap = bundle_.forwarding[prodDtype][prodOp];
         for (const auto &[consName, consValue] : outerValue.asObject()) {
           const auto [consOp, consDtype] = splitQualifiedOp(consName);
+          bundle_.forwardingByForm[outerName][consName] = consValue.asInt();
           if (consDtype.empty() || consDtype == prodDtype)
             consMap.emplace(consOp, consValue.asInt());
         }
@@ -274,6 +279,7 @@ ParamDB::ParamDB(std::filesystem::path baseDir)
         auto &curMap = bundle_.initiationInterval[prevDtype][prevOp];
         for (const auto &[curName, curValue] : outerValue.asObject()) {
           const auto [curOp, curDtype] = splitQualifiedOp(curName);
+          bundle_.initiationIntervalByForm[outerName][curName] = curValue.asInt();
           if (curDtype.empty() || curDtype == prevDtype)
             curMap.emplace(curOp, curValue.asInt());
         }
@@ -331,6 +337,23 @@ int64_t ParamDB::forwardingCycles(const std::string &dtype, const std::string &p
   return std::max<int64_t>(0, latency - 3);
 }
 
+int64_t ParamDB::forwardingCycles(const std::string &prod,
+                                  const std::string &prodForm,
+                                  const std::string &cons,
+                                  const std::string &consForm) const {
+  const auto prodIt = bundle_.forwardingByForm.find(qualifyOp(prod, prodForm));
+  if (prodIt != bundle_.forwardingByForm.end()) {
+    const auto consIt = prodIt->second.find(qualifyOp(cons, consForm));
+    if (consIt != prodIt->second.end())
+      return std::max<int64_t>(0, consIt->second);
+  }
+  if (prodForm == consForm)
+    return forwardingCycles(prodForm, prod, cons);
+  const int64_t latency =
+      hasInst(prod, prodForm) ? inst(prod, prodForm).latency : 0;
+  return std::max<int64_t>(0, latency - 3);
+}
+
 int64_t ParamDB::initiationInterval(const std::string &dtype, const std::string &prev,
                                     const std::string &cur) const {
   const auto dtypeIt = bundle_.initiationInterval.find(dtype);
@@ -342,6 +365,22 @@ int64_t ParamDB::initiationInterval(const std::string &dtype, const std::string 
         return std::max<int64_t>(1, curIt->second);
     }
   }
+  return 1;
+}
+
+int64_t ParamDB::initiationInterval(const std::string &prev,
+                                    const std::string &prevForm,
+                                    const std::string &cur,
+                                    const std::string &curForm) const {
+  const auto prevIt =
+      bundle_.initiationIntervalByForm.find(qualifyOp(prev, prevForm));
+  if (prevIt != bundle_.initiationIntervalByForm.end()) {
+    const auto curIt = prevIt->second.find(qualifyOp(cur, curForm));
+    if (curIt != prevIt->second.end())
+      return std::max<int64_t>(1, curIt->second);
+  }
+  if (prevForm == curForm)
+    return initiationInterval(prevForm, prev, cur);
   return 1;
 }
 

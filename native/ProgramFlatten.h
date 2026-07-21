@@ -23,6 +23,7 @@ struct LinearProgramNode {
   Kind kind = Kind::Inst;
   std::string type;
   std::string op;
+  std::string form;
   int64_t pc = 0;
   int64_t depth = 0;
   std::vector<int64_t> loopStack;

@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any, Dict
 
 from api.cce_adapter import parse_cce_vf_info
-from api.vf_costmodel import VFInfo, VfCostModel
+from api.json_adapter import JsonVfInfoAdapter
+from api.vf_costmodel import VFInfo, VfCostModel, canonicalize_vf_info
 from api.vf_lowering import VFInfoLowerer
 from core.flatten import Flattener
 from core.idu import IDU
@@ -31,10 +32,15 @@ class CoreVfCostModel(VfCostModel):
         return int(self.run_vf_info(vf_info)["vf_end_cycle"])
 
     def run_vf_info(self, vf_info: VFInfo) -> Dict[str, Any]:
-        payload = VFInfoLowerer().lower(vf_info, dtype=self.dtype)
-        return self.run_payload(payload)
+        canonical = canonicalize_vf_info(vf_info)
+        payload = VFInfoLowerer().lower(canonical)
+        return self._run_lowered_payload(payload)
 
     def run_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Compatibility entry: adapt a JSON-shaped payload to VfInfo first."""
+        return self.run_vf_info(JsonVfInfoAdapter.from_payload(payload))
+
+    def _run_lowered_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         base_dir = Path(self.base_dir)
         dtype = str(payload.get("dtype", self.dtype))
         params = payload.get("params", {}) or {}

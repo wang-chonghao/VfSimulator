@@ -9,6 +9,8 @@
 #include "native/SimulatorRunner.h"
 
 #include "native/ISATraits.h"
+#include "native/ProgramCanonicalization.h"
+#include "native/ProgramFlatten.h"
 
 #include <deque>
 #include <filesystem>
@@ -95,18 +97,28 @@ struct Reservation {
   int64_t shq = 0;
 };
 
+int countTopLevelLoops(const std::vector<ProgramNode> &program) {
+  int count = 0;
+  for (const auto &node : program) {
+    if (node.kind == ProgramNode::Kind::Loop)
+      ++count;
+  }
+  return count;
+}
+
 Reservation reservationForInst(const DynamicInst &inst, const ParamDB &db,
-                               const std::string &dtype) {
+                               const std::string &defaultDtype) {
+  const std::string &form = inst.form.empty() ? defaultDtype : inst.form;
   Reservation out;
   for (const auto &d : inst.dst) {
     if (isVregName(d))
       ++out.preg;
   }
-  if (usesShqQueue(db, inst.op, dtype))
+  if (usesShqQueue(db, inst.op, form))
     out.shqQueue = 1;
-  if (usesLsq(db, inst.op, dtype))
+  if (usesLsq(db, inst.op, form))
     out.lsq = 1;
-  if (usesSharedShqCredit(db, inst.op, dtype))
+  if (usesSharedShqCredit(db, inst.op, form))
     out.shq = 1;
   return out;
 }
@@ -140,6 +152,29 @@ void dumpVloopTrace(const IDU &idu, const std::string &path) {
 }
 
 } // namespace
+
+SimulationResult runVfInfo(const VfInfo &input,
+                           const ParamDB &db,
+                           const std::string &resultsDir,
+                           int64_t maxCycles) {
+  VfInfo vfInfo = input;
+  lowerVfInfoValueIds(vfInfo);
+  const auto program = canonicalizeSingleSuperIterationLoops(
+      vfInfo.body, vfInfo.params, db, vfInfo.defaultDtype);
+  ProgramAnalysis analysis(vfInfo.params);
+  const auto loopBounds = analysis.inferTopBlockLoopBounds(program);
+  ProgramFlatten flattener(vfInfo.params);
+  const auto &linear = flattener.flatten(program);
+  const int topBlocks = countTopLevelLoops(program);
+
+  IFU ifu(linear, vfInfo.params, &db, loopBounds, topBlocks,
+          vfInfo.defaultDtype);
+  IDU idu(db.uarch(), db, vfInfo.params, {}, topBlocks, loopBounds,
+          vfInfo.defaultDtype);
+  OoOCoreMainline ooo(db.uarch(), db, vfInfo.defaultDtype);
+  return runSimulation(ifu, idu, ooo, db.uarch(), vfInfo.params, resultsDir,
+                       maxCycles);
+}
 
 SimulationResult runSimulation(IFU &ifu,
                                IDU &idu,

@@ -29,8 +29,15 @@ public:
 
   int64_t forwardingCycles(const std::string &dtype, const std::string &prod,
                            const std::string &cons) const;
+  int64_t forwardingCycles(const std::string &prod, const std::string &prodForm,
+                           const std::string &cons,
+                           const std::string &consForm) const;
   int64_t initiationInterval(const std::string &dtype, const std::string &prev,
                              const std::string &cur) const;
+  int64_t initiationInterval(const std::string &prev,
+                             const std::string &prevForm,
+                             const std::string &cur,
+                             const std::string &curForm) const;
 
   static std::filesystem::path resolveBaseDir(std::filesystem::path baseDir);
 
