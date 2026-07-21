@@ -16,6 +16,7 @@ from vfsimulator.core.ooo_factory import create_ooo_core
 from vfsimulator.core.param_db import ParamDB
 from vfsimulator.core.program_ir import VfSimProgram, coerce_trace_program
 from vfsimulator.core.program_analysis import ProgramAnalyzer
+from vfsimulator.core.program_canonicalization import canonicalize_single_super_iteration_loops
 from vfsimulator.core.simulator_runner import run_simulation
 from vfsimulator.core.vreg_live_range_normalization import normalize_program_vreg_live_ranges
 
@@ -49,13 +50,19 @@ class CoreVfCostModel(VfCostModel):
             raise RuntimeError("payload missing key 'program'")
         program = coerce_trace_program(program)
 
+        db = ParamDB(base_dir=str(base_dir))
         program, norm_stats = normalize_program_vreg_live_ranges(program)
+        program, canonicalization_stats = canonicalize_single_super_iteration_loops(
+            program,
+            params,
+            pdb=db,
+            dtype=dtype,
+        )
         analyzer = ProgramAnalyzer(params)
         top_block_loop_bounds = analyzer.infer_top_block_loop_bounds(program)
         loop_bounds = top_block_loop_bounds.get(0, [])
         linear = Flattener(params).flatten(program)
 
-        db = ParamDB(base_dir=str(base_dir))
         ifu = IFUUnroll(linear, params, pdb=db, dtype=dtype)
         uarch = dict(db.get_uarch())
         trace_uarch = payload.get("uarch", {}) or {}
@@ -89,6 +96,7 @@ class CoreVfCostModel(VfCostModel):
         )
         result["linear_inst_count"] = len(linear)
         result["normalization_stats"] = norm_stats
+        result["canonicalization_stats"] = canonicalization_stats
         result["model"] = model_name
         return result
 

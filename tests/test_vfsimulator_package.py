@@ -9,7 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from vfsimulator import VfSimInst, VfSimLoop, VfSimProgram, predict_from_program
+from vfsimulator.core.ifu import IFUUnroll
 from vfsimulator.core.model_config import normalize_model_name
+from vfsimulator.core.program_canonicalization import canonicalize_single_super_iteration_loops
 
 
 class VfsimulatorPackageTest(unittest.TestCase):
@@ -66,6 +68,32 @@ class VfsimulatorPackageTest(unittest.TestCase):
                 ("VSTS", "fp16"),
             ],
         )
+
+    def test_namespaced_unroll_and_single_super_iteration_canonicalization(self) -> None:
+        body = [
+            {"type": "inst", "op": "VLDS", "dst": ["v0"], "src": ["mem0"]},
+            {"type": "inst", "op": "VADD", "dst": ["v1"], "src": ["v0", "v2"]},
+            {"type": "inst", "op": "VLDS", "dst": ["v3"], "src": ["mem1"]},
+            {"type": "inst", "op": "VSUB", "dst": ["v4"], "src": ["v1", "v3"]},
+            {"type": "inst", "op": "VSTS", "dst": ["mem2"], "src": ["v4"]},
+        ]
+        program = [{"type": "loop", "iters": 2, "unroll": 2, "body": body}]
+
+        canonical, stats = canonicalize_single_super_iteration_loops(program)
+        self.assertEqual(stats["expanded_loops"], 1)
+        self.assertEqual(
+            [inst["op"] for inst in canonical],
+            ["VLDS", "VLDS", "VADD", "VADD", "VLDS", "VLDS", "VSUB", "VSUB", "VSTS", "VSTS"],
+        )
+
+        linear = [{"type": "loop_begin", "iters": 2, "unroll": 2}, *body, {"type": "loop_end"}]
+        ifu = IFUUnroll(linear)
+        emitted = []
+        while not ifu.done():
+            inst = ifu.next_inst()
+            if inst is not None:
+                emitted.append(inst)
+        self.assertEqual([inst["op"] for inst in emitted], [inst["op"] for inst in canonical])
 
 
 if __name__ == "__main__":
