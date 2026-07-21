@@ -17,6 +17,8 @@ First-step scope:
   `InitiationInterval.json`
 - `ISATraits`: classify load/store/compute behavior from ISA metadata
 - `ProgramAnalysis`: bound/unroll resolution and vreg capacity warnings
+- `ProgramCanonicalization`: expands an innermost unrolled loop when only one
+  super-iteration remains
 - `ProgramFlatten`: recursive flattening of loop/inst program trees
 - `IFU`: dynamic unrolling and top-block metadata emission
 - `IDU`: dispatch gating, VLOOP visibility, and credit accounting

@@ -1,7 +1,7 @@
 {
   "name": "vf_cost_model_regression_v1",
   "defaults": {
-    "ooo_model": "consumer-done",
+    "ooo_model": "queue_level4",
     "run_theoretical": false,
     "abs_tol": 30,
     "rel_tol": 0.08,

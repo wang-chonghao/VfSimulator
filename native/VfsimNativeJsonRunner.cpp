@@ -12,6 +12,7 @@
 #include "native/OOO.h"
 #include "native/ParamDB.h"
 #include "native/ProgramAnalysis.h"
+#include "native/ProgramCanonicalization.h"
 #include "native/ProgramFlatten.h"
 #include "native/SimulatorRunner.h"
 
@@ -153,7 +154,9 @@ int main(int argc, char **argv) {
       throw std::runtime_error("trace missing program");
     const std::string dtype = findKey(traceObj, "dtype") ? findKey(traceObj, "dtype")->asString("fp32") : "fp32";
     const auto params = parseParams(traceObj);
-    const auto program = parseProgramArray(*programValue);
+    const auto inputProgram = parseProgramArray(*programValue);
+    const auto program = canonicalizeSingleSuperIterationLoops(
+        inputProgram, params, db, dtype);
 
     ProgramAnalysis analysis(params);
     const auto loopBounds = analysis.inferTopBlockLoopBounds(program);

@@ -176,6 +176,7 @@ The regression package is now organized as:
 regression_suite/
   cases/
     cost_model_regression_cases.json
+    baseline_queue_level4_ooo_transfer_delay.json
     baseline_consumer_done.json
     archive/
   inputs/
@@ -202,10 +203,12 @@ python tools/run_cost_model_regression.py --tier full
 Update baseline intentionally:
 
 ```bash
-python tools/run_cost_model_regression.py --tier smoke --update-baseline
+python tools/run_cost_model_regression.py --tier full --update-baseline
 ```
 
 The run output is written under `results/regression_suite/latest/` by default. Stable, curated reports belong under `regression_suite/reports/`.
+The default comparison baseline is the `queue_level4+ooo-transfer-delay` column
+from `regression_suite/reports/precision_compare_3modes.md`.
 
 ## Ascend Runner
 
@@ -229,4 +232,3 @@ python tools/run_cost_model_regression.py --tier smoke
 ```
 
 When preparing a clean release branch, prefer committing source, curated docs, selected regression inputs, and selected tools only. Avoid committing generated caches, temporary run logs, and large raw dumps.
-

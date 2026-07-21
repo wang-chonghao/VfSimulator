@@ -16,6 +16,7 @@ from core.ooo_factory import (
     resolve_model_uarch,
 )
 from core.param_db import ParamDB
+from core.program_canonicalization import canonicalize_single_super_iteration_loops
 from core.program_analysis import ProgramAnalyzer
 from core.simulator_runner import run_simulation
 from core.vreg_live_range_normalization import normalize_program_vreg_live_ranges
@@ -195,12 +196,23 @@ def main():
     program = trace.get("program")
     if program is None:
         raise RuntimeError("trace.json missing key 'program'")
+    db = ParamDB(base_dir=base_dir)
     analyzer = ProgramAnalyzer(params)
 
     program, norm_stats = normalize_program_vreg_live_ranges(program)
     print(
         "[INFO] vreg live-range normalization = ON, changed_chains =",
         int(norm_stats.get("changed_fields", norm_stats.get("changed_chains", 0))),
+    )
+    program, canonicalization_stats = canonicalize_single_super_iteration_loops(
+        program,
+        params,
+        pdb=db,
+        dtype=dtype,
+    )
+    print(
+        "[INFO] single-super-iteration loops expanded =",
+        int(canonicalization_stats["expanded_loops"]),
     )
 
     top_block_loop_bounds = analyzer.infer_top_block_loop_bounds(program)
@@ -211,7 +223,6 @@ def main():
     loop_bounds = top_block_loop_bounds.get(0, [])
     linear = Flattener(params).flatten(program)
 
-    db = ParamDB(base_dir=base_dir)
     ifu = IFUUnroll(linear, params, pdb=db, dtype=dtype)
     trace_uarch = trace.get("uarch", {}) or {}
     if not isinstance(trace_uarch, dict):

@@ -60,10 +60,11 @@ results/regression_suite/latest/current_metrics.json
 results/regression_suite/latest/compare_summary.json
 ```
 
-This run reports `FAIL` against
-`regression_suite/cases/baseline_consumer_done.json`, but that baseline is the
-older consumer-done baseline.  The current model output aligns with the newer
-queue-level model family used by `regression_suite/reports/precision_compare_3modes.md`.
+The default regression baseline is
+`regression_suite/cases/baseline_queue_level4_ooo_transfer_delay.json`, sourced
+from the `queue_level4+ooo-transfer-delay` column in
+`regression_suite/reports/precision_compare_3modes.md`. The older
+`baseline_consumer_done.json` is retained only for historical comparison.
 
 To isolate whether the v2 schema conversion changed model results, the same
 smoke suite was run again with the old JSON configs exported from `HEAD`:
@@ -102,36 +103,14 @@ main smoke regression suite.
 ### Comparison Against precision_compare_3modes.md
 
 The v2-config smoke result was compared against the
-`queue_level4+vregpass (shq=58 exq=26) VF end` column in
+`queue_level4+ooo-transfer-delay VF end` column in
 `regression_suite/reports/precision_compare_3modes.md`.
 
-Observed differences for smoke-covered rows:
+All smoke-covered rows matched that column exactly:
 
 ```text
-gelu_poly_i16_u1:          392 -> 391  (-1)
-gelu_poly_i64_u1:         1295 -> 1309 (+14)
-gelu_i16_u1:               189 -> 188  (-1)
-online_update_i64_u1:      430 -> 434  (+4)
-probe_src_fanout:          282 -> 282  (+0)
-probe_branch_live_range:   218 -> 218  (+0)
-probe_store_capture_reuse: 317 -> 317  (+0)
-vadds_longchain_i16_1x512: 22138 -> 22153 (+15)
-vadds_longchain_i64_8x64:  39755 -> 40027 (+272)
-vexp_longchain_i16_1x512:  95477 -> 95492 (+15)
-vexp_longchain_i64_8x64:   163947 -> 163963 (+16)
-gelu_poly_i96_u2:          1851 -> 1831 (-20)
-gelu_poly_i96_u4:          1682 -> 1777 (+95)
-gelu_poly_i96_u8:          1684 -> 1706 (+22)
-silu_i16_u1:               156 -> 155  (-1)
-swiglu_i16_u1:             169 -> 169  (+0)
-silu_i64_u1:               406 -> 406  (+0)
-silu_i96_u1:               571 -> 573  (+2)
-swiglu_i64_u1:             455 -> 463  (+8)
-swiglu_i96_u1:             652 -> 655  (+3)
+value_diffs: []
 ```
-
-These differences also appear with the old configs, so they are not caused by
-the v2 schema conversion.
 
 ### Import and API Regression
 

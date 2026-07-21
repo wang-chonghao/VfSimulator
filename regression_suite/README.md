@@ -15,6 +15,7 @@ regression_suite/
   README.md
   cases/
     cost_model_regression_cases.json
+    baseline_queue_level4_ooo_transfer_delay.json
     baseline_consumer_done.json
     archive/
       ...
@@ -32,7 +33,8 @@ regression_suite/
 ## 文件说明
 
 - `cases/cost_model_regression_cases.json`：主测试集清单，包含 case id、trace、参数、CCE/camodel 参考时间和容忍阈值。
-- `cases/baseline_consumer_done.json`：当前基线结果，记录每个 case 的历史 `vf_end` 与 CCE/camodel 误差。
+- `cases/baseline_queue_level4_ooo_transfer_delay.json`：主线默认基线，对应 `precision_compare_3modes.md` 的 `queue_level4+ooo-transfer-delay` 列。
+- `cases/baseline_consumer_done.json`：历史 consumer-done 基线，仅用于结果追溯。
 - `cases/archive/`：历史 queue-level 对比实验的 case/baseline，保留供追溯，不作为主线默认入口。
 - `inputs/json/`：主回归 manifest 使用的 JSON trace 副本，使回归包能自包含地复现输入。
 - `inputs/cce/`：用于存放生成 CCE/camodel ground truth 的 CCE/DSL 文件；当前部分 ground truth 仅记录为 `cce_vf_end_source`。
@@ -41,10 +43,11 @@ regression_suite/
 
 ## 一键命令
 
-先生成基线（推荐先跑 smoke）：
+基线来源于 `precision_compare_3modes.md` 的
+`queue_level4+ooo-transfer-delay` 列。确认需要整体刷新时运行：
 
 ```bash
-python tools/run_cost_model_regression.py --tier smoke --update-baseline
+python tools/run_cost_model_regression.py --tier full --update-baseline
 ```
 
 之后每次改模型后做回归对比：
@@ -64,7 +67,7 @@ python tools/run_cost_model_regression.py --tier full
 ```bash
 python tools/run_cost_model_regression.py \
   --suite regression_suite/cases/cost_model_regression_cases.json \
-  --baseline regression_suite/cases/baseline_consumer_done.json \
+  --baseline regression_suite/cases/baseline_queue_level4_ooo_transfer_delay.json \
   --tier smoke
 ```
 
@@ -92,10 +95,9 @@ python tools/run_cost_model_regression.py \
 - `error_to_cce_abs`
 - `error_to_cce_rel`
 
-并在回归时检查：当前版本相对 CCE/camodel 的误差，不能比 baseline 变差太多。
+并在回归时检查：当前版本相对 CCE/camodel 的误差，不能比 `queue_level4+ooo-transfer-delay` 基线变差太多。
 
 默认阈值在 `cases/cost_model_regression_cases.json` 的 `defaults`：
 
 - `cce_error_abs_worse_tol`
 - `cce_error_rel_worse_tol`
-

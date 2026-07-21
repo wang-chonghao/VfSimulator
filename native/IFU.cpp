@@ -8,8 +8,6 @@
 
 #include "native/IFU.h"
 
-#include "native/ISATraits.h"
-
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
@@ -279,19 +277,6 @@ void IFU::buildPendingUnrolled(LoopFrame &frame) {
   const std::vector<LinearProgramNode> empty;
   const std::vector<LinearProgramNode> &body = it == loopBodyCache_.end() ? empty : it->second;
 
-  std::vector<LinearProgramNode> loads;
-  std::vector<LinearProgramNode> alus;
-  std::vector<LinearProgramNode> stores;
-  for (const auto &n : body) {
-    const auto cls = db_ ? getOpClass(*db_, n.op, dtype_) : OpClass::Compute;
-    if (cls == OpClass::Load)
-      loads.push_back(n);
-    else if (cls == OpClass::Store)
-      stores.push_back(n);
-    else
-      alus.push_back(n);
-  }
-
   const auto [loopStack, iterStack] = snapshot();
   const int64_t U = frame.unroll;
   const int64_t origBase = frame.iterNow;
@@ -299,44 +284,38 @@ void IFU::buildPendingUnrolled(LoopFrame &frame) {
   const bool isLastSuperIter = (origBase + U >= frame.itersTotal);
 
   std::vector<DynamicInst> pending;
-  pending.reserve((loads.size() + alus.size() + stores.size()) * static_cast<size_t>(std::max<int64_t>(1, U)));
+  pending.reserve(body.size() * static_cast<size_t>(std::max<int64_t>(1, U)));
 
-  auto emitSeq = [&](const std::vector<LinearProgramNode> &seq) {
-    for (const auto &ins : seq) {
-      for (int64_t lane = 0; lane < U; ++lane) {
-        DynamicInst inst;
-        inst.instId = instId_++;
-        inst.type = ins.type;
-        inst.op = ins.op;
-        inst.src = ins.src;
-        inst.dst = ins.dst;
-        inst.loopStack = loopStack;
-        if (!iterStack.empty()) {
-          inst.iterStack = iterStack;
-          inst.iterStack.back() = superIter;
-        }
-        inst.loopDepth = static_cast<int64_t>(loopStack.size());
-        inst.inLoop = true;
-        inst.unrollFactor = U;
-        inst.unrollGroup = unrollGroup_;
-        inst.lane = lane;
-        inst.origIterBase = origBase;
-        for (auto &x : inst.src)
-          x += "_lane" + std::to_string(lane);
-        for (auto &x : inst.dst)
-          x += "_lane" + std::to_string(lane);
-        inst.topBlockId = frame.topBlockId;
-        inst.isLastInTopBlock = false;
-        inst.blockKeyByLevel = buildBlockKeyByLevel(loopStack, inst.iterStack);
-        inst.blockEndLevels.clear();
-        pending.push_back(std::move(inst));
+  for (const auto &ins : body) {
+    for (int64_t lane = 0; lane < U; ++lane) {
+      DynamicInst inst;
+      inst.instId = instId_++;
+      inst.type = ins.type;
+      inst.op = ins.op;
+      inst.src = ins.src;
+      inst.dst = ins.dst;
+      inst.loopStack = loopStack;
+      if (!iterStack.empty()) {
+        inst.iterStack = iterStack;
+        inst.iterStack.back() = superIter;
       }
+      inst.loopDepth = static_cast<int64_t>(loopStack.size());
+      inst.inLoop = true;
+      inst.unrollFactor = U;
+      inst.unrollGroup = unrollGroup_;
+      inst.lane = lane;
+      inst.origIterBase = origBase;
+      for (auto &x : inst.src)
+        x += "_lane" + std::to_string(lane);
+      for (auto &x : inst.dst)
+        x += "_lane" + std::to_string(lane);
+      inst.topBlockId = frame.topBlockId;
+      inst.isLastInTopBlock = false;
+      inst.blockKeyByLevel = buildBlockKeyByLevel(loopStack, inst.iterStack);
+      inst.blockEndLevels.clear();
+      pending.push_back(std::move(inst));
     }
-  };
-
-  emitSeq(loads);
-  emitSeq(alus);
-  emitSeq(stores);
+  }
 
   if (!pending.empty()) {
     std::vector<int64_t> endLevels;

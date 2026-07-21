@@ -24,6 +24,7 @@ set(VFSIM_NATIVE_CORE_SOURCES
   ParamDB.cpp
   ISATraits.cpp
   ProgramAnalysis.cpp
+  ProgramCanonicalization.cpp
   ProgramFlatten.cpp
   IFU.cpp
   IDU.cpp
@@ -108,6 +109,18 @@ set_target_properties(vfsim_tadd_tmul_trace PROPERTIES
 
 add_test(NAME vfsim_tadd_tmul_trace
   COMMAND vfsim_tadd_tmul_trace
+)
+
+add_executable(vfsim_program_canonicalization_test
+  ProgramCanonicalizationTest.cpp
+)
+
+target_link_libraries(vfsim_program_canonicalization_test PRIVATE
+  vfsim::native_core
+)
+
+add_test(NAME vfsim_program_canonicalization_test
+  COMMAND vfsim_program_canonicalization_test
 )
 
 add_executable(vfsim_native_json_runner

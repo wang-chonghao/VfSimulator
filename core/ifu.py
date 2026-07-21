@@ -28,17 +28,6 @@ These are intended for IDU-side dynamic VLOOP scheduling for:
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.isa_traits import is_load_op, is_store_op
-
-
-def _classify_op(op: str, pdb=None, dtype: str = "fp32") -> str:
-    if is_load_op(op, pdb, dtype):
-        return "LD"
-    if is_store_op(op, pdb, dtype):
-        return "ST"
-    return "ALU"
-
-
 def _is_pow2(u: int) -> bool:
     return u > 0 and (u & (u - 1)) == 0
 
@@ -291,19 +280,6 @@ class IFUUnroll:
     def _build_pending_unrolled(self, frame: LoopFrame) -> None:
         body = self.loop_body_cache.get(frame.begin_idx, [])
 
-        loads = [
-            x for x in body
-            if _classify_op(str(x.get("op")), self.db, self.dtype) == "LD"
-        ]
-        alus = [
-            x for x in body
-            if _classify_op(str(x.get("op")), self.db, self.dtype) == "ALU"
-        ]
-        stores = [
-            x for x in body
-            if _classify_op(str(x.get("op")), self.db, self.dtype) == "ST"
-        ]
-
         loop_stack, iter_stack = self._snapshot()
         U = frame.unroll
         orig_base = frame.iter_now
@@ -315,40 +291,39 @@ class IFUUnroll:
         # only at the very last emitted inst of the pending batch.
         is_last_super_iter = (orig_base + U >= frame.iters_total)
 
-        for seq in (loads, alus, stores):
-            for ins in seq:
-                for lane in range(U):
-                    inst = dict(ins)
-                    inst["inst_id"] = self.inst_id
-                    self.inst_id += 1
+        for ins in body:
+            for lane in range(U):
+                inst = dict(ins)
+                inst["inst_id"] = self.inst_id
+                self.inst_id += 1
 
-                    inst["loop_stack"] = list(loop_stack)
-                    if iter_stack:
-                        inst["iter_stack"] = list(iter_stack[:-1] + [super_iter])
-                    else:
-                        inst["iter_stack"] = []
-                    inst["loop_depth"] = len(loop_stack)
-                    inst["in_loop"] = True
+                inst["loop_stack"] = list(loop_stack)
+                if iter_stack:
+                    inst["iter_stack"] = list(iter_stack[:-1] + [super_iter])
+                else:
+                    inst["iter_stack"] = []
+                inst["loop_depth"] = len(loop_stack)
+                inst["in_loop"] = True
 
-                    inst["unroll_factor"] = U
-                    inst["unroll_group"] = self._unroll_group
-                    inst["unroll_lane"] = lane
-                    inst["orig_iter_base"] = orig_base
-                    inst["lane"] = lane
+                inst["unroll_factor"] = U
+                inst["unroll_group"] = self._unroll_group
+                inst["unroll_lane"] = lane
+                inst["orig_iter_base"] = orig_base
+                inst["lane"] = lane
 
-                    inst["src"] = [(x + "_lane" + str(lane)) for x in inst["src"]]
-                    inst["dst"] = [(x + "_lane" + str(lane)) for x in inst["dst"]]
+                inst["src"] = [(x + "_lane" + str(lane)) for x in inst["src"]]
+                inst["dst"] = [(x + "_lane" + str(lane)) for x in inst["dst"]]
 
-                    # top-level sibling info
-                    inst["top_block_id"] = int(frame.top_block_id)
-                    inst["is_last_in_top_block"] = False
+                # top-level sibling info
+                inst["top_block_id"] = int(frame.top_block_id)
+                inst["is_last_in_top_block"] = False
 
-                    # nested-loop metadata
-                    bs = list(inst["iter_stack"])
-                    inst["block_key_by_level"] = self._build_block_key_by_level(loop_stack, bs)
-                    inst["block_end_levels"] = []
+                # nested-loop metadata
+                bs = list(inst["iter_stack"])
+                inst["block_key_by_level"] = self._build_block_key_by_level(loop_stack, bs)
+                inst["block_end_levels"] = []
 
-                    pending.append(inst)
+                pending.append(inst)
 
         # mark only the last emitted inst as block-end candidate
         if pending:

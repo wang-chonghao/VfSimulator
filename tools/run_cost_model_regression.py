@@ -371,8 +371,8 @@ def main() -> None:
     parser.add_argument(
         "--baseline",
         type=str,
-        default="regression_suite/cases/baseline_consumer_done.json",
-        help="Path to baseline JSON",
+        default="regression_suite/cases/baseline_queue_level4_ooo_transfer_delay.json",
+        help="Path to queue_level4+ooo-transfer-delay baseline JSON",
     )
     parser.add_argument(
         "--out-dir",
@@ -445,7 +445,12 @@ def main() -> None:
         )
 
     baseline = _load_json(baseline_path)
+    print(f"[info] comparing against baseline: {baseline_path}")
     summary = _compare_with_baseline(suite, current, baseline)
+    summary["baseline"] = {
+        "path": str(baseline_path),
+        "meta": baseline.get("meta", {}),
+    }
     summary_path = out_dir / "compare_summary.json"
     _dump_json(summary_path, summary)
     print(f"[info] wrote summary: {summary_path}")

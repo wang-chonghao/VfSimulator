@@ -52,6 +52,16 @@ ProgramNode makeLoopNode(std::string iters, std::vector<ProgramNode> body) {
   return ProgramNode::makeLoop(std::move(loop));
 }
 
+ProgramNode makeUnrolledLoopNode(std::string iters, std::string unroll,
+                                 std::vector<ProgramNode> body) {
+  ProgramLoopNode loop;
+  loop.iters = std::move(iters);
+  loop.unroll = std::move(unroll);
+  loop.name = "unroll_order_loop";
+  loop.body = std::move(body);
+  return ProgramNode::makeLoop(std::move(loop));
+}
+
 std::vector<ProgramNode> buildTaddTmulProgram() {
   std::vector<ProgramNode> body;
 
@@ -72,12 +82,41 @@ int countTopLevelLoops(const std::vector<ProgramNode> &program) {
   return count;
 }
 
+void verifyUnrollOrder(const ParamDB &db) {
+  const std::vector<ProgramNode> program = {makeUnrolledLoopNode(
+      "2", "2",
+      {makeInstNode("VLDS", {"v0"}, {"mem0"}),
+       makeInstNode("VADD", {"v1"}, {"v0", "v2"}),
+       makeInstNode("VLDS", {"v3"}, {"mem1"}),
+       makeInstNode("VSUB", {"v4"}, {"v1", "v3"}),
+       makeInstNode("VSTS", {"mem2"}, {"v4"})})};
+
+  ProgramFlatten flattener;
+  const auto &linear = flattener.flatten(program);
+  ProgramAnalysis analysis;
+  IFU ifu(linear, {}, &db, analysis.inferTopBlockLoopBounds(program), 1,
+          "fp32");
+  const auto emitted = ifu.take(10);
+  const std::vector<std::string> expected = {
+      "VLDS", "VLDS", "VADD", "VADD", "VLDS",
+      "VLDS", "VSUB", "VSUB", "VSTS", "VSTS"};
+  require(emitted.size() == expected.size(),
+          "unrolled IFU emitted an unexpected instruction count");
+  for (size_t i = 0; i < expected.size(); ++i) {
+    require(emitted[i].op == expected[i],
+            "unrolled IFU must preserve static AABBCC order");
+    require(emitted[i].lane == static_cast<int64_t>(i % 2),
+            "unrolled IFU emitted an unexpected lane order");
+  }
+}
+
 } // namespace
 
 int main() {
   try {
     const std::filesystem::path root = std::filesystem::path(VFSIM_SOURCE_ROOT);
     ParamDB db(root);
+    verifyUnrollOrder(db);
 
     const auto program = buildTaddTmulProgram();
     ProgramAnalysis analysis;

@@ -26,7 +26,7 @@
 ## 2.1 模型日志（本仓库 cost model）
 
 ```bash
-python main.py --trace VFtest/GeLU_poly.json --out_dir results/unroll_test/model_logs/I96_unroll4 --ooo-model consumer-done
+python main.py --trace VFtest/GeLU_poly.json --out_dir results/unroll_test/model_logs/I96_unroll4
 ```
 
 关键输出：
@@ -129,10 +129,17 @@ python main.py --trace VFtest/GeLU_poly.json --out_dir results/unroll_test/model
 python tools/run_cost_model_regression.py --tier smoke
 ```
 
+默认与 `precision_compare_3modes.md` 中的
+`queue_level4+ooo-transfer-delay` 列比较，对应基线文件：
+
+```text
+regression_suite/cases/baseline_queue_level4_ooo_transfer_delay.json
+```
+
 更新 baseline：
 
 ```bash
-python tools/run_cost_model_regression.py --tier smoke --update-baseline
+python tools/run_cost_model_regression.py --tier full --update-baseline
 ```
 
 说明：当前这 3 个 case 的 `cce_vf_end` 采用 `misched0` 口径，并在 case 中保留来源标记，便于后续继续做双口径跟踪。
