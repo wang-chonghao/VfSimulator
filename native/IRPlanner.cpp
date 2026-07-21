@@ -7,11 +7,8 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 #include "native/IRPlanner.h"
-#include "native/IDU.h"
-#include "native/IFU.h"
-#include "native/OOO.h"
 #include "native/ParamDB.h"
-#include "native/ProgramFlatten.h"
+#include "native/ProgramAnalysis.h"
 #include "native/SimulatorRunner.h"
 #include "native/TileOpTemplates.h"
 
@@ -76,14 +73,6 @@ static void dumpPlannerGroups(
   }
 }
 
-static int countTopLevelLoops(const std::vector<vfsim::ProgramNode> &program) {
-  int count = 0;
-  for (const auto &node : program)
-    if (node.kind == vfsim::ProgramNode::Kind::Loop)
-      ++count;
-  return count;
-}
-
 static std::vector<unsigned> enumerateUnrollCandidates(int64_t tripCount,
                                                        unsigned maxUnroll) {
   std::vector<unsigned> candidates;
@@ -102,25 +91,12 @@ static std::optional<int64_t>
 simulateCandidate(const vfsim::LoweredTileGroupProgram &lowered,
                   const vfsim::ParamDB &db, unsigned unroll) {
   try {
-    vfsim::ProgramAnalysis::ParamMap params;
-    params.emplace("vfsim_inner_unroll", static_cast<int64_t>(unroll));
+    vfsim::VfInfo vfInfo = lowered.vfInfo;
+    vfInfo.params["vfsim_inner_unroll"] = static_cast<int64_t>(unroll);
+    normalizeVregLiveRanges(vfInfo.body);
 
-    std::vector<vfsim::ProgramNode> program = lowered.program;
-    normalizeVregLiveRanges(program);
-
-    vfsim::ProgramAnalysis analysis(params);
-    const auto loopBounds = analysis.inferTopBlockLoopBounds(program);
-    vfsim::ProgramFlatten flattener(params);
-    const auto &linear = flattener.flatten(program);
-
-    const int topBlocks = countTopLevelLoops(program);
-    vfsim::IFU ifu(linear, params, &db, loopBounds, topBlocks, lowered.dtype);
-    vfsim::IDU idu(db.uarch(), db, {}, {}, topBlocks, loopBounds,
-                   lowered.dtype);
-    vfsim::OoOCoreMainline ooo(db.uarch(), db, lowered.dtype);
-
-    const auto result = vfsim::runSimulation(
-        ifu, idu, ooo, db.uarch(), {}, "", /*maxCycles=*/1000000);
+    const auto result =
+        vfsim::runVfInfo(vfInfo, db, "", /*maxCycles=*/1000000);
     return result.vfEndCycle;
   } catch (...) {
     return std::nullopt;
@@ -341,7 +317,7 @@ chooseBestUnroll(const vfsim::LoweredTileGroupProgram &lowered,
     if (dumpCandidates) {
       llvm::errs() << "  unroll=" << unroll
                    << " trip=" << lowered.unrollTripCount
-                   << " dtype=" << lowered.dtype << " cycles=";
+                   << " dtype=" << lowered.vfInfo.defaultDtype << " cycles=";
       if (cycles)
         llvm::errs() << *cycles;
       else

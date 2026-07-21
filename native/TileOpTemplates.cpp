@@ -66,10 +66,12 @@ lookupElementwiseTemplate(llvm::StringRef opName) {
       .Default(std::nullopt);
 }
 
-static ProgramNode makeInstNode(std::string op, std::vector<std::string> dst,
+static ProgramNode makeInstNode(std::string op, std::string form,
+                                std::vector<std::string> dst,
                                 std::vector<std::string> src) {
   ProgramInstNode inst;
   inst.op = std::move(op);
+  inst.form = std::move(form);
   inst.dst = std::move(dst);
   inst.src = std::move(src);
   return ProgramNode::makeInst(std::move(inst));
@@ -141,6 +143,26 @@ static int64_t lanesForDType(const std::string &dtype) {
   return 64;
 }
 
+static std::string compactDType(llvm::StringRef dtype) {
+  return llvm::StringSwitch<std::string>(dtype)
+      .Case("fp32", "f32")
+      .Case("fp16", "f16")
+      .Case("int32", "s32")
+      .Case("uint32", "u32")
+      .Default(dtype.str());
+}
+
+static std::string conversionForm(llvm::StringRef srcDtype,
+                                  llvm::StringRef dstDtype) {
+  return compactDType(srcDtype) + "_to_" + compactDType(dstDtype);
+}
+
+static std::optional<std::string> dtypeOf(mlir::Value value) {
+  if (auto shape = parseStaticTileShape(value.getType()))
+    return shape->dtype;
+  return std::nullopt;
+}
+
 static std::string nextVreg(unsigned &nextId) {
   return "v" + std::to_string(nextId++);
 }
@@ -158,7 +180,9 @@ static std::string materializeInput(
     return existing->second;
 
   const std::string reg = nextVreg(nextVregId);
-  body.push_back(makeInstNode("VLDS", {reg}, {nextMem(nextMemId)}));
+  const std::string form = dtypeOf(value).value_or("fp32");
+  body.push_back(
+      makeInstNode("VLDS", form, {reg}, {nextMem(nextMemId)}));
   valueToVreg.try_emplace(value, reg);
   return reg;
 }
@@ -175,7 +199,9 @@ static void materializeExternalStores(
     auto regIt = valueToVreg.find(value);
     if (regIt == valueToVreg.end())
       continue;
-    body.push_back(makeInstNode("VSTS", {nextMem(nextMemId)}, {regIt->second}));
+    const std::string form = dtypeOf(value).value_or("fp32");
+    body.push_back(makeInstNode("VSTS", form, {nextMem(nextMemId)},
+                                {regIt->second}));
   }
 }
 
@@ -256,7 +282,10 @@ lowerTileGroupWithPerformanceTemplates(llvm::ArrayRef<PlannedTileOpIR> orderedOp
         srcRegs.push_back("scalar");
       } else {
         const std::string scalarReg = nextVreg(nextVregId);
-        innerBody.push_back(makeInstNode("VBR", {scalarReg}, {"scalar"}));
+        const std::string form =
+            dtypeOf(tileOp.op->getOperand(outputBase)).value_or("fp32");
+        innerBody.push_back(
+            makeInstNode("VBR", form, {scalarReg}, {"scalar"}));
         srcRegs.push_back(scalarReg);
       }
     }
@@ -278,8 +307,8 @@ lowerTileGroupWithPerformanceTemplates(llvm::ArrayRef<PlannedTileOpIR> orderedOp
         return lowered;
       }
       loopShape = *shape;
-      lowered.dtype = loopShape.dtype;
-      const int64_t lanes = lanesForDType(lowered.dtype);
+      lowered.vfInfo.defaultDtype = loopShape.dtype;
+      const int64_t lanes = lanesForDType(loopShape.dtype);
       const int64_t colTripCount = (loopShape.cols + lanes - 1) / lanes;
       if (colTripCount == 1) {
         lowered.unrollTripCount = loopShape.rows;
@@ -291,7 +320,26 @@ lowerTileGroupWithPerformanceTemplates(llvm::ArrayRef<PlannedTileOpIR> orderedOp
     }
 
     const std::string dstReg = nextVreg(nextVregId);
-    innerBody.push_back(makeInstNode(templ->microOp.str(), {dstReg}, srcRegs));
+    const std::string dstDtype = dtypeOf(dstValue).value_or(loopShape.dtype);
+    std::string microOp = templ->microOp.str();
+    std::string form = dstDtype;
+    if (stripPtoPrefix(tileOp.op->getName().getStringRef()) == "tcvt") {
+      const std::string srcDtype =
+          dtypeOf(tileOp.op->getOperand(0)).value_or(loopShape.dtype);
+      form = conversionForm(srcDtype, dstDtype);
+      if (srcDtype == "fp16" && dstDtype == "fp32")
+        microOp = "VCVT_F16_TO_F32";
+      else if (srcDtype == "fp32" && dstDtype == "fp16")
+        microOp = "VCVT_F32_TO_F16";
+      else {
+        lowered.unsupportedReason =
+            "unsupported tcvt dtype conversion: " + srcDtype + " -> " +
+            dstDtype;
+        return lowered;
+      }
+    }
+    innerBody.push_back(
+        makeInstNode(std::move(microOp), std::move(form), {dstReg}, srcRegs));
     valueToVreg[dstValue] = dstReg;
     producedValues.push_back(dstValue);
   }
@@ -303,20 +351,20 @@ lowerTileGroupWithPerformanceTemplates(llvm::ArrayRef<PlannedTileOpIR> orderedOp
     return lowered;
   }
 
-  const int64_t lanes = lanesForDType(lowered.dtype);
+  const int64_t lanes = lanesForDType(loopShape.dtype);
   const int64_t colTripCount = (loopShape.cols + lanes - 1) / lanes;
   if (colTripCount == 1) {
-    lowered.program.push_back(makeLoopNode("tile_flattened_row_loop",
-                                           loopShape.rows,
-                                           "vfsim_inner_unroll",
-                                           std::move(innerBody)));
+    lowered.vfInfo.body.push_back(makeLoopNode("tile_flattened_row_loop",
+                                               loopShape.rows,
+                                               "vfsim_inner_unroll",
+                                               std::move(innerBody)));
     return lowered;
   }
 
   std::vector<ProgramNode> rowBody;
   rowBody.push_back(makeLoopNode("tile_col_loop", colTripCount,
                                  "vfsim_inner_unroll", std::move(innerBody)));
-  lowered.program.push_back(
+  lowered.vfInfo.body.push_back(
       makeLoopNode("tile_row_loop", loopShape.rows, "1", std::move(rowBody)));
   return lowered;
 }

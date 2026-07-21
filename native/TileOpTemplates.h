@@ -9,7 +9,7 @@
 #ifndef VFSIM_NATIVE_TILE_OP_TEMPLATES_H
 #define VFSIM_NATIVE_TILE_OP_TEMPLATES_H
 
-#include "native/ProgramAnalysis.h"
+#include "api/native/VfInfo.h"
 
 #include "mlir/IR/Value.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -34,10 +34,9 @@ enum class UnrollLoopDimension {
 };
 
 struct LoweredTileGroupProgram {
-  std::vector<ProgramNode> program;
+  VfInfo vfInfo;
   int64_t unrollTripCount = 0;
   UnrollLoopDimension unrollDimension = UnrollLoopDimension::None;
-  std::string dtype = "fp32";
   std::string unsupportedReason;
 
   bool supported() const { return unsupportedReason.empty(); }
