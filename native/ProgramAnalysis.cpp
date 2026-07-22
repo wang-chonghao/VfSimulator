@@ -41,12 +41,31 @@ ProgramNode ProgramNode::makeLoop(ProgramLoopNode value) {
   return node;
 }
 
-ProgramAnalysis::ProgramAnalysis(ParamMap params) : params_(std::move(params)) {}
+ProgramAnalysis::ProgramAnalysis(ParamMap params,
+                                 std::unordered_map<std::string, ValueInfo> values)
+    : params_(std::move(params)), values_(std::move(values)) {}
 
-bool ProgramAnalysis::isVregName(const std::string &name) {
-  if (name.size() < 2 || name[0] != 'v')
-    return false;
-  return isDigits(name.substr(1));
+bool ProgramAnalysis::isVregName(const std::string &name) const {
+  auto it = values_.find(name);
+  if (it != values_.end())
+    return it->second.storage == ValueStorageKind::Register;
+  const std::string suffix = "_lane";
+  const auto pos = name.rfind(suffix);
+  if (pos != std::string::npos && pos + suffix.size() < name.size()) {
+    bool digits = true;
+    for (size_t i = pos + suffix.size(); i < name.size(); ++i) {
+      if (!std::isdigit(static_cast<unsigned char>(name[i]))) {
+        digits = false;
+        break;
+      }
+    }
+    if (digits) {
+      it = values_.find(name.substr(0, pos));
+      if (it != values_.end())
+        return it->second.storage == ValueStorageKind::Register;
+    }
+  }
+  return inferValueStorage(name) == ValueStorageKind::Register;
 }
 
 int64_t ProgramAnalysis::resolveBound(const std::string &bound) const {
@@ -69,7 +88,7 @@ int64_t ProgramAnalysis::resolveUnrollValue(const std::string &unroll) const {
 
 void ProgramAnalysis::collectVregsFromInst(
     const ProgramInstNode &inst,
-    std::unordered_map<std::string, bool> &vregs) {
+    std::unordered_map<std::string, bool> &vregs) const {
   for (const auto &name : inst.src) {
     if (isVregName(name))
       vregs.emplace(name, true);

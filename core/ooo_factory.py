@@ -23,9 +23,9 @@ def resolve_model_uarch(uarch: Dict[str, Any]) -> Dict[str, Any]:
     return normalize_mainline_uarch(uarch)
 
 
-def create_ooo_core(uarch: Dict[str, Any], pdb, dtype: str = "fp32"):
+def create_ooo_core(uarch: Dict[str, Any], pdb, dtype: str = "fp32", values: Dict[str, Any] | None = None):
     """
     Build the single supported OoO core from a normalized mainline uarch.
     """
     resolved = dict(uarch) if bool(uarch.get("_ooo_uarch_resolved", False)) else resolve_model_uarch(uarch)
-    return OoOCoreMainline(resolved, pdb, dtype=dtype)
+    return OoOCoreMainline(resolved, pdb, dtype=dtype, values=values)

@@ -197,13 +197,14 @@ def main():
 
     dtype = trace.get("dtype", "fp32")
     params = trace.get("params", {}) or {}
+    values = trace.get("values", {}) or {}
     program = trace.get("program")
     if program is None:
         raise RuntimeError("trace.json missing key 'program'")
     db = ParamDB(base_dir=base_dir)
-    analyzer = ProgramAnalyzer(params)
+    analyzer = ProgramAnalyzer(params, values=values)
 
-    program, norm_stats = normalize_program_vreg_live_ranges(program)
+    program, norm_stats = normalize_program_vreg_live_ranges(program, values=values)
     print(
         "[INFO] vreg live-range normalization = ON, changed_chains =",
         int(norm_stats.get("changed_fields", norm_stats.get("changed_chains", 0))),
@@ -247,7 +248,7 @@ def main():
     if not os.path.isabs(results_dir):
         results_dir = os.path.join(base_dir, results_dir)
 
-    ooo = create_ooo_core(uarch, db, dtype=dtype)
+    ooo = create_ooo_core(uarch, db, dtype=dtype, values=values)
     sim_result = run_simulation(
         ifu=ifu,
         idu=idu,
@@ -255,6 +256,7 @@ def main():
         uarch=uarch,
         params=params,
         results_dir=results_dir,
+        values=values,
     )
 
     print("Done. cycles_executed =", int(sim_result["cycles_executed"]))

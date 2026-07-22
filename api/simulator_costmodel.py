@@ -50,16 +50,17 @@ class CoreVfCostModel(VfCostModel):
         program = payload.get("program")
         if program is None:
             raise RuntimeError("payload missing key 'program'")
+        values = payload.get("values", {}) or {}
 
         db = ParamDB(base_dir=str(base_dir))
-        program, norm_stats = normalize_program_vreg_live_ranges(program)
+        program, norm_stats = normalize_program_vreg_live_ranges(program, values=values)
         program, canonicalization_stats = canonicalize_single_super_iteration_loops(
             program,
             params,
             pdb=db,
             dtype=dtype,
         )
-        analyzer = ProgramAnalyzer(params)
+        analyzer = ProgramAnalyzer(params, values=values)
         top_block_loop_bounds = analyzer.infer_top_block_loop_bounds(program)
         loop_bounds = top_block_loop_bounds.get(0, [])
         linear = Flattener(params).flatten(program)
@@ -81,7 +82,7 @@ class CoreVfCostModel(VfCostModel):
             top_block_loop_bounds=top_block_loop_bounds,
             dtype=dtype,
         )
-        ooo = create_ooo_core(uarch, db, dtype=dtype)
+        ooo = create_ooo_core(uarch, db, dtype=dtype, values=values)
 
         results_dir = Path(self.out_dir)
         if not results_dir.is_absolute():
@@ -94,6 +95,7 @@ class CoreVfCostModel(VfCostModel):
             uarch=uarch,
             params=params,
             results_dir=str(results_dir),
+            values=values,
         )
         result["linear_inst_count"] = len(linear)
         result["normalization_stats"] = norm_stats

@@ -9,14 +9,15 @@ from collections import deque
 import json
 
 from core.isa_traits import is_compute_op, is_load_op
+from core.value_storage import ValueStorageLookup
 
 
 def is_vreg(name: Any) -> bool:
-    return isinstance(name, str) and name[:1].lower() == "v"
+    return ValueStorageLookup().is_register(name)
 
 
 def is_mem(name: Any) -> bool:
-    return isinstance(name, str) and name[:3].lower() == "mem"
+    return ValueStorageLookup().is_ub(name)
 
 
 def is_intermediate_mem(name: Any) -> bool:
@@ -57,9 +58,10 @@ class Uop:
 
 
 class OoOCore:
-    def __init__(self, uarch: Dict[str, Any], pdb, dtype: str = "fp32"):
+    def __init__(self, uarch: Dict[str, Any], pdb, dtype: str = "fp32", values: Dict[str, Any] | None = None):
         self.dtype = dtype
         self.db = pdb
+        self.value_storage = ValueStorageLookup(values)
         self.theoretical_limit_mode = bool(uarch.get("theoretical_limit_mode", False))
         self.three_ports_mode = bool(uarch.get("three_ports_mode", False))
 
@@ -138,6 +140,12 @@ class OoOCore:
 
         self.cyc_start_log: List[Dict[str, Any]] = []
         self.cyc_done_log: List[Dict[str, Any]] = []
+
+    def is_vreg(self, name: Any) -> bool:
+        return self.value_storage.is_register(name)
+
+    def is_mem(self, name: Any) -> bool:
+        return self.value_storage.is_ub(name)
 
     # -------- logging --------
     def _log(self, event: str, u: Uop) -> None:

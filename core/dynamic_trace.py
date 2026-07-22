@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any, Dict, List, Tuple
 
+from core.value_storage import ValueStorageLookup
 
-def is_vreg(name: Any) -> bool:
-    return isinstance(name, str) and name[:1].lower() == "v"
+
+def is_vreg(name: Any, value_storage: ValueStorageLookup | None = None) -> bool:
+    return (value_storage or ValueStorageLookup()).is_register(name)
 
 
 def materialize_dynamic_insts(ifu) -> List[Dict[str, Any]]:

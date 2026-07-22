@@ -7,20 +7,17 @@ from collections import deque
 from typing import Any, Dict
 
 from core.isa_traits import uses_lsq, uses_shared_shq_credit, uses_shq_queue
+from core.value_storage import ValueStorageLookup
 
 
-def _is_vreg_name(x: Any) -> bool:
-    return isinstance(x, str) and x[:1].lower() == "v"
-
-
-def _inst_reservation(inst: Dict[str, Any]) -> Dict[str, int]:
+def _inst_reservation(inst: Dict[str, Any], value_storage: ValueStorageLookup) -> Dict[str, int]:
     op = str(inst.get("op", ""))
     dsts = inst.get("dst", [])
     if isinstance(dsts, str):
         dsts = [dsts]
     if not isinstance(dsts, list):
         dsts = []
-    preg = sum(1 for d in dsts if _is_vreg_name(d))
+    preg = sum(1 for d in dsts if value_storage.is_register(d))
     shq_queue = 1 if uses_shq_queue(op) else 0
     lsq = 1 if uses_lsq(op) else 0
     shq = 1 if uses_shared_shq_credit(op) else 0
@@ -56,8 +53,10 @@ def run_simulation(
     uarch: Dict[str, Any],
     params: Dict[str, Any],
     results_dir: str,
+    values: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """
+    value_storage = ValueStorageLookup(values)
     Run the main IFU -> IDU -> OoO simulation loop and dump the standard logs.
 
     Returns:
@@ -90,7 +89,7 @@ def run_simulation(
         while idu_to_ooo_pipe and idu_to_ooo_pipe[0][0] <= cycle:
             _, inst = idu_to_ooo_pipe.popleft()
             if use_explicit_idu_credit_bank:
-                r = _inst_reservation(inst)
+                r = _inst_reservation(inst, value_storage)
                 idu_pending_shq_queue = max(
                     0, int(idu_pending_shq_queue) - int(r["shq_queue"])
                 )
@@ -100,7 +99,7 @@ def run_simulation(
         pending_preg = pending_shq_queue = pending_lsq = pending_shq = 0
         if not use_explicit_idu_credit_bank:
             for _, inst in idu_to_ooo_pipe:
-                r = _inst_reservation(inst)
+                r = _inst_reservation(inst, value_storage)
                 pending_preg += int(r["preg"])
                 pending_shq_queue += int(r["shq_queue"])
                 pending_lsq += int(r["lsq"])
@@ -134,7 +133,7 @@ def run_simulation(
         to_send = idu.dispatch(cycle, idu_credit_proxy)
         for inst in to_send:
             if use_explicit_idu_credit_bank:
-                r = _inst_reservation(inst)
+                r = _inst_reservation(inst, value_storage)
                 idu_preg_credit = max(0, int(idu_preg_credit) - int(r["preg"]))
                 idu_shq_credit = max(0, int(idu_shq_credit) - int(r["shq"]))
                 if idu_to_ooo_delay > 0:

@@ -34,7 +34,8 @@ SimulationResult runSimulation(IFU &ifu,
                                const UarchConfig &uarch,
                                const ProgramAnalysis::ParamMap &params,
                                const std::string &resultsDir,
-                               int64_t maxCycles = 1000000);
+                               int64_t maxCycles = 1000000,
+                               const std::unordered_map<std::string, ValueInfo> &values = {});
 
 } // namespace vfsim
 
