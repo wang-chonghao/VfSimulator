@@ -90,11 +90,17 @@
       "error_to_cce_abs": 190.0,
       "error_to_cce_rel": 0.09401286491835725
     },
+    "gelu_poly_i96_u3": {
+      "vf_end": 1743
+    },
     "gelu_poly_i96_u4": {
       "vf_end": 1777,
       "cce_vf_end": 1712,
       "error_to_cce_abs": 65.0,
       "error_to_cce_rel": 0.037967289719626166
+    },
+    "gelu_poly_i96_u6": {
+      "vf_end": 1731
     },
     "gelu_poly_i96_u8": {
       "vf_end": 1706,
