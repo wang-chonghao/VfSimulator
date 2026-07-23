@@ -35,10 +35,18 @@ ProgramNode loop(std::vector<ProgramNode> body) {
   return ProgramNode::makeLoop(std::move(value));
 }
 
+ValueInfo regValue(std::string id) {
+  ValueInfo value;
+  value.valueId = std::move(id);
+  value.storage = ValueStorageKind::Register;
+  value.dtype = "fp32";
+  return value;
+}
+
 } // namespace
 
 int main() {
-  std::vector<ProgramNode> program = {
+  const std::vector<ProgramNode> program = {
       loop({
           inst("VLDS", {"v0"}, {"mem0"}),
           inst("VADD", {"v1"}, {"v0", "v2"}),
@@ -65,5 +73,29 @@ int main() {
   require(body[4].inst.src[0] == "v0",
           "store consumes the normalized final value");
   require(stats.changedFields > 0, "normalization must report changes");
+
+  VfInfo vfInfo;
+  vfInfo.values.emplace("v1", regValue("v1"));
+  vfInfo.values.emplace("v0", regValue("v0"));
+  vfInfo.body = {
+      loop({
+          inst("VADD", {"v1"}, {"s0", "s0"}),
+          inst("VEXP", {"v0"}, {"v1"}),
+          inst("VADD", {"v1"}, {"s1", "s1"}),
+          inst("VADD", {"v4"}, {"v0", "v1"}),
+      })};
+
+  normalizeProgramVregLiveRanges(vfInfo);
+  const auto &freshBody = vfInfo.body.front().loop->body;
+  const std::string &fresh = freshBody[2].inst.dst[0];
+  require(fresh != "v0" && fresh != "v1",
+          "fresh register is allocated when all existing slots are live");
+  auto valueIt = vfInfo.values.find(fresh);
+  require(valueIt != vfInfo.values.end(),
+          "fresh register value info is recorded");
+  require(valueIt->second.storage == ValueStorageKind::Register,
+          "fresh register uses explicit Register storage");
+  require(valueIt->second.valueId == fresh,
+          "fresh register value id matches the generated slot");
   return 0;
 }

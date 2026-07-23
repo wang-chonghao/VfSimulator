@@ -149,8 +149,7 @@ SimulationResult runVfInfo(const VfInfo &input,
                            int64_t maxCycles) {
   VfInfo vfInfo = input;
   lowerVfInfoValueIds(vfInfo);
-  vfInfo.body = normalizeProgramVregLiveRanges(vfInfo.body, vfInfo.params,
-                                               vfInfo.values);
+  normalizeProgramVregLiveRanges(vfInfo);
   const auto program = canonicalizeSingleSuperIterationLoops(
       vfInfo.body, vfInfo.params, db, vfInfo.defaultDtype);
   ProgramAnalysis analysis(vfInfo.params, vfInfo.values);

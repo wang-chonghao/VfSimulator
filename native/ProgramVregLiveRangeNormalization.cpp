@@ -76,10 +76,27 @@ void countFieldChanges(const ProgramInstNode &before,
   }
 }
 
+void ensureRegisterValue(
+    std::unordered_map<std::string, ValueInfo> *values,
+    const std::string &slot,
+    const std::string &sourceValueId) {
+  if (values == nullptr || values->find(slot) != values->end())
+    return;
+
+  ValueInfo value;
+  auto sourceIt = values->find(sourceValueId);
+  if (sourceIt != values->end())
+    value = sourceIt->second;
+  value.valueId = slot;
+  value.storage = ValueStorageKind::Register;
+  values->emplace(slot, std::move(value));
+}
+
 std::vector<ProgramNode> normalizeFlatLoopVregs(
     const std::vector<ProgramNode> &body,
     const ProgramAnalysis &analysis,
-    ProgramVregLiveRangeNormalizationStats &stats) {
+    ProgramVregLiveRangeNormalizationStats &stats,
+    std::unordered_map<std::string, ValueInfo> *values) {
   std::vector<ProgramNode> out = body;
   std::unordered_map<std::string, VregVersion> currentVersionByVreg;
   std::unordered_map<std::string, int64_t> versionCounter;
@@ -210,6 +227,7 @@ std::vector<ProgramNode> normalizeFlatLoopVregs(
 
         if (!containsSlot(slotPool, chosenSlot))
           slotPool.push_back(chosenSlot);
+        ensureRegisterValue(values, chosenSlot, dstName);
         slotOfVersion[*dstVersion] = chosenSlot;
         currentSlotByVreg[dstName] = chosenSlot;
         slotOccupant[chosenSlot] = *dstVersion;
@@ -228,7 +246,8 @@ std::vector<ProgramNode> normalizeFlatLoopVregs(
 std::vector<ProgramNode> normalizeNodes(
     const std::vector<ProgramNode> &program,
     const ProgramAnalysis &analysis,
-    ProgramVregLiveRangeNormalizationStats &stats) {
+    ProgramVregLiveRangeNormalizationStats &stats,
+    std::unordered_map<std::string, ValueInfo> *values) {
   std::vector<ProgramNode> out;
   out.reserve(program.size());
   for (const ProgramNode &node : program) {
@@ -244,9 +263,10 @@ std::vector<ProgramNode> normalizeNodes(
         });
     ProgramLoopNode rewritten = *node.loop;
     if (flatInstBody) {
-      rewritten.body = normalizeFlatLoopVregs(rewritten.body, analysis, stats);
+      rewritten.body =
+          normalizeFlatLoopVregs(rewritten.body, analysis, stats, values);
     } else {
-      rewritten.body = normalizeNodes(rewritten.body, analysis, stats);
+      rewritten.body = normalizeNodes(rewritten.body, analysis, stats, values);
     }
     out.push_back(ProgramNode::makeLoop(std::move(rewritten)));
   }
@@ -262,10 +282,21 @@ std::vector<ProgramNode> normalizeProgramVregLiveRanges(
     ProgramVregLiveRangeNormalizationStats *stats) {
   ProgramVregLiveRangeNormalizationStats localStats;
   ProgramAnalysis analysis(params, values);
-  auto normalized = normalizeNodes(program, analysis, localStats);
+  auto normalized = normalizeNodes(program, analysis, localStats, nullptr);
   if (stats != nullptr)
     *stats = localStats;
   return normalized;
+}
+
+void normalizeProgramVregLiveRanges(
+    VfInfo &vfInfo,
+    ProgramVregLiveRangeNormalizationStats *stats) {
+  ProgramVregLiveRangeNormalizationStats localStats;
+  ProgramAnalysis analysis(vfInfo.params, vfInfo.values);
+  vfInfo.body =
+      normalizeNodes(vfInfo.body, analysis, localStats, &vfInfo.values);
+  if (stats != nullptr)
+    *stats = localStats;
 }
 
 } // namespace vfsim

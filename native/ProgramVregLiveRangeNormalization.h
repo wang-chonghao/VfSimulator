@@ -29,6 +29,10 @@ std::vector<ProgramNode> normalizeProgramVregLiveRanges(
     const std::unordered_map<std::string, ValueInfo> &values = {},
     ProgramVregLiveRangeNormalizationStats *stats = nullptr);
 
+void normalizeProgramVregLiveRanges(
+    VfInfo &vfInfo,
+    ProgramVregLiveRangeNormalizationStats *stats = nullptr);
+
 } // namespace vfsim
 
 #endif // VFSIM_NATIVE_PROGRAM_VREG_LIVE_RANGE_NORMALIZATION_H
