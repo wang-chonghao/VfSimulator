@@ -202,9 +202,8 @@ def main():
     if program is None:
         raise RuntimeError("trace.json missing key 'program'")
     db = ParamDB(base_dir=base_dir)
-    analyzer = ProgramAnalyzer(params, values=values)
 
-    program, norm_stats = normalize_program_vreg_live_ranges(program, values=values)
+    program, values, norm_stats = normalize_program_vreg_live_ranges(program, values=values)
     print(
         "[INFO] vreg live-range normalization = ON, changed_chains =",
         int(norm_stats.get("changed_fields", norm_stats.get("changed_chains", 0))),
@@ -220,6 +219,7 @@ def main():
         int(canonicalization_stats["expanded_loops"]),
     )
 
+    analyzer = ProgramAnalyzer(params, values=values)
     top_block_loop_bounds = analyzer.infer_top_block_loop_bounds(program)
     total_top_blocks = len(top_block_loop_bounds)
     print("[INFO] top block loop bounds =", top_block_loop_bounds)
