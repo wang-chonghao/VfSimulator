@@ -94,15 +94,6 @@ struct Reservation {
   int64_t shq = 0;
 };
 
-int countTopLevelLoops(const std::vector<ProgramNode> &program) {
-  int count = 0;
-  for (const auto &node : program) {
-    if (node.kind == ProgramNode::Kind::Loop)
-      ++count;
-  }
-  return count;
-}
-
 Reservation reservationForInst(const DynamicInst &inst, const ParamDB &db,
                                const std::string &defaultDtype,
                                const ValueStorageLookup &valueStorage) {
@@ -163,7 +154,7 @@ SimulationResult runVfInfo(const VfInfo &input,
   const auto loopBounds = analysis.inferTopBlockLoopBounds(program);
   ProgramFlatten flattener(vfInfo.params);
   const auto &linear = flattener.flatten(program);
-  const int topBlocks = countTopLevelLoops(program);
+  const int topBlocks = static_cast<int>(loopBounds.size());
 
   IFU ifu(linear, vfInfo.params, &db, loopBounds, topBlocks,
           vfInfo.defaultDtype);
