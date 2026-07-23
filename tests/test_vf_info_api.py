@@ -64,6 +64,37 @@ class VfInfoApiTest(unittest.TestCase):
         self.assertEqual(result["cycles_executed"], 72)
         self.assertEqual(result["vf_end_cycle"], 84)
 
+    def test_core_payload_uses_explicit_storage_not_name_prefix(self):
+        payload = {
+            "dtype": "fp32",
+            "values": {
+                "input_a": {"value_id": "input_a", "storage": "UB", "dtype": "fp32", "shape": [1, 64]},
+                "input_b": {"value_id": "input_b", "storage": "UB", "dtype": "fp32", "shape": [1, 64]},
+                "lhs": {"value_id": "lhs", "storage": "Register", "dtype": "fp32", "shape": [64]},
+                "rhs": {"value_id": "rhs", "storage": "Register", "dtype": "fp32", "shape": [64]},
+                "sum": {"value_id": "sum", "storage": "Register", "dtype": "fp32", "shape": [64]},
+                "output": {"value_id": "output", "storage": "UB", "dtype": "fp32", "shape": [1, 64]},
+            },
+            "program": [
+                {
+                    "type": "loop",
+                    "iters": 1,
+                    "body": [
+                        {"type": "inst", "op": "VLDS", "form": "fp32", "src": ["input_a"], "dst": ["lhs"]},
+                        {"type": "inst", "op": "VLDS", "form": "fp32", "src": ["input_b"], "dst": ["rhs"]},
+                        {"type": "inst", "op": "VADD", "form": "fp32", "src": ["lhs", "rhs"], "dst": ["sum"]},
+                        {"type": "inst", "op": "VSTS", "form": "fp32", "src": ["sum"], "dst": ["output"]},
+                    ],
+                }
+            ],
+        }
+
+        result = CoreVfCostModel(
+            base_dir=ROOT,
+            out_dir="/tmp/vfsim-vfinfo-explicit-storage-test",
+        )._run_lowered_payload(payload)
+        self.assertGreater(result["vf_end_cycle"], 0)
+
     def test_lowering_preserves_core_symbols_with_semantic_prefixes(self):
         vf_info = InputAPI.load_json_trace(
             ROOT

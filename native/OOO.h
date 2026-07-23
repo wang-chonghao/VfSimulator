@@ -10,6 +10,7 @@
 #define VFSIM_NATIVE_OOO_H
 
 #include "native/IDU.h"
+#include "native/ValueStorage.h"
 
 #include <deque>
 #include <optional>
@@ -92,7 +93,8 @@ struct SimpleLogRecord {
 
 class OoOCore {
 public:
-  OoOCore(const UarchConfig &uarch, const ParamDB &db, std::string dtype = "fp32");
+  OoOCore(const UarchConfig &uarch, const ParamDB &db, std::string dtype = "fp32",
+          const std::unordered_map<std::string, ValueInfo> &values = {});
   virtual ~OoOCore() = default;
 
   int getFreePreg() const;
@@ -114,6 +116,7 @@ public:
 protected:
   const ParamDB &db_;
   std::string dtype_;
+  ValueStorageLookup valueStorage_;
   bool theoreticalLimitMode_ = false;
   bool enableIsuQueueModel_ = false;
   int loadPorts_ = 2;
@@ -192,6 +195,8 @@ protected:
 
   virtual std::string classifyOpClass(const std::string &op,
                                       const std::string &form) const;
+  bool isRegisterValue(const std::string &name) const;
+  bool isUBValue(const std::string &name) const;
   int64_t computeReadyTimeForSrc(const ProducerInfo &producerInfo,
                                  const std::string &consumerOp,
                                  const std::string &consumerForm) const;
@@ -228,7 +233,8 @@ protected:
 
 class OoOCoreMainline final : public OoOCore {
 public:
-  OoOCoreMainline(const UarchConfig &uarch, const ParamDB &db, std::string dtype = "fp32");
+  OoOCoreMainline(const UarchConfig &uarch, const ParamDB &db, std::string dtype = "fp32",
+                  const std::unordered_map<std::string, ValueInfo> &values = {});
 
   void accept(const DynamicInst &inst) override;
   void step() override;

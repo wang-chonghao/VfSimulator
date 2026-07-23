@@ -19,10 +19,6 @@
 namespace vfsim {
 namespace {
 
-bool isVregName(const std::string &name) {
-  return !name.empty() && (name[0] == 'v' || name[0] == 'V');
-}
-
 bool isIntermediateMemName(const std::string &name) {
   std::string lower = name;
   std::transform(lower.begin(), lower.end(), lower.begin(),
@@ -102,8 +98,9 @@ std::string joinJsonArray<std::optional<std::string>>(const std::vector<std::opt
 
 } // namespace
 
-OoOCore::OoOCore(const UarchConfig &uarch, const ParamDB &db, std::string dtype)
-    : db_(db), dtype_(std::move(dtype)) {
+OoOCore::OoOCore(const UarchConfig &uarch, const ParamDB &db, std::string dtype,
+                 const std::unordered_map<std::string, ValueInfo> &values)
+    : db_(db), dtype_(std::move(dtype)), valueStorage_(values) {
   theoreticalLimitMode_ = false;
   enableIsuQueueModel_ = uarch.enableIsuQueueModel;
   loadPorts_ = static_cast<int>(uarch.loadPorts);
@@ -205,6 +202,14 @@ std::string OoOCore::classifyOpClass(const std::string &op,
   return isLoadOp(db_, op, form)
              ? "LOAD"
              : (isStoreOp(db_, op, form) ? "STORE" : "COMPUTE");
+}
+
+bool OoOCore::isRegisterValue(const std::string &name) const {
+  return valueStorage_.isRegister(name);
+}
+
+bool OoOCore::isUBValue(const std::string &name) const {
+  return valueStorage_.isUB(name);
 }
 
 int64_t OoOCore::computeReadyTimeForSrc(
@@ -531,8 +536,9 @@ void OoOCore::runShqReleaseEvents(int64_t cycle) {
   }
 }
 
-OoOCoreMainline::OoOCoreMainline(const UarchConfig &uarch, const ParamDB &db, std::string dtype)
-    : OoOCore(uarch, db, std::move(dtype)) {
+OoOCoreMainline::OoOCoreMainline(const UarchConfig &uarch, const ParamDB &db, std::string dtype,
+                                 const std::unordered_map<std::string, ValueInfo> &values)
+    : OoOCore(uarch, db, std::move(dtype), values) {
   exqInflightPerPort_.assign(issuePorts_, 0);
   exqWait_.resize(static_cast<size_t>(issuePorts_));
   for (auto &port : exqWait_) {
@@ -550,7 +556,7 @@ void OoOCoreMainline::accept(const DynamicInst &inst) {
   u.src = inst.src;
   u.dst = inst.dst;
   for (const auto &s : inst.src) {
-    if (!isVregName(s)) {
+    if (!isRegisterValue(s)) {
       u.pregSrc.push_back(std::nullopt);
       u.pregSrcGen.push_back(std::nullopt);
       continue;
@@ -580,7 +586,7 @@ void OoOCoreMainline::accept(const DynamicInst &inst) {
 
   int allocCount = 0;
   for (const auto &d : u.dst) {
-    if (!isVregName(d)) {
+    if (!isRegisterValue(d)) {
       u.pregDst.push_back(std::string{});
       continue;
     }

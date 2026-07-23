@@ -20,9 +20,8 @@ class VFInfoLowerer:
     Lower public VFInfo objects into the simulator's current program payload.
 
     Public API operands carry explicit locations, so user-visible names can be
-    arbitrary. The existing core still recognizes operands by internal prefixes,
-    so this adapter preserves existing V*/mem* symbols and maps arbitrary
-    names into collision-free V*/mem* symbols.
+    arbitrary. This lowering keeps the historical V*/mem* symbols stable for
+    dumps, and also emits a values table consumed by the core storage logic.
     """
 
     _register_names: Dict[str, str] = field(default_factory=dict)

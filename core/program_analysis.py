@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from core.value_storage import ValueStorageLookup
+
 
 class ProgramAnalyzer:
-    def __init__(self, params: Dict[str, Any]) -> None:
+    def __init__(self, params: Dict[str, Any], values: Dict[str, Any] | None = None) -> None:
         self.params = params
+        self.value_storage = ValueStorageLookup(values)
 
-    @staticmethod
-    def is_vreg_name(name: Any) -> bool:
-        return isinstance(name, str) and name.startswith("v") and name[1:].isdigit()
+    def is_vreg_name(self, name: Any) -> bool:
+        return self.value_storage.is_register(name)
 
     def resolve_bound(self, bound: Any) -> int:
         if isinstance(bound, int):

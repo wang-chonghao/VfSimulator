@@ -159,6 +159,16 @@
       "cce_vf_end_source": "cce_misched0"
     },
     {
+      "id": "gelu_poly_i96_u3",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "regression_suite/inputs/json/GeLU_poly.json",
+      "params": {
+        "I": 96,
+        "U": 3
+      }
+    },
+    {
       "id": "gelu_poly_i96_u4",
       "tier": "smoke",
       "kind": "simulate",
@@ -169,6 +179,16 @@
       },
       "cce_vf_end": 1712,
       "cce_vf_end_source": "cce_misched0"
+    },
+    {
+      "id": "gelu_poly_i96_u6",
+      "tier": "smoke",
+      "kind": "simulate",
+      "trace": "regression_suite/inputs/json/GeLU_poly.json",
+      "params": {
+        "I": 96,
+        "U": 6
+      }
     },
     {
       "id": "gelu_poly_i96_u8",

@@ -32,9 +32,10 @@ class ProgramAnalysis {
 public:
   using ParamMap = std::unordered_map<std::string, int64_t>;
 
-  explicit ProgramAnalysis(ParamMap params = {});
+  explicit ProgramAnalysis(ParamMap params = {},
+                           std::unordered_map<std::string, ValueInfo> values = {});
 
-  static bool isVregName(const std::string &name);
+  bool isVregName(const std::string &name) const;
 
   int64_t resolveBound(const std::string &bound) const;
   int64_t resolveUnrollValue(const std::string &unroll) const;
@@ -52,9 +53,10 @@ public:
 
 private:
   ParamMap params_;
+  std::unordered_map<std::string, ValueInfo> values_;
 
-  static void collectVregsFromInst(const ProgramInstNode &inst,
-                                   std::unordered_map<std::string, bool> &vregs);
+  void collectVregsFromInst(const ProgramInstNode &inst,
+                            std::unordered_map<std::string, bool> &vregs) const;
   void walkVregWarnings(const std::vector<ProgramNode> &nodes,
                         const std::string &path,
                         int64_t pregNum,

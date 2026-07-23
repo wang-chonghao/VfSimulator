@@ -8,7 +8,7 @@ from collections import deque
 
 from core import isu
 from core.isa_traits import is_load_op, is_store_op, uses_lsq, uses_shared_shq_credit
-from core.ooo import OoOCore, Uop, is_mem, is_vreg, make_mem_key
+from core.ooo import OoOCore, Uop, make_mem_key
 
 
 @dataclass
@@ -116,8 +116,8 @@ class PregLifecycleController:
             isinstance(s, str)
             and isinstance(d, str)
             and s == d
-            and is_vreg(s)
-            and is_vreg(d)
+            and self.core.is_vreg(s)
+            and self.core.is_vreg(d)
         )
 
     def run_src_release_events(self, cycle: int) -> None:
@@ -280,7 +280,7 @@ class RenameController:
         preg_src: List[str | None] = []
         preg_src_gen: List[Optional[int]] = []
         for s in srcs:
-            preg = self.core.RAT.get(s) if is_vreg(s) else None
+            preg = self.core.RAT.get(s) if self.core.is_vreg(s) else None
             preg_src.append(preg)
             if preg is None:
                 preg_src_gen.append(None)
@@ -297,7 +297,7 @@ class RenameController:
         preg_old: List[str | None] = []
         preg_alloc_count = 0
         for d in dsts:
-            if not is_vreg(d):
+            if not self.core.is_vreg(d):
                 continue
             if self.core.theoretical_limit_mode:
                 new_p = f"p{self.core.next_dynamic_preg_id}"
@@ -336,7 +336,7 @@ class RenameController:
 
         if is_load_op(op, self.core.db, form):
             for s in srcs:
-                if is_mem(s):
+                if self.core.is_mem(s):
                     pred_uop = self.core.mem_last_store_uop.get(make_mem_key(s, iter_stack))
                     if pred_uop is not None:
                         u.mem_dep_uops.append(pred_uop)
@@ -363,7 +363,7 @@ class RenameController:
 
         if is_store_op(op, self.core.db, form):
             for d in dsts:
-                if is_mem(d):
+                if self.core.is_mem(d):
                     self.core.mem_last_store_uop[make_mem_key(d, iter_stack)] = u
                     self.core.block_outstanding_stores[top_block_id] = (
                         self.core.block_outstanding_stores.get(top_block_id, 0) + 1
@@ -405,8 +405,8 @@ class OoOCoreMainline(OoOCore):
     - Compute issue behavior after SHQ is delegated to `core.isu`.
     """
 
-    def __init__(self, uarch: Dict[str, Any], pdb, dtype: str = "fp32"):
-        super().__init__(uarch, pdb, dtype=dtype)
+    def __init__(self, uarch: Dict[str, Any], pdb, dtype: str = "fp32", values: Dict[str, Any] | None = None):
+        super().__init__(uarch, pdb, dtype=dtype, values=values)
         self.isu = isu.ISUController(self)
         self.preg_lifecycle = PregLifecycleController(self)
         self.shq_resources = SHQResourceController(self)
