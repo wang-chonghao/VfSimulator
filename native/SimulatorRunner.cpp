@@ -11,6 +11,7 @@
 #include "native/ISATraits.h"
 #include "native/ProgramCanonicalization.h"
 #include "native/ProgramFlatten.h"
+#include "native/ProgramVregLiveRangeNormalization.h"
 #include "native/ValueStorage.h"
 
 #include <deque>
@@ -148,6 +149,8 @@ SimulationResult runVfInfo(const VfInfo &input,
                            int64_t maxCycles) {
   VfInfo vfInfo = input;
   lowerVfInfoValueIds(vfInfo);
+  vfInfo.body = normalizeProgramVregLiveRanges(vfInfo.body, vfInfo.params,
+                                               vfInfo.values);
   const auto program = canonicalizeSingleSuperIterationLoops(
       vfInfo.body, vfInfo.params, db, vfInfo.defaultDtype);
   ProgramAnalysis analysis(vfInfo.params, vfInfo.values);

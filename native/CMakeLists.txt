@@ -27,6 +27,7 @@ set(VFSIM_NATIVE_CORE_SOURCES
   ISATraits.cpp
   ProgramAnalysis.cpp
   ProgramCanonicalization.cpp
+  ProgramVregLiveRangeNormalization.cpp
   ProgramFlatten.cpp
   IFU.cpp
   IDU.cpp
@@ -123,6 +124,18 @@ target_link_libraries(vfsim_program_canonicalization_test PRIVATE
 
 add_test(NAME vfsim_program_canonicalization_test
   COMMAND vfsim_program_canonicalization_test
+)
+
+add_executable(vfsim_program_vreg_live_range_normalization_test
+  ProgramVregLiveRangeNormalizationTest.cpp
+)
+
+target_link_libraries(vfsim_program_vreg_live_range_normalization_test PRIVATE
+  vfsim::native_core
+)
+
+add_test(NAME vfsim_program_vreg_live_range_normalization_test
+  COMMAND vfsim_program_vreg_live_range_normalization_test
 )
 
 add_executable(vfsim_vf_info_api_test
