@@ -5,12 +5,14 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.value_storage import ValueStorageLookup
+
 
 Version = Tuple[str, int]
 
 
-def is_vreg(name: Any) -> bool:
-    return isinstance(name, str) and name[:1].lower() == "v"
+def is_vreg(name: Any, value_storage: ValueStorageLookup | None = None) -> bool:
+    return (value_storage or ValueStorageLookup()).is_register(name)
 
 
 def _as_list(x: Any) -> List[Any]:
@@ -26,11 +28,11 @@ def _vreg_sort_key(name: str) -> Tuple[int, str]:
     return (int(suffix) if suffix.isdigit() else 10**9, name)
 
 
-def _next_fresh_vreg(slot_pool: List[str]) -> str:
+def _next_fresh_vreg(slot_pool: List[str], value_storage: ValueStorageLookup | None = None) -> str:
     used = {str(x) for x in slot_pool}
     max_idx = -1
     for name in used:
-        if is_vreg(name) and name[1:].isdigit():
+        if name[:1].lower() == "v" and name[1:].isdigit():
             max_idx = max(max_idx, int(name[1:]))
     cand = max_idx + 1
     while True:
@@ -40,7 +42,7 @@ def _next_fresh_vreg(slot_pool: List[str]) -> str:
         cand += 1
 
 
-def _analyze_versions(body: List[Dict[str, Any]]) -> Tuple[Dict[int, List[Optional[Version]]], Dict[int, List[Optional[Version]]], Dict[Version, int]]:
+def _analyze_versions(body: List[Dict[str, Any]], value_storage: ValueStorageLookup) -> Tuple[Dict[int, List[Optional[Version]]], Dict[int, List[Optional[Version]]], Dict[Version, int]]:
     current_version_by_vreg: Dict[str, Version] = {}
     version_counter: Dict[str, int] = {}
     src_versions_by_inst: Dict[int, List[Optional[Version]]] = {}
@@ -53,7 +55,7 @@ def _analyze_versions(body: List[Dict[str, Any]]) -> Tuple[Dict[int, List[Option
 
         src_versions: List[Optional[Version]] = []
         for src in srcs:
-            if is_vreg(src):
+            if is_vreg(src, value_storage):
                 ver = current_version_by_vreg.get(str(src))
                 src_versions.append(ver)
                 if ver is not None:
@@ -64,7 +66,7 @@ def _analyze_versions(body: List[Dict[str, Any]]) -> Tuple[Dict[int, List[Option
 
         dst_versions: List[Optional[Version]] = []
         for dst in dsts:
-            if is_vreg(dst):
+            if is_vreg(dst, value_storage):
                 key = str(dst)
                 version_counter[key] = int(version_counter.get(key, 0)) + 1
                 ver = (key, int(version_counter[key]))
@@ -77,7 +79,7 @@ def _analyze_versions(body: List[Dict[str, Any]]) -> Tuple[Dict[int, List[Option
     return src_versions_by_inst, dst_versions_by_inst, last_use
 
 
-def _normalize_single_level_loop_body(body: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
+def _normalize_single_level_loop_body(body: List[Dict[str, Any]], value_storage: ValueStorageLookup) -> Tuple[List[Dict[str, Any]], int]:
     """
     Reassign dst vregs based on future src liveness, independent of source-code
     naming style.
@@ -92,7 +94,7 @@ def _normalize_single_level_loop_body(body: List[Dict[str, Any]]) -> Tuple[List[
     - single-dst instructions only
     - VST excluded (no vreg dst)
     """
-    src_versions_by_inst, dst_versions_by_inst, last_use = _analyze_versions(body)
+    src_versions_by_inst, dst_versions_by_inst, last_use = _analyze_versions(body, value_storage)
 
     current_slot_by_vreg: Dict[str, str] = {}
     slot_of_version: Dict[Version, str] = {}
@@ -109,7 +111,7 @@ def _normalize_single_level_loop_body(body: List[Dict[str, Any]]) -> Tuple[List[
         new_srcs = list(srcs)
         src_slots_in_use: List[str] = []
         for pos, src in enumerate(srcs):
-            if not is_vreg(src):
+            if not is_vreg(src, value_storage):
                 continue
             ver = src_versions[pos] if pos < len(src_versions) else None
             if ver is None:
@@ -120,7 +122,7 @@ def _normalize_single_level_loop_body(body: List[Dict[str, Any]]) -> Tuple[List[
             src_slots_in_use.append(slot)
 
         new_dsts = list(dsts)
-        if len(dsts) == 1 and is_vreg(dsts[0]):
+        if len(dsts) == 1 and is_vreg(dsts[0], value_storage):
             dst_name = str(dsts[0])
             dst_ver = dst_versions[0] if dst_versions else None
             if dst_ver is not None:
@@ -150,7 +152,7 @@ def _normalize_single_level_loop_body(body: List[Dict[str, Any]]) -> Tuple[List[
                         chosen_slot = dst_name
                         slot_pool.append(chosen_slot)
                     else:
-                        chosen_slot = _next_fresh_vreg(slot_pool)
+                        chosen_slot = _next_fresh_vreg(slot_pool, value_storage)
                         slot_pool.append(chosen_slot)
 
                 if chosen_slot not in slot_pool:
@@ -170,12 +172,12 @@ def _normalize_single_level_loop_body(body: List[Dict[str, Any]]) -> Tuple[List[
     return body, changed
 
 
-def _normalize_node(node: Any) -> Tuple[Any, int]:
+def _normalize_node(node: Any, value_storage: ValueStorageLookup) -> Tuple[Any, int]:
     if isinstance(node, list):
         out: List[Any] = []
         total_changed = 0
         for item in node:
-            new_item, changed = _normalize_node(item)
+            new_item, changed = _normalize_node(item, value_storage)
             out.append(new_item)
             total_changed += changed
         return out, total_changed
@@ -190,18 +192,18 @@ def _normalize_node(node: Any) -> Tuple[Any, int]:
 
     if out.get("type") == "loop" and all(isinstance(x, dict) and x.get("type") == "inst" for x in body):
         body_copy = [dict(x) for x in body]
-        new_body, changed = _normalize_single_level_loop_body(body_copy)
+        new_body, changed = _normalize_single_level_loop_body(body_copy, value_storage)
         out["body"] = new_body
         return out, changed
 
-    new_body, changed = _normalize_node(body)
+    new_body, changed = _normalize_node(body, value_storage)
     out["body"] = new_body
     return out, changed
 
 
-def normalize_program_vreg_live_ranges(program: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def normalize_program_vreg_live_ranges(program: List[Dict[str, Any]], values: Dict[str, Any] | None = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     program_copy = deepcopy(program)
-    new_program, changed = _normalize_node(program_copy)
+    new_program, changed = _normalize_node(program_copy, ValueStorageLookup(values))
     stats = {
         "enabled": True,
         "changed_fields": int(changed),

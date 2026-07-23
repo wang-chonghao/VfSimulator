@@ -20,11 +20,14 @@ option(VFSIM_BUILD_TESTS "Build native VfSimulator tests" ${VFSIM_BUILD_TESTS_DE
 option(VFSIM_ENABLE_MLIR_PLANNER "Build MLIR IR planner entry point" OFF)
 
 set(VFSIM_NATIVE_CORE_SOURCES
+  ../api/native/VfInfo.cpp
+  ../api/native/JsonVfInfoAdapter.cpp
   Json.cpp
   ParamDB.cpp
   ISATraits.cpp
   ProgramAnalysis.cpp
   ProgramCanonicalization.cpp
+  ProgramVregLiveRangeNormalization.cpp
   ProgramFlatten.cpp
   IFU.cpp
   IDU.cpp
@@ -121,6 +124,30 @@ target_link_libraries(vfsim_program_canonicalization_test PRIVATE
 
 add_test(NAME vfsim_program_canonicalization_test
   COMMAND vfsim_program_canonicalization_test
+)
+
+add_executable(vfsim_program_vreg_live_range_normalization_test
+  ProgramVregLiveRangeNormalizationTest.cpp
+)
+
+target_link_libraries(vfsim_program_vreg_live_range_normalization_test PRIVATE
+  vfsim::native_core
+)
+
+add_test(NAME vfsim_program_vreg_live_range_normalization_test
+  COMMAND vfsim_program_vreg_live_range_normalization_test
+)
+
+add_executable(vfsim_vf_info_api_test
+  VfsimVfInfoApiTest.cpp
+)
+
+target_link_libraries(vfsim_vf_info_api_test PRIVATE
+  vfsim::native_core
+)
+
+add_test(NAME vfsim_vf_info_api_test
+  COMMAND vfsim_vf_info_api_test
 )
 
 add_executable(vfsim_native_json_runner

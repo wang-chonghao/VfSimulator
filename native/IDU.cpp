@@ -36,8 +36,9 @@ IDU::IDU(const UarchConfig &uarch,
          std::vector<int64_t> loopBounds,
          int64_t totalTopBlocks,
          std::unordered_map<int, std::vector<int64_t>> topBlockLoopBounds,
-         std::string dtype)
-    : db_(db), dtype_(std::move(dtype)), analysis_(std::move(params)),
+         std::string dtype,
+         std::unordered_map<std::string, ValueInfo> values)
+    : db_(db), dtype_(std::move(dtype)), analysis_(std::move(params), std::move(values)),
       loopBounds_(std::move(loopBounds)), totalTopBlocks_(totalTopBlocks),
       topBlockLoopBounds_(std::move(topBlockLoopBounds)) {
   windowWidth_ = uarch.iduWindowWidth;
@@ -305,8 +306,9 @@ std::vector<DynamicInst> IDU::dispatch(int64_t cycle, const IDUDispatchBudget &b
       }
     }
 
-    const bool isLoad = isLoadOp(db_, inst.op, dtype_);
-    const bool isStore = isStoreOp(db_, inst.op, dtype_);
+    const std::string &form = inst.form.empty() ? dtype_ : inst.form;
+    const bool isLoad = isLoadOp(db_, inst.op, form);
+    const bool isStore = isStoreOp(db_, inst.op, form);
     if (isLoad) {
       if (lsqFree <= 0)
         break;
@@ -320,7 +322,7 @@ std::vector<DynamicInst> IDU::dispatch(int64_t cycle, const IDUDispatchBudget &b
 
     int64_t dstCount = 0;
     for (const auto &d : inst.dst) {
-      if (!d.empty() && (d[0] == 'v' || d[0] == 'V'))
+      if (analysis_.isVregName(d))
         ++dstCount;
     }
     if (credits < dstCount)
@@ -328,11 +330,11 @@ std::vector<DynamicInst> IDU::dispatch(int64_t cycle, const IDUDispatchBudget &b
 
     dispatched.push_back(inst);
     credits -= dstCount;
-    if (usesLsq(db_, inst.op, dtype_)) {
+    if (usesLsq(db_, inst.op, form)) {
       --lsqFree;
-      if (usesSharedShqCredit(db_, inst.op, dtype_))
+      if (usesSharedShqCredit(db_, inst.op, form))
         --shqFree;
-    } else if (usesShqQueue(db_, inst.op, dtype_)) {
+    } else if (usesShqQueue(db_, inst.op, form)) {
       --shqQueueFree;
       --shqFree;
     }

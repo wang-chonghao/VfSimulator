@@ -57,7 +57,8 @@ public:
       std::vector<int64_t> loopBounds = {},
       int64_t totalTopBlocks = 1,
       std::unordered_map<int, std::vector<int64_t>> topBlockLoopBounds = {},
-      std::string dtype = "fp32");
+      std::string dtype = "fp32",
+      std::unordered_map<std::string, ValueInfo> values = {});
 
   bool empty() const noexcept { return window_.empty(); }
   bool canAccept() const;

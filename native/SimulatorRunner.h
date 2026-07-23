@@ -11,6 +11,7 @@
 
 #include "native/IDU.h"
 #include "native/OOO.h"
+#include "api/native/VfInfo.h"
 
 #include <string>
 
@@ -22,13 +23,19 @@ struct SimulationResult {
   std::string resultsDir;
 };
 
+SimulationResult runVfInfo(const VfInfo &vfInfo,
+                           const ParamDB &db,
+                           const std::string &resultsDir = {},
+                           int64_t maxCycles = 1000000);
+
 SimulationResult runSimulation(IFU &ifu,
                                IDU &idu,
                                OoOCoreMainline &ooo,
                                const UarchConfig &uarch,
                                const ProgramAnalysis::ParamMap &params,
                                const std::string &resultsDir,
-                               int64_t maxCycles = 1000000);
+                               int64_t maxCycles = 1000000,
+                               const std::unordered_map<std::string, ValueInfo> &values = {});
 
 } // namespace vfsim
 

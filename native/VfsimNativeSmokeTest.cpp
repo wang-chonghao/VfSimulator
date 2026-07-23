@@ -110,6 +110,26 @@ void verifyUnrollOrder(const ParamDB &db) {
   }
 }
 
+void verifySingleIterationLoopRunner(const ParamDB &db) {
+  VfInfo vfInfo;
+  vfInfo.defaultDtype = "fp32";
+  vfInfo.params = {{"I", 1}, {"U", 1}};
+  vfInfo.body = {makeUnrolledLoopNode(
+      "I", "U",
+      {makeInstNode("VLDS", {"V1"}, {"memA"}),
+       makeInstNode("VLDS", {"V2"}, {"memB"}),
+       makeInstNode("VADD", {"V3"}, {"V1", "V2"}),
+       makeInstNode("VSTS", {"memC"}, {"V3"})})};
+
+  const auto result = runVfInfo(vfInfo, db, "", /*maxCycles=*/100000);
+  require(result.cyclesExecuted == 43,
+          "single-iteration canonicalized run cycles mismatch: " +
+              std::to_string(result.cyclesExecuted));
+  require(result.vfEndCycle == 55,
+          "single-iteration canonicalized run vfEndCycle mismatch: " +
+              std::to_string(result.vfEndCycle));
+}
+
 } // namespace
 
 int main() {
@@ -117,6 +137,7 @@ int main() {
     const std::filesystem::path root = std::filesystem::path(VFSIM_SOURCE_ROOT);
     ParamDB db(root);
     verifyUnrollOrder(db);
+    verifySingleIterationLoopRunner(db);
 
     const auto program = buildTaddTmulProgram();
     ProgramAnalysis analysis;

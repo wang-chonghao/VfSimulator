@@ -9,6 +9,10 @@
 #include "native/SimulatorRunner.h"
 
 #include "native/ISATraits.h"
+#include "native/ProgramCanonicalization.h"
+#include "native/ProgramFlatten.h"
+#include "native/ProgramVregLiveRangeNormalization.h"
+#include "native/ValueStorage.h"
 
 #include <deque>
 #include <filesystem>
@@ -84,10 +88,6 @@ void dumpJsonLines(const std::vector<T> &records, const std::string &path) {
   }
 }
 
-bool isVregName(const std::string &name) {
-  return !name.empty() && (name[0] == 'v' || name[0] == 'V');
-}
-
 struct Reservation {
   int64_t preg = 0;
   int64_t shqQueue = 0;
@@ -96,17 +96,19 @@ struct Reservation {
 };
 
 Reservation reservationForInst(const DynamicInst &inst, const ParamDB &db,
-                               const std::string &dtype) {
+                               const std::string &defaultDtype,
+                               const ValueStorageLookup &valueStorage) {
+  const std::string &form = inst.form.empty() ? defaultDtype : inst.form;
   Reservation out;
   for (const auto &d : inst.dst) {
-    if (isVregName(d))
+    if (valueStorage.isRegister(d))
       ++out.preg;
   }
-  if (usesShqQueue(db, inst.op, dtype))
+  if (usesShqQueue(db, inst.op, form))
     out.shqQueue = 1;
-  if (usesLsq(db, inst.op, dtype))
+  if (usesLsq(db, inst.op, form))
     out.lsq = 1;
-  if (usesSharedShqCredit(db, inst.op, dtype))
+  if (usesSharedShqCredit(db, inst.op, form))
     out.shq = 1;
   return out;
 }
@@ -141,13 +143,39 @@ void dumpVloopTrace(const IDU &idu, const std::string &path) {
 
 } // namespace
 
+SimulationResult runVfInfo(const VfInfo &input,
+                           const ParamDB &db,
+                           const std::string &resultsDir,
+                           int64_t maxCycles) {
+  VfInfo vfInfo = input;
+  lowerVfInfoValueIds(vfInfo);
+  vfInfo.body = normalizeProgramVregLiveRanges(vfInfo.body, vfInfo.params,
+                                               vfInfo.values);
+  const auto program = canonicalizeSingleSuperIterationLoops(
+      vfInfo.body, vfInfo.params, db, vfInfo.defaultDtype);
+  ProgramAnalysis analysis(vfInfo.params, vfInfo.values);
+  const auto loopBounds = analysis.inferTopBlockLoopBounds(program);
+  ProgramFlatten flattener(vfInfo.params);
+  const auto &linear = flattener.flatten(program);
+  const int topBlocks = static_cast<int>(loopBounds.size());
+
+  IFU ifu(linear, vfInfo.params, &db, loopBounds, topBlocks,
+          vfInfo.defaultDtype);
+  IDU idu(db.uarch(), db, vfInfo.params, {}, topBlocks, loopBounds,
+          vfInfo.defaultDtype, vfInfo.values);
+  OoOCoreMainline ooo(db.uarch(), db, vfInfo.defaultDtype, vfInfo.values);
+  return runSimulation(ifu, idu, ooo, db.uarch(), vfInfo.params, resultsDir,
+                       maxCycles, vfInfo.values);
+}
+
 SimulationResult runSimulation(IFU &ifu,
                                IDU &idu,
                                OoOCoreMainline &ooo,
                                const UarchConfig &uarch,
                                const ProgramAnalysis::ParamMap &params,
                                const std::string &resultsDir,
-                               int64_t maxCycles) {
+                               int64_t maxCycles,
+                               const std::unordered_map<std::string, ValueInfo> &values) {
   if (const char *envMax = std::getenv("PTOAS_VFSIM_MAX_CYCLES")) {
     try {
       const int64_t parsed = std::stoll(envMax);
@@ -161,6 +189,7 @@ SimulationResult runSimulation(IFU &ifu,
   const int64_t iduToOooDelay = uarch.iduToOooDelay;
   std::deque<std::pair<int64_t, DynamicInst>> iduToOooPipe;
   const bool useExplicitIduCreditBank = uarch.useExplicitIduCreditBank;
+  const ValueStorageLookup valueStorage(values);
 
   int64_t iduPregCredit = ooo.getFreePreg();
   int64_t iduShqCredit = ooo.getFreeShq();
@@ -191,7 +220,7 @@ SimulationResult runSimulation(IFU &ifu,
       if (useExplicitIduCreditBank) {
         // conservative: rebuild reservations from inst metadata
         for (const auto &s : item.second.dst) {
-          if (!s.empty() && (s[0] == 'v' || s[0] == 'V'))
+          if (valueStorage.isRegister(s))
             --iduPendingShqQueue;
         }
       }
@@ -206,7 +235,7 @@ SimulationResult runSimulation(IFU &ifu,
     int64_t pendingShq = 0;
     if (!useExplicitIduCreditBank) {
       for (const auto &item : iduToOooPipe) {
-        const auto r = reservationForInst(item.second, idu.db(), dtype);
+        const auto r = reservationForInst(item.second, idu.db(), dtype, valueStorage);
         pendingPreg += r.preg;
         pendingShqQueue += r.shqQueue;
         pendingLsq += r.lsq;

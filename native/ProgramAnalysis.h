@@ -10,38 +10,13 @@
 #define VFSIM_NATIVE_PROGRAM_ANALYSIS_H
 
 #include <cstdint>
-#include <memory>
+#include "api/native/VfInfo.h"
+
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace vfsim {
-
-struct ProgramInstNode {
-  std::string op;
-  std::vector<std::string> src;
-  std::vector<std::string> dst;
-};
-
-struct ProgramLoopNode;
-
-struct ProgramNode {
-  enum class Kind { Inst, Loop };
-
-  Kind kind = Kind::Inst;
-  ProgramInstNode inst;
-  std::shared_ptr<ProgramLoopNode> loop;
-
-  static ProgramNode makeInst(ProgramInstNode value);
-  static ProgramNode makeLoop(ProgramLoopNode value);
-};
-
-struct ProgramLoopNode {
-  std::string iters;
-  std::string unroll = "1";
-  std::string name;
-  std::vector<ProgramNode> body;
-};
 
 struct VregCapacityWarning {
   std::string kind;
@@ -57,9 +32,10 @@ class ProgramAnalysis {
 public:
   using ParamMap = std::unordered_map<std::string, int64_t>;
 
-  explicit ProgramAnalysis(ParamMap params = {});
+  explicit ProgramAnalysis(ParamMap params = {},
+                           std::unordered_map<std::string, ValueInfo> values = {});
 
-  static bool isVregName(const std::string &name);
+  bool isVregName(const std::string &name) const;
 
   int64_t resolveBound(const std::string &bound) const;
   int64_t resolveUnrollValue(const std::string &unroll) const;
@@ -77,9 +53,10 @@ public:
 
 private:
   ParamMap params_;
+  std::unordered_map<std::string, ValueInfo> values_;
 
-  static void collectVregsFromInst(const ProgramInstNode &inst,
-                                   std::unordered_map<std::string, bool> &vregs);
+  void collectVregsFromInst(const ProgramInstNode &inst,
+                            std::unordered_map<std::string, bool> &vregs) const;
   void walkVregWarnings(const std::vector<ProgramNode> &nodes,
                         const std::string &path,
                         int64_t pregNum,

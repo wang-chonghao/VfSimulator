@@ -59,6 +59,7 @@ void ProgramFlatten::emitInst(const ProgramInstNode &inst, int64_t depth,
   out.kind = LinearProgramNode::Kind::Inst;
   out.type = "inst";
   out.op = inst.op;
+  out.form = inst.form;
   out.pc = pc_++;
   out.depth = depth;
   out.loopStack = loopStack;

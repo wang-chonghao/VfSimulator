@@ -7,6 +7,8 @@ import os
 from typing import Any, Dict
 
 from api.input_api import InputAPI
+from api.vf_info import VFInfo
+from api.vf_lowering import VFInfoLowerer
 from core.flatten import Flattener
 from core.idu import IDU
 from core.ifu import IFUUnroll
@@ -83,7 +85,7 @@ def resolve_input_path(base_dir: str, path_arg: str) -> str:
     return os.path.join(base_dir, path_arg)
 
 
-def load_input_payload(base_dir: str, args: argparse.Namespace) -> tuple[Dict[str, Any], str]:
+def load_input_vf_info(base_dir: str, args: argparse.Namespace) -> tuple[VFInfo, str]:
     if args.trace and args.cce:
         raise RuntimeError("Please provide only one input: --trace or --cce")
 
@@ -186,20 +188,23 @@ def main():
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
     try:
-        trace, _ = load_input_payload(base_dir, args)
+        vf_info, _ = load_input_vf_info(base_dir, args)
     except Exception as exc:
         print(f"[ERROR] {exc}")
         return
 
+    trace = VFInfoLowerer().lower(vf_info)
+
     dtype = trace.get("dtype", "fp32")
     params = trace.get("params", {}) or {}
+    values = trace.get("values", {}) or {}
     program = trace.get("program")
     if program is None:
         raise RuntimeError("trace.json missing key 'program'")
     db = ParamDB(base_dir=base_dir)
-    analyzer = ProgramAnalyzer(params)
+    analyzer = ProgramAnalyzer(params, values=values)
 
-    program, norm_stats = normalize_program_vreg_live_ranges(program)
+    program, norm_stats = normalize_program_vreg_live_ranges(program, values=values)
     print(
         "[INFO] vreg live-range normalization = ON, changed_chains =",
         int(norm_stats.get("changed_fields", norm_stats.get("changed_chains", 0))),
@@ -243,7 +248,7 @@ def main():
     if not os.path.isabs(results_dir):
         results_dir = os.path.join(base_dir, results_dir)
 
-    ooo = create_ooo_core(uarch, db, dtype=dtype)
+    ooo = create_ooo_core(uarch, db, dtype=dtype, values=values)
     sim_result = run_simulation(
         ifu=ifu,
         idu=idu,
@@ -251,6 +256,7 @@ def main():
         uarch=uarch,
         params=params,
         results_dir=results_dir,
+        values=values,
     )
 
     print("Done. cycles_executed =", int(sim_result["cycles_executed"]))

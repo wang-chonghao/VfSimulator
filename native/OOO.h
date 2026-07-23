@@ -10,6 +10,7 @@
 #define VFSIM_NATIVE_OOO_H
 
 #include "native/IDU.h"
+#include "native/ValueStorage.h"
 
 #include <deque>
 #include <optional>
@@ -23,6 +24,7 @@ namespace vfsim {
 struct Uop {
   int64_t instId = 0;
   std::string op;
+  std::string form;
   std::vector<std::string> src;
   std::vector<std::string> dst;
   std::vector<std::optional<std::string>> pregSrc;
@@ -36,6 +38,7 @@ struct Uop {
   std::optional<int64_t> doneCycle;
 
   std::optional<std::string> producerOpForStore;
+  std::optional<std::string> producerFormForStore;
   std::optional<int64_t> producerStartForStore;
   std::vector<Uop *> memDepUops;
   int64_t topBlockId = 0;
@@ -53,6 +56,13 @@ struct SrcReleaseEvent {
   int64_t instId = 0;
   std::string preg;
   int64_t gen = 0;
+};
+
+struct ProducerInfo {
+  std::string op;
+  std::string form;
+  int64_t startCycle = 0;
+  std::string kind;
 };
 
 struct HistoryRecord {
@@ -83,7 +93,8 @@ struct SimpleLogRecord {
 
 class OoOCore {
 public:
-  OoOCore(const UarchConfig &uarch, const ParamDB &db, std::string dtype = "fp32");
+  OoOCore(const UarchConfig &uarch, const ParamDB &db, std::string dtype = "fp32",
+          const std::unordered_map<std::string, ValueInfo> &values = {});
   virtual ~OoOCore() = default;
 
   int getFreePreg() const;
@@ -105,6 +116,7 @@ public:
 protected:
   const ParamDB &db_;
   std::string dtype_;
+  ValueStorageLookup valueStorage_;
   bool theoreticalLimitMode_ = false;
   bool enableIsuQueueModel_ = false;
   int loadPorts_ = 2;
@@ -126,13 +138,16 @@ protected:
   std::deque<Uop> lsq_;
   std::deque<Uop> rob_;
 
-  std::unordered_map<std::string, std::tuple<std::string, int64_t, std::string>> pregProducer_;
+  std::unordered_map<std::string, ProducerInfo> pregProducer_;
   std::vector<int64_t> lastIssueCycleALU_;
   std::vector<int64_t> lastIssueCycleSFU_;
   std::vector<std::string> lastOpALU_;
+  std::vector<std::string> lastFormALU_;
   std::vector<std::string> lastOpSFU_;
+  std::vector<std::string> lastFormSFU_;
   std::vector<int64_t> lastIssueCycleExu_;
   std::vector<std::string> lastOpExu_;
+  std::vector<std::string> lastFormExu_;
   std::vector<int> exqInflight_;
 
   int loadDoneLatency_ = 9;
@@ -178,16 +193,24 @@ protected:
   std::vector<SimpleLogRecord> startLogs_;
   std::vector<SimpleLogRecord> doneLogs_;
 
-  virtual std::string classifyOpClass(const std::string &op) const;
-  int64_t computeReadyTimeForSrc(const std::tuple<std::string, int64_t, std::string> &producerInfo,
-                                 const std::string &consumerOp) const;
+  virtual std::string classifyOpClass(const std::string &op,
+                                      const std::string &form) const;
+  bool isRegisterValue(const std::string &name) const;
+  bool isUBValue(const std::string &name) const;
+  int64_t computeReadyTimeForSrc(const ProducerInfo &producerInfo,
+                                 const std::string &consumerOp,
+                                 const std::string &consumerForm) const;
   int64_t computeLoadReadyCycle(const Uop &u) const;
-  std::tuple<int64_t, std::optional<std::string>, std::optional<int64_t>>
+  std::tuple<int64_t, std::optional<std::string>,
+             std::optional<std::string>, std::optional<int64_t>>
   computeStoreReadyCycle(const Uop &u) const;
-  int64_t dataStoreCost(const std::string &producerOp) const;
-  std::string getFuType(const std::string &op) const;
-  std::vector<int> eligibleExuPorts(const std::string &op) const;
-  int64_t getIi(const std::string *prevOp, const std::string &curOp) const;
+  int64_t dataStoreCost(const std::string &producerOp,
+                        const std::string &producerForm) const;
+  std::string getFuType(const std::string &op, const std::string &form) const;
+  std::vector<int> eligibleExuPorts(const std::string &op,
+                                    const std::string &form) const;
+  int64_t getIi(const std::string *prevOp, const std::string *prevForm,
+                const std::string &curOp, const std::string &curForm) const;
   void log(const std::string &event, const Uop &u);
   void logStartSimple(const Uop &u);
   void logDoneSimple(const Uop &u);
@@ -200,7 +223,8 @@ protected:
   int exqOccupancy(int port) const;
   int totalComputeInflight() const;
   int64_t predictExqIssueCycle(int port, const std::string &fuType,
-                               const std::string &op, int64_t recvCycle) const;
+                               const std::string &op, const std::string &form,
+                               int64_t recvCycle) const;
   void scheduleShqRelease(int64_t cycle, int count = 1);
   void runShqReleaseEvents(int64_t cycle);
 
@@ -209,7 +233,8 @@ protected:
 
 class OoOCoreMainline final : public OoOCore {
 public:
-  OoOCoreMainline(const UarchConfig &uarch, const ParamDB &db, std::string dtype = "fp32");
+  OoOCoreMainline(const UarchConfig &uarch, const ParamDB &db, std::string dtype = "fp32",
+                  const std::unordered_map<std::string, ValueInfo> &values = {});
 
   void accept(const DynamicInst &inst) override;
   void step() override;
