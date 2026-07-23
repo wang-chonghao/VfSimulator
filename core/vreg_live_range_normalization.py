@@ -79,7 +79,28 @@ def _analyze_versions(body: List[Dict[str, Any]], value_storage: ValueStorageLoo
     return src_versions_by_inst, dst_versions_by_inst, last_use
 
 
-def _normalize_single_level_loop_body(body: List[Dict[str, Any]], value_storage: ValueStorageLookup) -> Tuple[List[Dict[str, Any]], int]:
+def _ensure_register_value(values: Dict[str, Any], slot: str, source_value_id: str) -> None:
+    if slot in values:
+        return
+
+    source = values.get(source_value_id)
+    if isinstance(source, dict):
+        value = dict(source)
+    else:
+        value = {}
+        for attr in ("dtype", "shape"):
+            if hasattr(source, attr):
+                value[attr] = getattr(source, attr)
+    value["value_id"] = slot
+    value["storage"] = "Register"
+    values[slot] = value
+
+
+def _normalize_single_level_loop_body(
+    body: List[Dict[str, Any]],
+    value_storage: ValueStorageLookup,
+    values: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], int]:
     """
     Reassign dst vregs based on future src liveness, independent of source-code
     naming style.
@@ -157,6 +178,7 @@ def _normalize_single_level_loop_body(body: List[Dict[str, Any]], value_storage:
 
                 if chosen_slot not in slot_pool:
                     slot_pool.append(chosen_slot)
+                _ensure_register_value(values, chosen_slot, dst_name)
                 slot_of_version[dst_ver] = chosen_slot
                 current_slot_by_vreg[dst_name] = chosen_slot
                 slot_occupant[chosen_slot] = dst_ver
@@ -172,12 +194,16 @@ def _normalize_single_level_loop_body(body: List[Dict[str, Any]], value_storage:
     return body, changed
 
 
-def _normalize_node(node: Any, value_storage: ValueStorageLookup) -> Tuple[Any, int]:
+def _normalize_node(
+    node: Any,
+    value_storage: ValueStorageLookup,
+    values: Dict[str, Any],
+) -> Tuple[Any, int]:
     if isinstance(node, list):
         out: List[Any] = []
         total_changed = 0
         for item in node:
-            new_item, changed = _normalize_node(item, value_storage)
+            new_item, changed = _normalize_node(item, value_storage, values)
             out.append(new_item)
             total_changed += changed
         return out, total_changed
@@ -192,20 +218,24 @@ def _normalize_node(node: Any, value_storage: ValueStorageLookup) -> Tuple[Any, 
 
     if out.get("type") == "loop" and all(isinstance(x, dict) and x.get("type") == "inst" for x in body):
         body_copy = [dict(x) for x in body]
-        new_body, changed = _normalize_single_level_loop_body(body_copy, value_storage)
+        new_body, changed = _normalize_single_level_loop_body(body_copy, value_storage, values)
         out["body"] = new_body
         return out, changed
 
-    new_body, changed = _normalize_node(body, value_storage)
+    new_body, changed = _normalize_node(body, value_storage, values)
     out["body"] = new_body
     return out, changed
 
 
-def normalize_program_vreg_live_ranges(program: List[Dict[str, Any]], values: Dict[str, Any] | None = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def normalize_program_vreg_live_ranges(
+    program: List[Dict[str, Any]],
+    values: Dict[str, Any] | None = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any], Dict[str, Any]]:
     program_copy = deepcopy(program)
-    new_program, changed = _normalize_node(program_copy, ValueStorageLookup(values))
+    new_values = deepcopy(values or {})
+    new_program, changed = _normalize_node(program_copy, ValueStorageLookup(new_values), new_values)
     stats = {
         "enabled": True,
         "changed_fields": int(changed),
     }
-    return new_program, stats
+    return new_program, new_values, stats
