@@ -62,6 +62,36 @@ python tools/run_cost_model_regression.py --tier smoke
 python tools/run_cost_model_regression.py --tier full
 ```
 
+## Native C++ 回归
+
+native C++ 回归复用同一份 case manifest 和 baseline，但会先把 JSON trace 转成
+canonical `VfInfo`，再 lower 成 native runner 可读的 payload，最后调用
+`build-native/vfsim_native_json_runner`。
+
+先构建 native runner：
+
+```bash
+cmake -S native -B build-native -DVFSIM_BUILD_TESTS=ON
+cmake --build build-native -j2
+```
+
+跑 smoke：
+
+```bash
+python tools/run_native_cost_model_regression.py --tier smoke
+```
+
+跑全量：
+
+```bash
+python tools/run_native_cost_model_regression.py --tier full
+```
+
+默认输出位置：
+
+- `results/native_regression_suite/latest/current_metrics.json`
+- `results/native_regression_suite/latest/compare_summary.json`
+
 如果需要显式指定路径：
 
 ```bash
