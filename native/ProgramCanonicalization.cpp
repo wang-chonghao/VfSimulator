@@ -58,11 +58,20 @@ std::vector<ProgramNode> rewrite(const std::vector<ProgramNode> &nodes,
     const ProgramLoopNode &loop = *node.loop;
     const int64_t iters = analysis.resolveBound(loop.iters);
     const int64_t unroll = analysis.resolveUnrollValue(loop.unroll);
-    const bool shouldExpand = iters == 1 || (unroll > 1 && iters == unroll);
+    const bool shouldExpand =
+        iters == 1 || (unroll > 1 && iters > 0 && iters % unroll == 0);
     if (isInstructionOnlyBody(loop.body) && shouldExpand) {
       auto expanded = expandBody(loop.body, unroll);
       ++stats.expandedLoops;
       stats.expandedInstructions += static_cast<int64_t>(expanded.size());
+      if (iters > unroll) {
+        ProgramLoopNode rewritten = loop;
+        rewritten.iters = std::to_string(iters / unroll);
+        rewritten.unroll = "1";
+        rewritten.body = std::move(expanded);
+        out.push_back(ProgramNode::makeLoop(std::move(rewritten)));
+        continue;
+      }
       out.insert(out.end(), std::make_move_iterator(expanded.begin()),
                  std::make_move_iterator(expanded.end()));
       continue;

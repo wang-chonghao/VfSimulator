@@ -77,11 +77,16 @@ int main() {
               body[6].inst.src[0] == "v0_lane1",
           "lane-specific dependencies must be preserved");
 
-  const auto unchanged = canonicalizeSingleSuperIterationLoops(
+  const auto partial = canonicalizeSingleSuperIterationLoops(
       input, {{"C", 4}, {"U", 2}}, db, "fp32");
-  require(unchanged[0].loop->body.size() == 1 &&
-              unchanged[0].loop->body[0].kind == ProgramNode::Kind::Loop,
-          "loop with multiple super-iterations must remain present");
+  require(partial[0].loop->body.size() == 1 &&
+              partial[0].loop->body[0].kind == ProgramNode::Kind::Loop,
+          "outer loop must remain present");
+  require(partial[0].loop->body[0].loop->iters == "2" &&
+              partial[0].loop->body[0].loop->unroll == "1",
+          "partial unroll must reduce trip count and consume unroll");
+  require(partial[0].loop->body[0].loop->body.size() == 10,
+          "partial unroll must duplicate the body by the factor");
 
   ProgramCanonicalizationStats oneIterationStats;
   const auto oneIteration = canonicalizeSingleSuperIterationLoops(

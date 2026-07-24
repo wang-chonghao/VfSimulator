@@ -9,6 +9,7 @@
 #include "native/IRPlanner.h"
 #include "native/ParamDB.h"
 #include "native/ProgramAnalysis.h"
+#include "native/ProgramCanonicalization.h"
 #include "native/SimulatorRunner.h"
 #include "native/TileOpTemplates.h"
 
@@ -18,12 +19,14 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <limits>
 #include <optional>
 #include <filesystem>
 #include <cctype>
+#include <cstdlib>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -73,6 +76,121 @@ static void dumpPlannerGroups(
   }
 }
 
+static std::optional<std::filesystem::path> getDumpDir() {
+  const char *raw = std::getenv("PTOAS_VFSIM_DUMP_DIR");
+  if (raw == nullptr || raw[0] == '\0')
+    return std::nullopt;
+  std::filesystem::path dir(raw);
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  if (ec)
+    return std::nullopt;
+  return dir;
+}
+
+static std::string jsonEscape(llvm::StringRef text) {
+  std::string out;
+  out.reserve(text.size() + 8);
+  for (char c : text) {
+    switch (c) {
+    case '\\':
+      out += "\\\\";
+      break;
+    case '"':
+      out += "\\\"";
+      break;
+    case '\n':
+      out += "\\n";
+      break;
+    case '\r':
+      out += "\\r";
+      break;
+    case '\t':
+      out += "\\t";
+      break;
+    default:
+      out.push_back(c);
+      break;
+    }
+  }
+  return out;
+}
+
+static void dumpStringArray(llvm::raw_ostream &os,
+                            llvm::ArrayRef<std::string> values) {
+  os << "[";
+  for (size_t i = 0; i < values.size(); ++i) {
+    if (i)
+      os << ", ";
+    os << "\"" << jsonEscape(values[i]) << "\"";
+  }
+  os << "]";
+}
+
+static void dumpProgramNode(llvm::raw_ostream &os,
+                            const vfsim::ProgramNode &node,
+                            unsigned indent);
+
+static void dumpProgramNodes(llvm::raw_ostream &os,
+                             llvm::ArrayRef<vfsim::ProgramNode> nodes,
+                             unsigned indent) {
+  os << "[\n";
+  for (size_t i = 0; i < nodes.size(); ++i) {
+    os.indent(indent + 2);
+    dumpProgramNode(os, nodes[i], indent + 2);
+    if (i + 1 != nodes.size())
+      os << ",";
+    os << "\n";
+  }
+  os.indent(indent) << "]";
+}
+
+static void dumpProgramNode(llvm::raw_ostream &os,
+                            const vfsim::ProgramNode &node,
+                            unsigned indent) {
+  if (node.kind == vfsim::ProgramNode::Kind::Loop && node.loop) {
+    os << "{\"type\":\"loop\",\"name\":\"" << jsonEscape(node.loop->name)
+       << "\",\"iters\":\"" << jsonEscape(node.loop->iters)
+       << "\",\"unroll\":\"" << jsonEscape(node.loop->unroll)
+       << "\",\"body\":";
+    dumpProgramNodes(os, node.loop->body, indent);
+    os << "}";
+    return;
+  }
+
+  os << "{\"type\":\"inst\",\"op\":\"" << jsonEscape(node.inst.op)
+     << "\",\"form\":\"" << jsonEscape(node.inst.form) << "\",\"src\":";
+  dumpStringArray(os, node.inst.src);
+  os << ",\"dst\":";
+  dumpStringArray(os, node.inst.dst);
+  os << "}";
+}
+
+static void dumpVfInfo(const vfsim::VfInfo &vfInfo,
+                       const std::filesystem::path &path,
+                       llvm::StringRef note) {
+  std::error_code ec;
+  llvm::raw_fd_ostream os(path.string(), ec, llvm::sys::fs::OF_Text);
+  if (ec)
+    return;
+
+  os << "{\n";
+  os << "  \"note\": \"" << jsonEscape(note) << "\",\n";
+  os << "  \"dtype\": \"" << jsonEscape(vfInfo.defaultDtype) << "\",\n";
+  os << "  \"params\": {";
+  bool first = true;
+  for (const auto &entry : vfInfo.params) {
+    if (!first)
+      os << ", ";
+    first = false;
+    os << "\"" << jsonEscape(entry.first) << "\": " << entry.second;
+  }
+  os << "},\n";
+  os << "  \"program\": ";
+  dumpProgramNodes(os, vfInfo.body, 2);
+  os << "\n}\n";
+}
+
 static std::vector<unsigned> enumerateUnrollCandidates(int64_t tripCount,
                                                        unsigned maxUnroll) {
   std::vector<unsigned> candidates;
@@ -89,14 +207,31 @@ static void normalizeVregLiveRanges(std::vector<vfsim::ProgramNode> &program);
 
 static std::optional<int64_t>
 simulateCandidate(const vfsim::LoweredTileGroupProgram &lowered,
-                  const vfsim::ParamDB &db, unsigned unroll) {
+                  const vfsim::ParamDB &db, unsigned unroll,
+                  const std::filesystem::path *dumpDir,
+                  int64_t groupId) {
   try {
     vfsim::VfInfo vfInfo = lowered.vfInfo;
     vfInfo.params["vfsim_inner_unroll"] = static_cast<int64_t>(unroll);
     normalizeVregLiveRanges(vfInfo.body);
 
+    vfsim::ProgramCanonicalizationStats stats;
+    vfsim::VfInfo expanded = vfInfo;
+    expanded.body = vfsim::canonicalizeSingleSuperIterationLoops(
+        vfInfo.body, vfInfo.params, db, vfInfo.defaultDtype, &stats);
+    expanded.params.erase("vfsim_inner_unroll");
+
+    if (dumpDir != nullptr) {
+      const std::string stem = "group" + std::to_string(groupId) +
+                               "_candidate_unroll" + std::to_string(unroll);
+      dumpVfInfo(vfInfo, *dumpDir / (stem + "_before_expand.json"),
+                 "VfSim candidate before loop canonicalization");
+      dumpVfInfo(expanded, *dumpDir / (stem + "_after_expand.json"),
+                 "VfSim candidate after loop canonicalization");
+    }
+
     const auto result =
-        vfsim::runVfInfo(vfInfo, db, "", /*maxCycles=*/1000000);
+        vfsim::runVfInfo(expanded, db, "", /*maxCycles=*/1000000);
     return result.vfEndCycle;
   } catch (...) {
     return std::nullopt;
@@ -305,7 +440,9 @@ static void normalizeVregLiveRanges(std::vector<vfsim::ProgramNode> &program) {
 static std::optional<unsigned>
 chooseBestUnroll(const vfsim::LoweredTileGroupProgram &lowered,
                  const vfsim::ParamDB &db, unsigned maxUnroll,
-                 bool dumpCandidates) {
+                 bool dumpCandidates,
+                 const std::filesystem::path *dumpDir,
+                 int64_t groupId) {
   if (lowered.unrollTripCount <= 0)
     return std::nullopt;
 
@@ -313,7 +450,8 @@ chooseBestUnroll(const vfsim::LoweredTileGroupProgram &lowered,
   int64_t bestCycles = std::numeric_limits<int64_t>::max();
   for (unsigned unroll :
        enumerateUnrollCandidates(lowered.unrollTripCount, maxUnroll)) {
-    std::optional<int64_t> cycles = simulateCandidate(lowered, db, unroll);
+    std::optional<int64_t> cycles =
+        simulateCandidate(lowered, db, unroll, dumpDir, groupId);
     if (dumpCandidates) {
       llvm::errs() << "  unroll=" << unroll
                    << " trip=" << lowered.unrollTripCount
@@ -368,6 +506,7 @@ mlir::LogicalResult planTileFusionIR(mlir::Operation *candidateIR,
     return mlir::success();
   }
 
+  std::optional<std::filesystem::path> dumpDir = getDumpDir();
   for (auto &entry : groups) {
     if (entry.second.size() < 2)
       continue;
@@ -383,9 +522,17 @@ mlir::LogicalResult planTileFusionIR(mlir::Operation *candidateIR,
     if (!lowered.supported())
       continue;
 
+    if (dumpDir) {
+      const std::string inputName =
+          "group" + std::to_string(entry.first) + "_vfsim_input.json";
+      dumpVfInfo(lowered.vfInfo, *dumpDir / inputName,
+                 "VfSim input lowered from PTOAS fusion group");
+    }
+
     std::optional<unsigned> selectedUnroll =
         chooseBestUnroll(lowered, *db, options.maxUnroll,
-                         options.dumpCandidates);
+                         options.dumpCandidates,
+                         dumpDir ? &*dumpDir : nullptr, entry.first);
     if (!selectedUnroll)
       continue;
     int64_t rowUnroll = 1;
