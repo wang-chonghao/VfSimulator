@@ -146,6 +146,7 @@ static std::string nextFreshVreg(const std::vector<std::string> &slotPool) {
 }
 
 static void normalizeFlatLoopVregs(std::vector<vfsim::ProgramNode> &body) {
+  vfsim::ProgramAnalysis analysis;
   std::unordered_map<std::string, VregVersion> currentVersionByVreg;
   std::unordered_map<std::string, int64_t> versionCounter;
   std::vector<std::vector<std::optional<std::string>>> srcVersions(body.size());
@@ -156,7 +157,7 @@ static void normalizeFlatLoopVregs(std::vector<vfsim::ProgramNode> &body) {
     vfsim::ProgramInstNode &inst = body[idx].inst;
     srcVersions[idx].reserve(inst.src.size());
     for (const std::string &src : inst.src) {
-      if (!vfsim::ProgramAnalysis::isVregName(src)) {
+      if (!analysis.isVregName(src)) {
         srcVersions[idx].push_back(std::nullopt);
         continue;
       }
@@ -172,7 +173,7 @@ static void normalizeFlatLoopVregs(std::vector<vfsim::ProgramNode> &body) {
 
     dstVersions[idx].reserve(inst.dst.size());
     for (const std::string &dst : inst.dst) {
-      if (!vfsim::ProgramAnalysis::isVregName(dst)) {
+      if (!analysis.isVregName(dst)) {
         dstVersions[idx].push_back(std::nullopt);
         continue;
       }
@@ -195,7 +196,7 @@ static void normalizeFlatLoopVregs(std::vector<vfsim::ProgramNode> &body) {
 
     for (size_t pos = 0; pos < inst.src.size(); ++pos) {
       const std::string &src = inst.src[pos];
-      if (!vfsim::ProgramAnalysis::isVregName(src))
+      if (!analysis.isVregName(src))
         continue;
 
       std::string slot = src;
@@ -223,8 +224,7 @@ static void normalizeFlatLoopVregs(std::vector<vfsim::ProgramNode> &body) {
     }
 
     std::vector<std::string> newDsts = inst.dst;
-    if (inst.dst.size() == 1 &&
-        vfsim::ProgramAnalysis::isVregName(inst.dst.front())) {
+    if (inst.dst.size() == 1 && analysis.isVregName(inst.dst.front())) {
       const std::string &dstName = inst.dst.front();
       const std::optional<std::string> &dstVersion =
           dstVersions[idx].empty() ? std::nullopt : dstVersions[idx].front();
