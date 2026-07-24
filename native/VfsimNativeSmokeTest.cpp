@@ -98,14 +98,14 @@ void verifyUnrollOrder(const ParamDB &db) {
           "fp32");
   const auto emitted = ifu.take(10);
   const std::vector<std::string> expected = {
-      "VLDS", "VLDS", "VADD", "VADD", "VLDS",
-      "VLDS", "VSUB", "VSUB", "VSTS", "VSTS"};
+      "VLDS", "VADD", "VLDS", "VSUB", "VSTS",
+      "VLDS", "VADD", "VLDS", "VSUB", "VSTS"};
   require(emitted.size() == expected.size(),
           "unrolled IFU emitted an unexpected instruction count");
   for (size_t i = 0; i < expected.size(); ++i) {
     require(emitted[i].op == expected[i],
-            "unrolled IFU must preserve static AABBCC order");
-    require(emitted[i].lane == static_cast<int64_t>(i % 2),
+            "unrolled IFU must preserve ABCABC order");
+    require(emitted[i].lane == static_cast<int64_t>(i / 5),
             "unrolled IFU emitted an unexpected lane order");
   }
 }

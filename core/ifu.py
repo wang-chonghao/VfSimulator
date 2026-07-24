@@ -291,8 +291,8 @@ class IFUUnroll:
         # only at the very last emitted inst of the pending batch.
         is_last_super_iter = (orig_base + U >= frame.iters_total)
 
-        for ins in body:
-            for lane in range(U):
+        for lane in range(U):
+            for ins in body:
                 inst = dict(ins)
                 inst["inst_id"] = self.inst_id
                 self.inst_id += 1

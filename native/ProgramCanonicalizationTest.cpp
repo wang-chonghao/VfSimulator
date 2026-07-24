@@ -67,14 +67,14 @@ int main() {
           "outer loop must remain present");
   const auto &body = result[0].loop->body;
   require(body.size() == 10, "expected five instructions times two lanes");
-  require(body[0].inst.op == "VLDS" && body[1].inst.op == "VLDS" &&
-              body[2].inst.op == "VADD" && body[3].inst.op == "VADD" &&
-              body[4].inst.op == "VLDS" && body[5].inst.op == "VLDS" &&
-              body[6].inst.op == "VSUB" && body[7].inst.op == "VSUB" &&
-              body[8].inst.op == "VSTS" && body[9].inst.op == "VSTS",
-          "expanded order must be AABBCC");
-  require(body[2].inst.src[0] == "v0_lane0" &&
-              body[3].inst.src[0] == "v0_lane1",
+  require(body[0].inst.op == "VLDS" && body[1].inst.op == "VADD" &&
+              body[2].inst.op == "VLDS" && body[3].inst.op == "VSUB" &&
+              body[4].inst.op == "VSTS" && body[5].inst.op == "VLDS" &&
+              body[6].inst.op == "VADD" && body[7].inst.op == "VLDS" &&
+              body[8].inst.op == "VSUB" && body[9].inst.op == "VSTS",
+          "expanded order must be ABCABC");
+  require(body[1].inst.src[0] == "v0_lane0" &&
+              body[6].inst.src[0] == "v0_lane1",
           "lane-specific dependencies must be preserved");
 
   const auto unchanged = canonicalizeSingleSuperIterationLoops(

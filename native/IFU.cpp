@@ -287,8 +287,8 @@ void IFU::buildPendingUnrolled(LoopFrame &frame) {
   std::vector<DynamicInst> pending;
   pending.reserve(body.size() * static_cast<size_t>(std::max<int64_t>(1, U)));
 
-  for (const auto &ins : body) {
-    for (int64_t lane = 0; lane < U; ++lane) {
+  for (int64_t lane = 0; lane < U; ++lane) {
+    for (const auto &ins : body) {
       DynamicInst inst;
       inst.instId = instId_++;
       inst.type = ins.type;

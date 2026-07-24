@@ -26,8 +26,8 @@ std::vector<ProgramNode> expandBody(const std::vector<ProgramNode> &body,
                                     int64_t unroll) {
   std::vector<ProgramNode> expanded;
   expanded.reserve(body.size() * static_cast<size_t>(unroll));
-  for (const auto &node : body) {
-    for (int64_t lane = 0; lane < unroll; ++lane) {
+  for (int64_t lane = 0; lane < unroll; ++lane) {
+    for (const auto &node : body) {
       ProgramInstNode clone = node.inst;
       clone.src = renameLane(node.inst.src, lane);
       clone.dst = renameLane(node.inst.dst, lane);

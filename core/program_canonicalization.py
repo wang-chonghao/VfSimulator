@@ -21,8 +21,8 @@ def _expand_body(
     unroll: int,
 ) -> List[Dict[str, Any]]:
     expanded: List[Dict[str, Any]] = []
-    for inst in body:
-        for lane in range(unroll):
+    for lane in range(unroll):
+        for inst in body:
             clone = deepcopy(inst)
             clone["src"] = _rename_unroll_lane(clone.get("src", []), lane)
             clone["dst"] = _rename_unroll_lane(clone.get("dst", []), lane)

@@ -5,7 +5,7 @@ from core.program_canonicalization import canonicalize_single_super_iteration_lo
 
 
 class ProgramCanonicalizationTest(unittest.TestCase):
-    def test_expands_one_super_iteration_in_aabbcc_order(self):
+    def test_expands_one_super_iteration_in_abcabc_order(self):
         program = [
             {
                 "type": "loop",
@@ -37,10 +37,10 @@ class ProgramCanonicalizationTest(unittest.TestCase):
         self.assertEqual(stats["expanded_loops"], 1)
         self.assertEqual(
             [node["op"] for node in body],
-            ["VLDS", "VLDS", "VADD", "VADD", "VLDS", "VLDS", "VSUB", "VSUB", "VSTS", "VSTS"],
+            ["VLDS", "VADD", "VLDS", "VSUB", "VSTS", "VLDS", "VADD", "VLDS", "VSUB", "VSTS"],
         )
-        self.assertEqual(body[2]["src"][0], "v0_lane0")
-        self.assertEqual(body[3]["src"][0], "v0_lane1")
+        self.assertEqual(body[1]["src"][0], "v0_lane0")
+        self.assertEqual(body[6]["src"][0], "v0_lane1")
 
     def test_keeps_loop_with_multiple_super_iterations(self):
         program = [
@@ -93,9 +93,9 @@ class ProgramCanonicalizationTest(unittest.TestCase):
 
         self.assertEqual(
             [inst["op"] for inst in emitted],
-            ["VLDS", "VLDS", "VADD", "VADD", "VLDS", "VLDS", "VSUB", "VSUB", "VSTS", "VSTS"],
+            ["VLDS", "VADD", "VLDS", "VSUB", "VSTS", "VLDS", "VADD", "VLDS", "VSUB", "VSTS"],
         )
-        self.assertEqual([inst["lane"] for inst in emitted], [0, 1] * 5)
+        self.assertEqual([inst["lane"] for inst in emitted], [0] * 5 + [1] * 5)
 
 
 if __name__ == "__main__":
