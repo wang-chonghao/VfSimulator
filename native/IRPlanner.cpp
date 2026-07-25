@@ -209,7 +209,8 @@ static std::optional<int64_t>
 simulateCandidate(const vfsim::LoweredTileGroupProgram &lowered,
                   const vfsim::ParamDB &db, unsigned unroll,
                   const std::filesystem::path *dumpDir,
-                  int64_t groupId) {
+                  int64_t groupId,
+                  std::string *failureReason = nullptr) {
   try {
     vfsim::VfInfo vfInfo = lowered.vfInfo;
     vfInfo.params["vfsim_inner_unroll"] = static_cast<int64_t>(unroll);
@@ -233,7 +234,13 @@ simulateCandidate(const vfsim::LoweredTileGroupProgram &lowered,
     const auto result =
         vfsim::runVfInfo(expanded, db, "", /*maxCycles=*/1000000);
     return result.vfEndCycle;
+  } catch (const std::exception &ex) {
+    if (failureReason != nullptr)
+      *failureReason = ex.what();
+    return std::nullopt;
   } catch (...) {
+    if (failureReason != nullptr)
+      *failureReason = "unknown exception";
     return std::nullopt;
   }
 }
@@ -442,16 +449,20 @@ chooseBestUnroll(const vfsim::LoweredTileGroupProgram &lowered,
                  const vfsim::ParamDB &db, unsigned maxUnroll,
                  bool dumpCandidates,
                  const std::filesystem::path *dumpDir,
-                 int64_t groupId) {
+                 int64_t groupId,
+                 std::string *failureReason = nullptr) {
   if (lowered.unrollTripCount <= 0)
     return std::nullopt;
 
   std::optional<unsigned> bestUnroll;
   int64_t bestCycles = std::numeric_limits<int64_t>::max();
+  std::string lastFailureReason;
   for (unsigned unroll :
        enumerateUnrollCandidates(lowered.unrollTripCount, maxUnroll)) {
+    std::string candidateFailureReason;
     std::optional<int64_t> cycles =
-        simulateCandidate(lowered, db, unroll, dumpDir, groupId);
+        simulateCandidate(lowered, db, unroll, dumpDir, groupId,
+                          &candidateFailureReason);
     if (dumpCandidates) {
       llvm::errs() << "  unroll=" << unroll
                    << " trip=" << lowered.unrollTripCount
@@ -462,13 +473,20 @@ chooseBestUnroll(const vfsim::LoweredTileGroupProgram &lowered,
         llvm::errs() << "failed";
       llvm::errs() << "\n";
     }
-    if (!cycles)
+    if (!cycles) {
+      if (!candidateFailureReason.empty())
+        lastFailureReason = candidateFailureReason;
       continue;
+    }
     if (*cycles < bestCycles) {
       bestCycles = *cycles;
       bestUnroll = unroll;
     }
   }
+  if (!bestUnroll && failureReason != nullptr)
+    *failureReason = lastFailureReason.empty()
+                         ? "all unroll candidates failed"
+                         : lastFailureReason;
   return bestUnroll;
 }
 
@@ -500,9 +518,9 @@ mlir::LogicalResult planTileFusionIR(mlir::Operation *candidateIR,
   try {
     db.emplace(std::filesystem::path(VFSIM_SOURCE_ROOT));
   } catch (const std::exception &ex) {
-    if (options.dumpCandidates)
-      llvm::errs() << "VfSim IR planner: failed to load params: "
-                   << ex.what() << "\n";
+    llvm::errs() << "warning: VfSim planner disabled: failed to load "
+                    "parameter database: "
+                 << ex.what() << "\n";
     return mlir::success();
   }
 
@@ -519,8 +537,12 @@ mlir::LogicalResult planTileFusionIR(mlir::Operation *candidateIR,
 
     LoweredTileGroupProgram lowered =
         lowerTileGroupWithPerformanceTemplates(ordered);
-    if (!lowered.supported())
+    if (!lowered.supported()) {
+      llvm::errs() << "warning: VfSim planner skipped fusion group "
+                   << entry.first << ": " << lowered.unsupportedReason
+                   << "\n";
       continue;
+    }
 
     if (dumpDir) {
       const std::string inputName =
@@ -529,12 +551,20 @@ mlir::LogicalResult planTileFusionIR(mlir::Operation *candidateIR,
                  "VfSim input lowered from PTOAS fusion group");
     }
 
+    std::string selectionFailureReason;
     std::optional<unsigned> selectedUnroll =
         chooseBestUnroll(lowered, *db, options.maxUnroll,
                          options.dumpCandidates,
-                         dumpDir ? &*dumpDir : nullptr, entry.first);
-    if (!selectedUnroll)
+                         dumpDir ? &*dumpDir : nullptr, entry.first,
+                         &selectionFailureReason);
+    if (!selectedUnroll) {
+      llvm::errs() << "warning: VfSim planner skipped fusion group "
+                   << entry.first << ": failed to select unroll factor";
+      if (!selectionFailureReason.empty())
+        llvm::errs() << ": " << selectionFailureReason;
+      llvm::errs() << "\n";
       continue;
+    }
     int64_t rowUnroll = 1;
     int64_t colUnroll = 1;
     switch (lowered.unrollDimension) {
