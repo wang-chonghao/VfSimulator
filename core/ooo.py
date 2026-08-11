@@ -44,6 +44,7 @@ class Uop:
     ready_cycle: int = 0
     start_cycle: Optional[int] = None
     done_cycle: Optional[int] = None
+    blocked_reason: Optional[str] = None
 
     producer_op_for_store: Optional[str] = None
     producer_form_for_store: Optional[str] = None
@@ -157,6 +158,7 @@ class OoOCore:
             "op": u.op,
             "form": u.form,
             "state": u.state,
+            "blocked_reason": u.blocked_reason,
             "ready": u.ready_cycle,
             "start": u.start_cycle,
             "done": u.done_cycle,
@@ -364,6 +366,27 @@ class OoOCore:
                     return 10 ** 9
                 t = max(t, release_cycle)
         return t
+
+    def _blocked_by_control_unit(self, u: Uop) -> bool:
+        control_unit = getattr(self, "control_unit", None)
+        if control_unit is None:
+            return False
+        return bool(
+            control_unit.blocks(
+                {
+                    "type": "inst",
+                    "op": u.op,
+                    "form": u.form,
+                    "stream_seq": int(getattr(u, "stream_seq", -1)),
+                }
+            )
+        )
+
+    def _log_membar_blocked(self, u: Uop) -> None:
+        old_reason = u.blocked_reason
+        u.blocked_reason = "membar"
+        self._log("blocked", u)
+        u.blocked_reason = old_reason
 
     def _store_ready_cycle(self, u: Uop) -> Tuple[int, Optional[str], Optional[str], Optional[int]]:
         for ps in u.preg_src:

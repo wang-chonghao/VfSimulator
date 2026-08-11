@@ -113,6 +113,7 @@ def run_simulation(
     pdb = getattr(ooo, "db", None)
     dtype = str(getattr(ooo, "dtype", "fp32"))
     control_unit = ControlUnit(pdb, dtype)
+    setattr(ooo, "control_unit", control_unit)
     idu_to_ooo_delay = int(uarch.get("idu_to_ooo_delay", 0))
     idu_to_ooo_pipe = deque()
     use_explicit_idu_credit_bank = bool(
@@ -192,7 +193,7 @@ def run_simulation(
                 ooo, pending_preg, pending_shq_queue, pending_lsq, pending_shq
             )
 
-        to_send = idu.dispatch(cycle, idu_credit_proxy, control_unit=control_unit)
+        to_send = idu.dispatch(cycle, idu_credit_proxy)
         for inst in to_send:
             if use_explicit_idu_credit_bank:
                 r = _inst_reservation(inst, value_storage, pdb, dtype)
@@ -215,6 +216,7 @@ def run_simulation(
             and len(ooo.LSQ) == 0
             and len(ooo.ROB) == 0
             and len(idu_to_ooo_pipe) == 0
+            and control_unit.empty()
         ):
             completed = True
             break

@@ -45,6 +45,10 @@ void ProgramFlatten::visit(const std::vector<ProgramNode> &nodes, int64_t depth,
       emitInst(node.inst, depth, loopStack);
       continue;
     }
+    if (node.kind == ProgramNode::Kind::Membar) {
+      emitMembar(node.membar, depth, loopStack);
+      continue;
+    }
     if (node.kind == ProgramNode::Kind::Loop && node.loop) {
       emitLoop(*node.loop, depth, loopStack);
       continue;
@@ -65,6 +69,18 @@ void ProgramFlatten::emitInst(const ProgramInstNode &inst, int64_t depth,
   out.loopStack = loopStack;
   out.src = inst.src;
   out.dst = inst.dst;
+  linear_.push_back(std::move(out));
+}
+
+void ProgramFlatten::emitMembar(const ProgramMembarNode &membar, int64_t depth,
+                                const std::vector<int64_t> &loopStack) {
+  LinearProgramNode out;
+  out.kind = LinearProgramNode::Kind::Inst;
+  out.type = "membar";
+  out.pc = pc_++;
+  out.depth = depth;
+  out.loopStack = loopStack;
+  out.barrier = membar.barrier;
   linear_.push_back(std::move(out));
 }
 

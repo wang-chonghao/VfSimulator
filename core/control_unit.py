@@ -68,6 +68,10 @@ class ControlUnit:
                 int(barrier.stream_seq),
                 str(barrier.wait_class),
             )
+        self.barriers = [barrier for barrier in self.barriers if not barrier.released]
+
+    def empty(self) -> bool:
+        return len(self.barriers) == 0
 
     def blocks(self, inst: Dict[str, Any]) -> bool:
         stream_seq = int(inst.get("stream_seq", -1))

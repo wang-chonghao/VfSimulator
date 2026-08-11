@@ -11,6 +11,7 @@
 #include "native/Json.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <optional>
 #include <stdexcept>
@@ -55,6 +56,45 @@ std::pair<std::string, std::string> splitQualifiedOp(const std::string &name) {
 
 std::string qualifyOp(const std::string &op, const std::string &form) {
   return form.empty() ? op : op + "." + form;
+}
+
+std::string upper(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+    return static_cast<char>(std::toupper(c));
+  });
+  return value;
+}
+
+bool startsWith(const std::string &value, const std::string &prefix) {
+  return value.rfind(prefix, 0) == 0;
+}
+
+std::string configOpClass(const InstConfig &cfg) {
+  return upper(cfg.opClass);
+}
+
+bool configIsLoad(const InstConfig &cfg, const std::string &op) {
+  const std::string cls = configOpClass(cfg);
+  if (cls == "LOAD")
+    return true;
+  const std::string canon = upper(op);
+  return startsWith(canon, "VLD");
+}
+
+bool configIsStore(const InstConfig &cfg, const std::string &op) {
+  const std::string cls = configOpClass(cfg);
+  if (cls == "STORE")
+    return true;
+  const std::string canon = upper(op);
+  return startsWith(canon, "VST");
+}
+
+std::string warningKey(const std::string &kind,
+                       const std::map<std::string, std::string> &fields) {
+  std::string key = kind;
+  for (const auto &[k, v] : fields)
+    key += "|" + k + "=" + v;
+  return key;
 }
 
 InstConfig readInstConfig(const JsonValue::Object &object) {
@@ -315,11 +355,70 @@ bool ParamDB::hasInst(const std::string &op, const std::string &dtype) const {
 const InstConfig &ParamDB::inst(const std::string &op, const std::string &dtype) const {
   const auto opIt = bundle_.isa.find(op);
   if (opIt == bundle_.isa.end())
-    throw std::runtime_error("Instruction not found: op=" + op + ", dtype=" + dtype);
+    return fallbackInst(op, dtype, false);
   const auto dtypeIt = opIt->second.find(dtype);
   if (dtypeIt == opIt->second.end())
-    throw std::runtime_error("Instruction not found: op=" + op + ", dtype=" + dtype);
+    return fallbackInst(op, dtype, true);
   return dtypeIt->second;
+}
+
+void ParamDB::recordWarning(const std::string &kind,
+                            std::map<std::string, std::string> fields) const {
+  const std::string key = warningKey(kind, fields);
+  auto it = warnings_.find(key);
+  if (it != warnings_.end()) {
+    it->second.count += 1;
+    return;
+  }
+  ModelWarning warning;
+  warning.kind = kind;
+  warning.fields = std::move(fields);
+  warning.count = 1;
+  warnings_.emplace(key, std::move(warning));
+}
+
+std::vector<ModelWarning> ParamDB::warnings() const {
+  std::vector<ModelWarning> out;
+  out.reserve(warnings_.size());
+  for (const auto &[_, warning] : warnings_)
+    out.push_back(warning);
+  return out;
+}
+
+const InstConfig &ParamDB::fallbackInst(const std::string &op,
+                                        const std::string &dtype,
+                                        bool unsupportedForm) const {
+  auto &dtypeMap = fallbackIsa_[op];
+  auto it = dtypeMap.find(dtype);
+  if (it != dtypeMap.end())
+    return it->second;
+
+  const std::string canon = upper(op);
+  InstConfig cfg;
+  cfg.latency = 9;
+  cfg.pipelineStartupCost = 0;
+  cfg.pipelineDrainCost = 0;
+  if (startsWith(canon, "VLD")) {
+    cfg.opClass = "LOAD";
+  } else if (startsWith(canon, "VST")) {
+    cfg.opClass = "STORE";
+  } else {
+    cfg.opClass = "COMPUTE";
+    cfg.exu = "ALU";
+    cfg.dispatchExu = "EXU01";
+  }
+
+  recordWarning(
+      unsupportedForm ? "unsupported_isa_form" : "unsupported_isa_op",
+      {
+          {"op", op},
+          {"form", dtype},
+          {"used_op_class", cfg.opClass},
+          {"used_latency", std::to_string(cfg.latency)},
+          {"used_dispatch_exu", cfg.dispatchExu},
+      });
+  auto inserted = dtypeMap.emplace(dtype, std::move(cfg));
+  return inserted.first->second;
 }
 
 int64_t ParamDB::forwardingCycles(const std::string &dtype, const std::string &prod,
@@ -333,8 +432,18 @@ int64_t ParamDB::forwardingCycles(const std::string &dtype, const std::string &p
         return std::max<int64_t>(0, consIt->second);
     }
   }
-  const int64_t latency = hasInst(prod, dtype) ? inst(prod, dtype).latency : 0;
-  return std::max<int64_t>(0, latency - 3);
+  const InstConfig &prodCfg = inst(prod, dtype);
+  const InstConfig &consCfg = inst(cons, dtype);
+  const bool lsuDefault = configIsLoad(prodCfg, prod) && configIsStore(consCfg, cons);
+  const int64_t value = lsuDefault ? 6 : std::max<int64_t>(0, prodCfg.latency - 3);
+  recordWarning("missing_forwarding_pair",
+                {{"producer", qualifyOp(prod, dtype)},
+                 {"consumer", qualifyOp(cons, dtype)},
+                 {"producer_latency", std::to_string(prodCfg.latency)},
+                 {"used_default", std::to_string(value)},
+                 {"rule", lsuDefault ? "load_store_default"
+                                      : "producer_latency_minus_default_offset"}});
+  return value;
 }
 
 int64_t ParamDB::forwardingCycles(const std::string &prod,
@@ -349,9 +458,18 @@ int64_t ParamDB::forwardingCycles(const std::string &prod,
   }
   if (prodForm == consForm)
     return forwardingCycles(prodForm, prod, cons);
-  const int64_t latency =
-      hasInst(prod, prodForm) ? inst(prod, prodForm).latency : 0;
-  return std::max<int64_t>(0, latency - 3);
+  const InstConfig &prodCfg = inst(prod, prodForm);
+  const InstConfig &consCfg = inst(cons, consForm);
+  const bool lsuDefault = configIsLoad(prodCfg, prod) && configIsStore(consCfg, cons);
+  const int64_t value = lsuDefault ? 6 : std::max<int64_t>(0, prodCfg.latency - 3);
+  recordWarning("missing_forwarding_pair",
+                {{"producer", qualifyOp(prod, prodForm)},
+                 {"consumer", qualifyOp(cons, consForm)},
+                 {"producer_latency", std::to_string(prodCfg.latency)},
+                 {"used_default", std::to_string(value)},
+                 {"rule", lsuDefault ? "load_store_default"
+                                      : "producer_latency_minus_default_offset"}});
+  return value;
 }
 
 int64_t ParamDB::initiationInterval(const std::string &dtype, const std::string &prev,
@@ -365,7 +483,18 @@ int64_t ParamDB::initiationInterval(const std::string &dtype, const std::string 
         return std::max<int64_t>(1, curIt->second);
     }
   }
-  return 1;
+  const InstConfig &prevCfg = inst(prev, dtype);
+  const InstConfig &curCfg = inst(cur, dtype);
+  const int64_t value = (prevCfg.latency - curCfg.latency) == 1 ? 2 : 1;
+  recordWarning("missing_ii_pair",
+                {{"prev", qualifyOp(prev, dtype)},
+                 {"cur", qualifyOp(cur, dtype)},
+                 {"prev_latency", std::to_string(prevCfg.latency)},
+                 {"cur_latency", std::to_string(curCfg.latency)},
+                 {"used_default", std::to_string(value)},
+                 {"rule", value == 2 ? "prev_latency_minus_cur_latency_eq_1"
+                                      : "default_one"}});
+  return value;
 }
 
 int64_t ParamDB::initiationInterval(const std::string &prev,
@@ -381,7 +510,18 @@ int64_t ParamDB::initiationInterval(const std::string &prev,
   }
   if (prevForm == curForm)
     return initiationInterval(prevForm, prev, cur);
-  return 1;
+  const InstConfig &prevCfg = inst(prev, prevForm);
+  const InstConfig &curCfg = inst(cur, curForm);
+  const int64_t value = (prevCfg.latency - curCfg.latency) == 1 ? 2 : 1;
+  recordWarning("missing_ii_pair",
+                {{"prev", qualifyOp(prev, prevForm)},
+                 {"cur", qualifyOp(cur, curForm)},
+                 {"prev_latency", std::to_string(prevCfg.latency)},
+                 {"cur_latency", std::to_string(curCfg.latency)},
+                 {"used_default", std::to_string(value)},
+                 {"rule", value == 2 ? "prev_latency_minus_cur_latency_eq_1"
+                                      : "default_one"}});
+  return value;
 }
 
 } // namespace vfsim

@@ -15,7 +15,9 @@
 #include "native/SimulatorRunner.h"
 
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -41,6 +43,12 @@ ProgramInstNode makeInst(std::string op, std::vector<std::string> dst,
 ProgramNode makeInstNode(const std::string &op, std::vector<std::string> dst,
                          std::vector<std::string> src) {
   return ProgramNode::makeInst(makeInst(op, std::move(dst), std::move(src)));
+}
+
+ProgramNode makeMembarNode(std::string barrier) {
+  ProgramMembarNode membar;
+  membar.barrier = std::move(barrier);
+  return ProgramNode::makeMembar(std::move(membar));
 }
 
 ProgramNode makeLoopNode(std::string iters, std::vector<ProgramNode> body) {
@@ -110,6 +118,224 @@ void verifyUnrollOrder(const ParamDB &db) {
   }
 }
 
+std::string readText(const std::filesystem::path &path) {
+  std::ifstream in(path);
+  std::ostringstream buffer;
+  buffer << in.rdbuf();
+  return buffer.str();
+}
+
+void writeText(const std::filesystem::path &path, const std::string &text) {
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream out(path);
+  out << text;
+}
+
+int64_t cycleForInstId(const std::string &jsonl, int64_t instId) {
+  const std::string needle = "\"inst_id\":" + std::to_string(instId);
+  std::istringstream lines(jsonl);
+  std::string line;
+  while (std::getline(lines, line)) {
+    if (line.find(needle) == std::string::npos)
+      continue;
+    const std::string cyNeedle = "\"cy\":";
+    const auto pos = line.find(cyNeedle);
+    if (pos == std::string::npos)
+      break;
+    const auto start = pos + cyNeedle.size();
+    const auto end = line.find_first_of(",}", start);
+    return std::stoll(line.substr(start, end - start));
+  }
+  throw std::runtime_error("inst_id not found in jsonl: " + std::to_string(instId));
+}
+
+ParamDB makeDurationTestDb() {
+  const auto root = std::filesystem::temp_directory_path() / "vfsim_native_duration_cfg";
+  writeText(
+      root / "configs" / "isa.json",
+      R"JSON({
+        "defaults": {"vf_startup_cost": 0, "vf_drain_cost": 0},
+        "instructions": {
+          "VLDS": {
+            "op_class": "LOAD",
+            "forms": {
+              "fp32": {"latency": 5, "pipeline_startup_cost": 0, "pipeline_drain_cost": 0, "data_load_cost": 99, "data_store_cost": 1}
+            }
+          },
+          "VSTS": {
+            "op_class": "STORE",
+            "forms": {
+              "fp32": {"latency": 7, "pipeline_startup_cost": 0, "pipeline_drain_cost": 0, "data_load_cost": 1, "data_store_cost": 99}
+            }
+          }
+        }
+      })JSON");
+  writeText(
+      root / "configs" / "uarch.json",
+      R"JSON({
+        "issue_ports": 2,
+        "load_ports": 2,
+        "store_ports": 1,
+        "IDU_window_width": 8,
+        "IDU_issue_width": 5,
+        "LDQ_width": 8,
+        "vreg_num": 16,
+        "ooo_to_shq_delay": 1,
+        "ooo_to_lsq_delay": 1,
+        "idu_to_ooo_delay": 0,
+        "load_done_latency": 99,
+        "consumer_release_start_offset": 0,
+        "enable_cross_fu_ii": true
+      })JSON");
+  return ParamDB(root);
+}
+
+void verifyInstructionFallback(ParamDB &db) {
+  const InstConfig &unknown = db.inst("VUNKNOWN_NATIVE", "fp32");
+  require(unknown.opClass == "COMPUTE", "unknown native op must fallback to compute");
+  require(unknown.latency == 9, "unknown native op latency fallback mismatch");
+  require(unknown.dispatchExu == "EXU01", "unknown native op dispatch fallback mismatch");
+  const InstConfig &load = db.inst("VLDX_NATIVE", "fp32");
+  const InstConfig &store = db.inst("VSTX_NATIVE", "fp32");
+  require(load.opClass == "LOAD", "unknown VLD* must fallback to LOAD");
+  require(store.opClass == "STORE", "unknown VST* must fallback to STORE");
+  require(db.forwardingCycles("VLDX_NATIVE", "fp32", "VSTX_NATIVE", "fp32") == 6,
+          "native load-store forwarding fallback mismatch");
+  bool sawUnsupported = false;
+  bool sawForwarding = false;
+  for (const auto &warning : db.warnings()) {
+    sawUnsupported = sawUnsupported || warning.kind == "unsupported_isa_op";
+    sawForwarding = sawForwarding || warning.kind == "missing_forwarding_pair";
+  }
+  require(sawUnsupported, "native fallback must record unsupported_isa_op");
+  require(sawForwarding, "native fallback must record missing_forwarding_pair");
+}
+
+void verifyMembarDisablesUnroll(ParamDB &db) {
+  const std::vector<ProgramNode> program = {makeUnrolledLoopNode(
+      "4", "2",
+      {makeInstNode("VLDS", {"v0"}, {"mem0"}),
+       makeInstNode("VSTS", {"mem1"}, {"v0"}),
+       makeMembarNode("VST_VLD"),
+       makeInstNode("VLDS", {"v1"}, {"mem2"})})};
+  ProgramFlatten flattener;
+  const auto &linear = flattener.flatten(program);
+  ProgramAnalysis analysis;
+  IFU ifu(linear, {}, &db, analysis.inferTopBlockLoopBounds(program), 1,
+          "fp32");
+  const auto emitted = ifu.take(12);
+  require(emitted.size() == 12, "membar unroll-disabled IFU instruction count mismatch");
+  for (const auto &inst : emitted) {
+    require(inst.lane == -1, "membar loop should not emit unroll lanes");
+    for (const auto &src : inst.src)
+      require(src.find("_lane") == std::string::npos, "membar loop emitted lane src");
+    for (const auto &dst : inst.dst)
+      require(dst.find("_lane") == std::string::npos, "membar loop emitted lane dst");
+  }
+  bool saw = false;
+  for (const auto &warning : db.warnings())
+    saw = saw || warning.kind == "membar_unroll_disabled";
+  require(saw, "native IFU must record membar_unroll_disabled");
+}
+
+void verifyExplicitMembarTiming(const ParamDB &db) {
+  VfInfo vfInfo;
+  vfInfo.defaultDtype = "fp32";
+  vfInfo.body = {makeLoopNode(
+      "1",
+      {makeInstNode("VLDS", {"v0"}, {"memA"}),
+       makeInstNode("VSTS", {"memB"}, {"v0"}),
+       makeMembarNode("MEMBAR.VST_VLD"),
+       makeInstNode("VLDS", {"v1"}, {"memC"}),
+       makeInstNode("VADDS", {"v2"}, {"v0"})})};
+
+  const auto outDir = std::filesystem::temp_directory_path() / "vfsim_native_membar";
+  const auto result = runVfInfo(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
+  require(result.vfEndCycle > 0, "native membar run did not complete");
+  const std::string starts = readText(outDir / "start_by_cycle.json");
+  const std::string dones = readText(outDir / "done_by_cycle.json");
+  const std::string history = readText(outDir / "sim_history.json");
+  const int64_t storeDone = cycleForInstId(dones, 1);
+  const int64_t postBarrierLoadStart = cycleForInstId(starts, 2);
+  const int64_t computeStart = cycleForInstId(starts, 3);
+  require(postBarrierLoadStart >= storeDone,
+          "native VST_VLD must block following load until prior store done");
+  require(computeStart < storeDone,
+          "native VST_VLD must not cause IDU head-of-line blocking for compute");
+  require(history.find("\"blocked_reason\":\"membar\"") != std::string::npos,
+          "native membar issue gate must write blocked_reason to sim_history");
+}
+
+void verifyMembarUsesDynamicStreamSequence(const ParamDB &db) {
+  VfInfo vfInfo;
+  vfInfo.defaultDtype = "fp32";
+  vfInfo.body = {makeLoopNode(
+      "2",
+      {makeInstNode("VLDS", {"v0"}, {"memA"}),
+       makeInstNode("VSTS", {"memB"}, {"v0"}),
+       makeMembarNode("VST_VLD"),
+       makeInstNode("VLDS", {"v1"}, {"memC"})})};
+
+  const auto outDir = std::filesystem::temp_directory_path() / "vfsim_native_membar_dynamic";
+  (void)runVfInfo(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
+  const std::string starts = readText(outDir / "start_by_cycle.json");
+  const std::string dones = readText(outDir / "done_by_cycle.json");
+  const int64_t firstPostBarrierLoadStart = cycleForInstId(starts, 2);
+  const int64_t secondStoreDone = cycleForInstId(dones, 4);
+  require(firstPostBarrierLoadStart < secondStoreDone,
+          "native membar must use dynamic stream order, not static pc");
+}
+
+void verifyNativeLoadStoreDurationUsesOwnLatency() {
+  ParamDB db = makeDurationTestDb();
+  VfInfo vfInfo;
+  vfInfo.defaultDtype = "fp32";
+  vfInfo.body = {makeLoopNode(
+      "1",
+      {makeInstNode("VLDS", {"v0"}, {"memA"}),
+       makeInstNode("VSTS", {"memB"}, {"v0"})})};
+
+  const auto outDir = std::filesystem::temp_directory_path() / "vfsim_native_lsu_duration";
+  (void)runVfInfo(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
+  const std::string starts = readText(outDir / "start_by_cycle.json");
+  const std::string dones = readText(outDir / "done_by_cycle.json");
+  require(cycleForInstId(dones, 0) - cycleForInstId(starts, 0) == 5,
+          "native load duration must use load op latency");
+  require(cycleForInstId(dones, 1) - cycleForInstId(starts, 1) == 7,
+          "native store duration must use store op latency");
+}
+
+void verifyNativeSameAddressStoreLoadDependency(const ParamDB &db) {
+  VfInfo vfInfo;
+  vfInfo.defaultDtype = "fp32";
+  vfInfo.body = {makeLoopNode(
+      "1",
+      {makeInstNode("VLDS", {"v0"}, {"memSrc"}),
+       makeInstNode("VSTS", {"memA"}, {"v0"}),
+       makeInstNode("VLDS", {"v1"}, {"memA"})})};
+
+  const auto outDir = std::filesystem::temp_directory_path() / "vfsim_native_store_load_dep";
+  (void)runVfInfo(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
+  const std::string starts = readText(outDir / "start_by_cycle.json");
+  const std::string dones = readText(outDir / "done_by_cycle.json");
+  require(cycleForInstId(starts, 2) >= cycleForInstId(dones, 1),
+          "native same-address load must wait for prior store done");
+}
+
+void verifyUnsupportedMembarWarning(const ParamDB &db) {
+  VfInfo vfInfo;
+  vfInfo.defaultDtype = "fp32";
+  vfInfo.body = {makeLoopNode(
+      "1",
+      {makeMembarNode("VV_ALL"),
+       makeInstNode("VLDS", {"v0"}, {"memA"})})};
+  const auto outDir = std::filesystem::temp_directory_path() / "vfsim_native_bad_membar";
+  (void)runVfInfo(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
+  const std::string warnings = readText(outDir / "model_warnings.json");
+  require(warnings.find("unsupported_membar_type") != std::string::npos,
+          "native unsupported membar must write warning");
+}
+
 void verifySingleIterationLoopRunner(const ParamDB &db) {
   VfInfo vfInfo;
   vfInfo.defaultDtype = "fp32";
@@ -136,7 +362,14 @@ int main() {
   try {
     const std::filesystem::path root = std::filesystem::path(VFSIM_SOURCE_ROOT);
     ParamDB db(root);
+    verifyInstructionFallback(db);
     verifyUnrollOrder(db);
+    verifyMembarDisablesUnroll(db);
+    verifyExplicitMembarTiming(db);
+    verifyMembarUsesDynamicStreamSequence(db);
+    verifyNativeLoadStoreDurationUsesOwnLatency();
+    verifyNativeSameAddressStoreLoadDependency(db);
+    verifyUnsupportedMembarWarning(db);
     verifySingleIterationLoopRunner(db);
 
     const auto program = buildTaddTmulProgram();

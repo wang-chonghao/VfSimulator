@@ -130,13 +130,17 @@ consumer_ready = producer_start + forwarding[producer_OP.form][consumer_OP.form]
 - `membar` 不进入 IDU window，不占 SHQ / LSQ / EXQ / EXU。
 - IFU 仍然按动态指令流顺序吐出 `membar` 节点。
 - runner 在取指阶段识别 `membar`，送入控制单元。
-- 控制单元根据 `membar` 类型阻塞后续受影响的 load/store 发射到 OoO。
+- 控制单元根据 `membar` 类型阻塞 OoO/LSQ 中后续受影响的 load/store 实际发射，
+  不阻塞 IDU 将后续普通指令送入 OoO。
+- 被 `membar` 阻塞的 load/store 仍保持 ready 状态，但 `sim_history.json` 需要记录
+  `event = "blocked"` 和 `blocked_reason = "membar"`，用于区分数据未 ready 和
+  barrier 限制发射。
 
 短期只实现 `VST_VLD` 和 `VLD_VST`：
 
 ```text
-VST_VLD: 前面所有 vector store 完成后，后续 vector load 才允许发射。
-VLD_VST: 前面所有 vector load 完成后，后续 vector store 才允许发射。
+VST_VLD: 前面所有 vector store 完成后，后续 vector load 才允许从 LSQ 发射。
+VLD_VST: 前面所有 vector load 完成后，后续 vector store 才允许从 LSQ 发射。
 ```
 
 判断前后关系应使用 IFU 生成的动态单调序号 `stream_seq`，静态 `pc` 只用于日志和调试。
@@ -145,6 +149,13 @@ VLD_VST: 前面所有 vector load 完成后，后续 vector store 才允许发�
 - `pc`：Flattener 生成的静态程序位置，同一静态指令在 loop/unroll 展开后会重复出现。
 - `stream_seq`：IFU 生成的动态指令流序号，`inst` 和 `membar` 共享同一个单调递增序列。
 - `ControlUnit` 只使用 `stream_seq` 判断 barrier 前后关系。
+- `barrier`：控制单元接收时做大小写归一化，并支持 `SMEM_BAR.VST_VLD` /
+  `MEMBAR.VST_VLD` 这种带点形式，实际匹配最后一段。
+
+显式 `membar` 的 gate 层级应位于 OoO/LSQ issue/start 阶段，而不是 IDU
+dispatch 前，也不应把受阻塞的 load/store 提前标记为 not-ready。后续 compute
+指令如果不依赖被 barrier 延后的 load，仍可进入 SHQ 并按正常依赖和资源规则乱序执行；
+如果 compute 依赖该 load，则通过普通寄存器 ready 机制自然延后。
 
 含显式 `membar` 的 innermost loop 暂不执行 lane unroll 展开。若该 loop 请求
 `unroll > 1`，IFU 在进入 loop 时回退为 `unroll = 1`，并记录
@@ -250,9 +261,13 @@ uses_shared_shq_credit(op, pdb, form_or_dtype)
 - `IFU` 动态吐出 `membar`，但不为 `membar` 分配普通 `inst_id`。
 - `runner` 取到 `membar` 后送入 `ControlUnit`，不送入 IDU。
 - `ControlUnit` 记录 barrier 类型、`pc`、`stream_seq`、等待类别和阻塞类别。
-- IDU dispatch 前查询 `ControlUnit`，被 active barrier 约束的 load/store 暂不发射到 OoO。
+- IDU dispatch 不查询 `ControlUnit`；`membar` 不影响后续普通指令进入 OoO。
+- OoO/LSQ 在 load/store 实际 issue/start 前查询 `ControlUnit`，被 active
+  barrier 约束的 load/store 保持 ready 状态但暂不从 LSQ 发射。
 - `ControlUnit` 每周期根据 IDU window、IDU-to-OOO pipe 和 OoO 中 `stream_seq`
-  小于 barrier 的 load/store 是否完成来释放 barrier。
+  小于 barrier 的等待类 load/store 是否完成来释放 barrier。
+- `ControlUnit` 释放 barrier 后应清理内部记录；仿真完成条件需要包含
+  `ControlUnit.empty()`，避免末尾 barrier 在释放前提前结束。
 
 完整支持其它 `SMEM_BAR` 类型放到后续阶段。旧的 `mem_bar_mode=strong` 可先保留为
 legacy 行为，但显式 `membar` 应优先生效。
@@ -497,6 +512,8 @@ if vreg_capacity_warnings or instruction_fallback_warnings:
 
 - `VST_VLD` 会阻塞 barrier 后的 load，直到 barrier 前的 store 全部 done。
 - `VLD_VST` 会阻塞 barrier 后的 store，直到 barrier 前的 load 全部 done。
+- barrier 后如果先出现被阻塞的 load/store，再出现无关 compute，无关 compute
+  不应因为 `membar` 产生 IDU head-of-line blocking。
 - 普通已支持 case 无 membar 时 cycle 不变。
 
 ### 步骤四：在 ParamDB 中集中指令默认回退
@@ -575,6 +592,7 @@ VFInfoLowerer
 - 默认回退告警非空但 vreg warning 为空时，`model_warnings.json` 仍会写出。
 - `VST_VLD` 阻塞后续 load，直到前序 store done。
 - `VLD_VST` 阻塞后续 store，直到前序 load done。
+- 被 barrier 阻塞的 load/store 不阻塞后续无关 compute 进入 SHQ 或执行。
 
 建议增加一个最小 trace：
 

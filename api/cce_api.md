@@ -143,8 +143,11 @@ memory/order barrier 节点。
 
 - 表示无法用普通 VF 指令表达的 ordering edge。
 - 当前后端已显式支持 `VST_VLD` 和 `VLD_VST`。
-- `VST_VLD`：barrier 之前的 vector store 全部完成后，barrier 之后的 vector load 才允许发射。
-- `VLD_VST`：barrier 之前的 vector load 全部完成后，barrier 之后的 vector store 才允许发射。
+- barrier 名称会做大小写归一化；`SMEM_BAR.VST_VLD` / `MEMBAR.VST_VLD` 这类带点名称按最后一段识别。
+- `VST_VLD`：barrier 之前的 vector store 全部完成后，barrier 之后的 vector load 才允许从 LSQ 发射。
+- `VLD_VST`：barrier 之前的 vector load 全部完成后，barrier 之后的 vector store 才允许从 LSQ 发射。
+- `Membar` 不阻塞后续普通指令进入 IDU/OoO；无关 compute 仍按正常数据依赖和资源规则执行。
+- 被 `Membar` 阻塞的 load/store 在 `sim_history.json` 中会记录 `event = "blocked"` 和 `blocked_reason = "membar"`。
 - 其它 `SMEM_BAR` 类型暂不建模，会记录 `unsupported_membar_type` warning。
 
 ## CCE 输入约定
@@ -356,6 +359,8 @@ vf_info = parse_cce_vf_info(
 - `VFInfoLowerer` 会把 `Membar` 保留为 lowered program 中的 `"membar"` 节点。
 - 当前后端通过控制单元建模显式 `VST_VLD` / `VLD_VST`。
 - `membar` 不进入 IDU window，不占 SHQ / LSQ / EXQ / EXU。
+- 控制单元在 OoO/LSQ issue/start 阶段约束对应 load/store，不在 IDU dispatch 前产生 head-of-line blocking，也不把受阻塞指令提前标记为 not-ready。
+- barrier 释放后会从控制单元清理；仿真完成条件包含控制单元为空。
 - 旧的 `mem_bar_mode=strong` 仍作为 legacy memory-order 行为保留。
 
 ## 开放问题

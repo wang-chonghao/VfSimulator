@@ -8,9 +8,11 @@
 
 #include "native/OOO.h"
 
+#include "native/ControlUnit.h"
 #include "native/ISATraits.h"
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -24,6 +26,17 @@ bool isIntermediateMemName(const std::string &name) {
   std::transform(lower.begin(), lower.end(), lower.begin(),
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   return lower.rfind("mem_inter", 0) == 0;
+}
+
+std::string makeMemKey(const std::string &name, const std::vector<int64_t> &iterStack) {
+  std::string key = name;
+  key += "@";
+  for (size_t i = 0; i < iterStack.size(); ++i) {
+    if (i)
+      key += ",";
+    key += std::to_string(iterStack[i]);
+  }
+  return key;
 }
 
 std::string jsonEscape(const std::string &text) {
@@ -125,7 +138,6 @@ OoOCore::OoOCore(const UarchConfig &uarch, const ParamDB &db, std::string dtype,
   lastOpExu_.assign(issuePorts_, "");
   lastFormExu_.assign(issuePorts_, "");
   exqInflight_.assign(issuePorts_, 0);
-  loadDoneLatency_ = static_cast<int>(uarch.loadDoneLatency ? uarch.loadDoneLatency : 9);
   oooToShqDelay_ = static_cast<int>(uarch.oooToShqDelay ? uarch.oooToShqDelay : 1);
   oooToLsqDelay_ = static_cast<int>(uarch.oooToLsqDelay ? uarch.oooToLsqDelay : 1);
   exqRecvDelay_ = static_cast<int>(uarch.exqRecvDelay ? uarch.exqRecvDelay : 1);
@@ -168,6 +180,31 @@ int OoOCore::getFreeShq() const {
   if (enableCreditVisibilityDelay_)
     return std::max(0, shqDepth_ - visibleShqUsed_);
   return std::max(0, shqDepth_ - shqUsed_);
+}
+
+bool OoOCore::hasPendingLsuBefore(int64_t streamSeq,
+                                  const std::string &opClass) const {
+  const std::string target = [&]() {
+    std::string value = opClass;
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+      return static_cast<char>(std::toupper(c));
+    });
+    return value;
+  }();
+  for (const auto &u : rob_) {
+    if (u.streamSeq < 0 || u.streamSeq >= streamSeq)
+      continue;
+    if (u.state == "done")
+      continue;
+    std::string cls;
+    if (isLoadOp(db_, u.op, u.form))
+      cls = "LOAD";
+    else if (isStoreOp(db_, u.op, u.form))
+      cls = "STORE";
+    if (cls == target)
+      return true;
+  }
+  return false;
 }
 
 std::unordered_map<std::string, int> OoOCore::updateIduVisibility(int64_t cycle) {
@@ -225,9 +262,19 @@ int64_t OoOCore::computeReadyTimeForSrc(
 
 int64_t OoOCore::computeLoadReadyCycle(const Uop &u) const {
   int64_t t = std::max<int64_t>(vfStartupCost_, u.lsqReadyCycle);
-  for (auto *pred : u.memDepUops) {
-    if (pred && pred->doneCycle.has_value())
+  for (const auto predInstId : u.memDepInstIds) {
+    const Uop *pred = findRobUop(predInstId);
+    if (pred != nullptr && pred->state == "done" && pred->doneCycle.has_value()) {
       t = std::max<int64_t>(t, pred->doneCycle.value());
+      continue;
+    }
+    const auto doneIt = completedDoneCycleByInstId_.find(predInstId);
+    if (doneIt != completedDoneCycleByInstId_.end()) {
+      t = std::max<int64_t>(t, doneIt->second);
+      continue;
+    }
+    if (pred == nullptr || pred->state != "done" || !pred->doneCycle.has_value())
+      return 1000000000;
   }
   if (memBarStrong_) {
     for (const auto &s : u.src) {
@@ -242,6 +289,17 @@ int64_t OoOCore::computeLoadReadyCycle(const Uop &u) const {
     }
   }
   return t;
+}
+
+bool OoOCore::blockedByControlUnit(const Uop &u) const {
+  if (controlUnit_ == nullptr)
+    return false;
+  DynamicInst inst;
+  inst.type = "inst";
+  inst.op = u.op;
+  inst.form = u.form;
+  inst.streamSeq = u.streamSeq;
+  return controlUnit_->blocks(inst, db_, dtype_);
 }
 
 std::tuple<int64_t, std::optional<std::string>,
@@ -281,12 +339,6 @@ OoOCore::computeStoreReadyCycle(const Uop &u) const {
   return {bestT, pop, pform, pst};
 }
 
-int64_t OoOCore::dataStoreCost(const std::string &producerOp,
-                               const std::string &producerForm) const {
-  const auto &cfg = db_.inst(producerOp, producerForm);
-  return cfg.dataStoreCost > 0 ? cfg.dataStoreCost : 1;
-}
-
 std::string OoOCore::getFuType(const std::string &op,
                                const std::string &form) const {
   const auto &cfg = db_.inst(op, form);
@@ -324,9 +376,16 @@ int64_t OoOCore::getIi(const std::string *prevOp,
 
 void OoOCore::log(const std::string &event, const Uop &u) {
   history_.push_back(HistoryRecord{
-      cycle_, event, u.instId, u.op, u.state, u.readyCycle, u.startCycle,
+      cycle_, event, u.instId, u.op, u.state, u.blockedReason, u.readyCycle, u.startCycle,
       u.doneCycle, u.src, u.dst, u.pregSrc, u.pregDst, u.pregOld,
       u.producerOpForStore, u.producerStartForStore});
+}
+
+void OoOCore::logMembarBlocked(Uop &u) {
+  const auto oldReason = u.blockedReason;
+  u.blockedReason = "membar";
+  log("blocked", u);
+  u.blockedReason = oldReason;
 }
 
 void OoOCore::logStartSimple(const Uop &u) {
@@ -348,6 +407,7 @@ void OoOCore::dumpHistory(const std::string &path) const {
        << "\"id\":" << h.id << ","
        << "\"op\":\"" << jsonEscape(h.op) << "\","
        << "\"state\":\"" << jsonEscape(h.state) << "\","
+       << "\"blocked_reason\":" << (h.blockedReason ? "\"" + jsonEscape(*h.blockedReason) + "\"" : "null") << ","
        << "\"ready\":" << h.ready << ","
        << "\"start\":" << (h.start ? std::to_string(*h.start) : "null") << ","
        << "\"done\":" << (h.done ? std::to_string(*h.done) : "null") << ","
@@ -381,6 +441,14 @@ void OoOCore::dumpSimpleLogs(const std::string &startPath, const std::string &do
 
 Uop *OoOCore::findRobUop(int64_t instId) {
   for (auto &u : rob_) {
+    if (u.instId == instId)
+      return &u;
+  }
+  return nullptr;
+}
+
+const Uop *OoOCore::findRobUop(int64_t instId) const {
+  for (const auto &u : rob_) {
     if (u.instId == instId)
       return &u;
   }
@@ -576,6 +644,17 @@ void OoOCoreMainline::accept(const DynamicInst &inst) {
   u.topBlockId = inst.topBlockId;
   u.iterStack = inst.iterStack;
   u.isLastInTopBlock = inst.isLastInTopBlock;
+  u.streamSeq = inst.streamSeq;
+
+  if (isLoadOp(db_, u.op, u.form)) {
+    for (const auto &s : u.src) {
+      if (!isUBValue(s))
+        continue;
+      const auto it = memLastStoreInstId_.find(makeMemKey(s, u.iterStack));
+      if (it != memLastStoreInstId_.end())
+        u.memDepInstIds.push_back(it->second);
+    }
+  }
 
   for (const auto &preg : u.pregSrc) {
     if (preg) {
@@ -629,8 +708,13 @@ void OoOCoreMainline::accept(const DynamicInst &inst) {
   }
   rob_.push_back(u);
 
-  if (isStoreOp(db_, u.op, u.form))
+  if (isStoreOp(db_, u.op, u.form)) {
     blockOutstandingStores_[u.topBlockId] += 1;
+    for (const auto &d : u.dst) {
+      if (isUBValue(d))
+        memLastStoreInstId_[makeMemKey(d, u.iterStack)] = u.instId;
+    }
+  }
 
   for (const auto &oldPreg : u.pregOld) {
     if (oldPreg)
@@ -655,6 +739,7 @@ void OoOCoreMainline::step() {
   for (auto &u : rob_) {
     if (u.state == "running" && u.doneCycle.has_value() && c >= *u.doneCycle) {
       u.state = "done";
+      completedDoneCycleByInstId_[u.instId] = *u.doneCycle;
       if (u.exuPort >= 0 && u.exuPort < static_cast<int>(exqInflight_.size()))
         exqInflight_[static_cast<size_t>(u.exuPort)] = std::max(0, exqInflight_[static_cast<size_t>(u.exuPort)] - 1);
       if (u.isLastInTopBlock)
@@ -729,8 +814,14 @@ void OoOCoreMainline::step() {
     }
     if (ld >= loadPorts_)
       break;
+    if (blockedByControlUnit(u)) {
+      logMembarBlocked(u);
+      ++it;
+      continue;
+    }
     u.startCycle = c;
-    u.doneCycle = c + loadDoneLatency_;
+    u.blockedReason.reset();
+    u.doneCycle = c + std::max<int64_t>(1, db_.inst(u.op, u.form).latency);
     u.state = "running";
     scheduleSrcReleaseFromStart(u);
     if (auto *robU = findRobUop(u.instId)) {
@@ -1057,10 +1148,14 @@ void OoOCoreMainline::step() {
       ++it;
       continue;
     }
+    if (blockedByControlUnit(u)) {
+      logMembarBlocked(u);
+      ++it;
+      continue;
+    }
     u.startCycle = c;
-    u.doneCycle =
-        c + dataStoreCost(*u.producerOpForStore,
-                          u.producerFormForStore.value_or(u.form));
+    u.blockedReason.reset();
+    u.doneCycle = c + std::max<int64_t>(1, db_.inst(u.op, u.form).latency);
     u.state = "running";
     scheduleSrcReleaseFromStart(u);
     if (usesSharedShqCredit(db_, u.op, u.form)) {

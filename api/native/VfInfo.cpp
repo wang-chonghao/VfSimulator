@@ -54,6 +54,8 @@ void canonicalizeNodes(std::vector<ProgramNode> &nodes, VfInfo &vfInfo) {
       canonicalizeNodes(node.loop->body, vfInfo);
       continue;
     }
+    if (node.kind == ProgramNode::Kind::Membar)
+      continue;
 
     ProgramInstNode &inst = node.inst;
     for (const std::string &valueId : inst.src)
@@ -198,6 +200,8 @@ void lowerVfInfoValueIds(VfInfo &vfInfo) {
         self(self, node.loop->body);
         continue;
       }
+      if (node.kind == ProgramNode::Kind::Membar)
+        continue;
       for (std::string &valueId : node.inst.src)
         valueId = names.at(valueId);
       for (std::string &valueId : node.inst.dst)

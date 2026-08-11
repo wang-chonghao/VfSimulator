@@ -173,7 +173,7 @@ class InstructionFallbackTest(unittest.TestCase):
         self.assertEqual(payload["vreg_capacity_warnings"], [])
         self.assertTrue(payload["instruction_fallback_warnings"])
 
-    def _run_payload_logs(self, body):
+    def _run_payload_logs(self, body, include_history=False):
         payload = {
             "dtype": "fp32",
             "params": {},
@@ -199,6 +199,9 @@ class InstructionFallbackTest(unittest.TestCase):
                 for line in (out_dir / "done_by_cycle.json").read_text().splitlines()
                 if line.strip()
             ]
+            history = json.loads((out_dir / "sim_history.json").read_text())
+        if include_history:
+            return starts, dones, history
         return starts, dones
 
     def test_vst_vld_membar_blocks_following_load_until_prior_store_done(self):
@@ -229,18 +232,31 @@ class InstructionFallbackTest(unittest.TestCase):
         self.assertGreaterEqual(store_start, load_done)
 
     def test_vst_vld_membar_does_not_directly_block_compute(self):
-        starts, dones = self._run_payload_logs(
+        starts, dones, history = self._run_payload_logs(
             [
                 {"type": "inst", "op": "VLDS", "form": "fp32", "src": ["memA"], "dst": ["v0"]},
                 {"type": "inst", "op": "VSTS", "form": "fp32", "src": ["v0"], "dst": ["memB"]},
-                {"type": "membar", "barrier": "VST_VLD"},
+                {"type": "membar", "barrier": "MEMBAR.VST_VLD"},
+                {"type": "inst", "op": "VLDS", "form": "fp32", "src": ["memC"], "dst": ["v1"]},
                 {"type": "inst", "op": "VADDS", "form": "fp32", "src": ["v0"], "dst": ["v1"]},
-            ]
+            ],
+            include_history=True,
         )
 
         store_done = next(item["cy"] for item in dones if item["op"] == "VSTS")
         compute_start = next(item["cy"] for item in starts if item["op"] == "VADDS")
+        post_barrier_load_start = [item["cy"] for item in starts if item["op"] == "VLDS"][-1]
+        self.assertGreaterEqual(post_barrier_load_start, store_done)
         self.assertLess(compute_start, store_done)
+        self.assertTrue(
+            any(
+                item.get("event") == "blocked"
+                and item.get("op") == "VLDS"
+                and item.get("state") == "ready"
+                and item.get("blocked_reason") == "membar"
+                for item in history
+            )
+        )
 
     def test_loop_membar_uses_dynamic_stream_sequence_not_static_pc(self):
         payload = {

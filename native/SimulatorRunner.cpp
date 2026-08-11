@@ -8,6 +8,7 @@
 
 #include "native/SimulatorRunner.h"
 
+#include "native/ControlUnit.h"
 #include "native/ISATraits.h"
 #include "native/ProgramCanonicalization.h"
 #include "native/ProgramFlatten.h"
@@ -141,6 +142,29 @@ void dumpVloopTrace(const IDU &idu, const std::string &path) {
   }
 }
 
+void dumpModelWarnings(const ParamDB &db, const std::string &path) {
+  const auto warnings = db.warnings();
+  if (warnings.empty())
+    return;
+  std::ofstream os(path);
+  os << "{\n"
+     << "  \"has_warning\": true,\n"
+     << "  \"vreg_capacity_warnings\": [],\n"
+     << "  \"instruction_fallback_warnings\": [\n";
+  for (size_t i = 0; i < warnings.size(); ++i) {
+    const auto &warning = warnings[i];
+    os << "    {\"kind\":\"" << jsonEscape(warning.kind) << "\"";
+    for (const auto &[key, value] : warning.fields)
+      os << ",\"" << jsonEscape(key) << "\":\"" << jsonEscape(value) << "\"";
+    os << ",\"count\":" << warning.count << "}";
+    if (i + 1 < warnings.size())
+      os << ",";
+    os << "\n";
+  }
+  os << "  ]\n"
+     << "}\n";
+}
+
 } // namespace
 
 SimulationResult runVfInfo(const VfInfo &input,
@@ -189,10 +213,13 @@ SimulationResult runSimulation(IFU &ifu,
   std::deque<std::pair<int64_t, DynamicInst>> iduToOooPipe;
   const bool useExplicitIduCreditBank = uarch.useExplicitIduCreditBank;
   const ValueStorageLookup valueStorage(values);
+  ControlUnit controlUnit(&idu.db());
+  ooo.setControlUnit(&controlUnit);
 
   int64_t iduPregCredit = ooo.getFreePreg();
   int64_t iduShqCredit = ooo.getFreeShq();
   int64_t iduPendingShqQueue = 0;
+  int64_t iduPendingLsq = 0;
   const std::string dtype = "fp32";
   (void)params;
 
@@ -217,11 +244,9 @@ SimulationResult runSimulation(IFU &ifu,
       auto item = std::move(iduToOooPipe.front());
       iduToOooPipe.pop_front();
       if (useExplicitIduCreditBank) {
-        // conservative: rebuild reservations from inst metadata
-        for (const auto &s : item.second.dst) {
-          if (valueStorage.isRegister(s))
-            --iduPendingShqQueue;
-        }
+        const auto r = reservationForInst(item.second, idu.db(), dtype, valueStorage);
+        iduPendingShqQueue = std::max<int64_t>(0, iduPendingShqQueue - r.shqQueue);
+        iduPendingLsq = std::max<int64_t>(0, iduPendingLsq - r.lsq);
       }
       ooo.accept(item.second);
     }
@@ -248,10 +273,35 @@ SimulationResult runSimulation(IFU &ifu,
       auto inst = ifu.nextInst();
       if (!inst.has_value())
         break;
+      if (inst->type == "membar") {
+        controlUnit.acceptMembar(*inst);
+        continue;
+      }
       idu.accept(*inst);
     }
     if (debugCycles)
       std::cerr << "[vfsim] cycle " << cycle << " fill_idu end\n";
+
+    controlUnit.update([&](int64_t streamSeq, const std::string &opClass) {
+      for (const auto &inst : idu.window()) {
+        const std::string form = inst.form.empty() ? dtype : inst.form;
+        if (inst.streamSeq < streamSeq &&
+            ((opClass == "LOAD" && isLoadOp(idu.db(), inst.op, form)) ||
+             (opClass == "STORE" && isStoreOp(idu.db(), inst.op, form)))) {
+          return true;
+        }
+      }
+      for (const auto &item : iduToOooPipe) {
+        const auto &inst = item.second;
+        const std::string form = inst.form.empty() ? dtype : inst.form;
+        if (inst.streamSeq < streamSeq &&
+            ((opClass == "LOAD" && isLoadOp(idu.db(), inst.op, form)) ||
+             (opClass == "STORE" && isStoreOp(idu.db(), inst.op, form)))) {
+          return true;
+        }
+      }
+      return ooo.hasPendingLsuBefore(streamSeq, opClass);
+    });
 
     IDUDispatchBudget budget;
     budget.theoreticalLimitMode = false;
@@ -260,7 +310,7 @@ SimulationResult runSimulation(IFU &ifu,
     budget.freeShqQueue = std::max<int64_t>(0, ooo.getFreeShqQueue() - pendingShqQueue);
     budget.freeLsq = std::max<int64_t>(0, ooo.getFreeLsq() - pendingLsq);
     budget.freeShq = useExplicitIduCreditBank ? iduShqCredit : std::max<int64_t>(0, ooo.getFreeShq() - pendingShq);
-    budget.issueBudget = 5;
+    budget.issueBudget = uarch.iduIssueWidth > 0 ? uarch.iduIssueWidth : 5;
 
     if (debugCycles)
       std::cerr << "[vfsim] cycle " << cycle << " dispatch begin"
@@ -272,6 +322,15 @@ SimulationResult runSimulation(IFU &ifu,
     if (debugCycles)
       std::cerr << "[vfsim] cycle " << cycle << " dispatch end n=" << dispatched.size() << "\n";
     for (const auto &inst : dispatched) {
+      if (useExplicitIduCreditBank) {
+        const auto r = reservationForInst(inst, idu.db(), dtype, valueStorage);
+        iduPregCredit = std::max<int64_t>(0, iduPregCredit - r.preg);
+        iduShqCredit = std::max<int64_t>(0, iduShqCredit - r.shq);
+        if (iduToOooDelay > 0) {
+          iduPendingShqQueue += r.shqQueue;
+          iduPendingLsq += r.lsq;
+        }
+      }
       if (iduToOooDelay > 0) {
         iduToOooPipe.emplace_back(cycle + iduToOooDelay, inst);
       } else {
@@ -287,7 +346,7 @@ SimulationResult runSimulation(IFU &ifu,
 
     if (ifu.done() && idu.empty() &&
         ooo.getRobSize() == 0 && ooo.getLsqSize() == 0 && ooo.getShqSize() == 0 &&
-        iduToOooPipe.empty()) {
+        iduToOooPipe.empty() && controlUnit.empty()) {
       completed = true;
       break;
     }
@@ -303,6 +362,7 @@ SimulationResult runSimulation(IFU &ifu,
       ooo.dumpSimpleLogs(resultsDir + "/start_by_cycle.json", resultsDir + "/done_by_cycle.json");
       dumpDispatchLog(idu, resultsDir + "/idu_to_ooo.json");
       dumpVloopTrace(idu, resultsDir + "/vloop_trace.json");
+      dumpModelWarnings(idu.db(), resultsDir + "/model_warnings.json");
     }
     throw std::runtime_error(
         "Simulation did not complete before maxCycles"
@@ -323,6 +383,7 @@ SimulationResult runSimulation(IFU &ifu,
     ooo.dumpSimpleLogs(resultsDir + "/start_by_cycle.json", resultsDir + "/done_by_cycle.json");
     dumpDispatchLog(idu, resultsDir + "/idu_to_ooo.json");
     dumpVloopTrace(idu, resultsDir + "/vloop_trace.json");
+    dumpModelWarnings(idu.db(), resultsDir + "/model_warnings.json");
   }
   return SimulationResult{cycle, ooo.vfEndCycle(), resultsDir};
 }

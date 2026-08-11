@@ -697,8 +697,12 @@ class OoOCoreMainline(OoOCore):
                 break
             if c < self.vf_startup_cost:
                 break
+            if self._blocked_by_control_unit(u):
+                self._log_membar_blocked(u)
+                continue
 
             u.start_cycle = c
+            u.blocked_reason = None
             u.done_cycle = c + self._latency(u.op, u.form)
             u.state = "running"
             self._schedule_src_release_from_start(u)
@@ -774,10 +778,14 @@ class OoOCoreMainline(OoOCore):
                 break
             if c < self.vf_startup_cost:
                 break
+            if self._blocked_by_control_unit(u):
+                self._log_membar_blocked(u)
+                continue
             if u.producer_op_for_store is None:
                 continue
 
             u.start_cycle = c
+            u.blocked_reason = None
             u.done_cycle = c + self._latency(u.op, u.form)
             u.state = "running"
             self._schedule_src_release_from_start(u)

@@ -53,6 +53,16 @@ ProgramNode parseNode(const json::Value &value) {
       inst.form = form->asString();
     return ProgramNode::makeInst(std::move(inst));
   }
+  if (kind == "membar") {
+    ProgramMembarNode membar;
+    if (const auto *barrier = findKey(object, "barrier"))
+      membar.barrier = barrier->asString();
+    else if (const auto *scope = findKey(object, "scope"))
+      membar.barrier = scope->asString();
+    else
+      throw std::runtime_error("membar node missing barrier");
+    return ProgramNode::makeMembar(std::move(membar));
+  }
   if (kind == "loop") {
     const json::Value *iters = findKey(object, "iters");
     const json::Value *body = findKey(object, "body");

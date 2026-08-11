@@ -62,6 +62,7 @@ IFU::IFU(const std::vector<LinearProgramNode> &linearNodes,
 }
 
 bool IFU::isInst(const LinearProgramNode &node) { return node.type == "inst"; }
+bool IFU::isMembar(const LinearProgramNode &node) { return node.type == "membar"; }
 bool IFU::isLoopBegin(const LinearProgramNode &node) { return node.type == "loop_begin"; }
 bool IFU::isLoopEnd(const LinearProgramNode &node) { return node.type == "loop_end"; }
 
@@ -132,7 +133,7 @@ void IFU::buildIndices() {
     const auto e = beginToEnd_.at(b);
     std::vector<LinearProgramNode> body;
     for (int64_t i = b + 1; i < e; ++i) {
-      if (isInst(nodes_[static_cast<size_t>(i)]))
+      if (isInst(nodes_[static_cast<size_t>(i)]) || isMembar(nodes_[static_cast<size_t>(i)]))
         body.push_back(nodes_[static_cast<size_t>(i)]);
     }
     if (isInnermostBegin_.at(b))
@@ -256,6 +257,8 @@ DynamicInst IFU::emitNormalInst(const LinearProgramNode &node) {
   out.type = node.type;
   out.op = node.op;
   out.form = node.form.empty() ? dtype_ : node.form;
+  out.pc = node.pc;
+  out.streamSeq = streamSeq_++;
   out.src = node.src;
   out.dst = node.dst;
 
@@ -271,6 +274,56 @@ DynamicInst IFU::emitNormalInst(const LinearProgramNode &node) {
   out.blockKeyByLevel = buildBlockKeyByLevel(loopStack, iterStack);
   out.blockEndLevels = calcBlockEndLevelsNormal();
   return out;
+}
+
+DynamicInst IFU::emitNormalMembar(const LinearProgramNode &node) {
+  DynamicInst out;
+  out.instId = -1;
+  out.type = "membar";
+  out.barrier = node.barrier;
+  out.pc = node.pc;
+  out.streamSeq = streamSeq_++;
+
+  const auto [loopStack, iterStack] = snapshot();
+  out.loopStack = loopStack;
+  out.iterStack = iterStack;
+  out.loopDepth = static_cast<int64_t>(loopStack.size());
+  out.inLoop = !loopStack.empty();
+  out.unrollFactor = 1;
+  out.lane = -1;
+  out.topBlockId = currentTopBlockId();
+  out.blockKeyByLevel = buildBlockKeyByLevel(loopStack, iterStack);
+  out.blockEndLevels.clear();
+  return out;
+}
+
+std::optional<LinearProgramNode> IFU::firstMembarInLoopBody(int64_t beginIdx) const {
+  const auto it = loopBodyCache_.find(beginIdx);
+  if (it == loopBodyCache_.end())
+    return std::nullopt;
+  for (const auto &node : it->second) {
+    if (isMembar(node))
+      return node;
+  }
+  return std::nullopt;
+}
+
+void IFU::recordMembarUnrollDisabled(const LinearProgramNode &loopNode,
+                                     const LinearProgramNode &membarNode,
+                                     int64_t loopId,
+                                     int64_t requestedUnroll) const {
+  if (db_ == nullptr)
+    return;
+  db_->recordWarning(
+      "membar_unroll_disabled",
+      {
+          {"pc", std::to_string(membarNode.pc >= 0 ? membarNode.pc : loopNode.pc)},
+          {"barrier", membarNode.barrier},
+          {"loop_id", std::to_string(loopNode.loopId >= 0 ? loopNode.loopId : loopId)},
+          {"requested_unroll", std::to_string(requestedUnroll)},
+          {"used_unroll", "1"},
+          {"reason", "membar_in_unrolled_innermost_loop"},
+      });
 }
 
 void IFU::buildPendingUnrolled(LoopFrame &frame) {
@@ -289,11 +342,36 @@ void IFU::buildPendingUnrolled(LoopFrame &frame) {
 
   for (const auto &ins : body) {
     for (int64_t lane = 0; lane < U; ++lane) {
+      if (isMembar(ins)) {
+        DynamicInst membar;
+        membar.instId = -1;
+        membar.type = "membar";
+        membar.barrier = ins.barrier;
+        membar.pc = ins.pc;
+        membar.streamSeq = streamSeq_++;
+        membar.loopStack = loopStack;
+        if (!iterStack.empty()) {
+          membar.iterStack = iterStack;
+          membar.iterStack.back() = superIter;
+        }
+        membar.loopDepth = static_cast<int64_t>(loopStack.size());
+        membar.inLoop = true;
+        membar.unrollFactor = U;
+        membar.unrollGroup = unrollGroup_;
+        membar.lane = lane;
+        membar.origIterBase = origBase;
+        membar.topBlockId = frame.topBlockId;
+        membar.blockKeyByLevel = buildBlockKeyByLevel(loopStack, membar.iterStack);
+        pending.push_back(std::move(membar));
+        continue;
+      }
       DynamicInst inst;
       inst.instId = instId_++;
       inst.type = ins.type;
       inst.op = ins.op;
       inst.form = ins.form.empty() ? dtype_ : ins.form;
+      inst.pc = ins.pc;
+      inst.streamSeq = streamSeq_++;
       inst.src = ins.src;
       inst.dst = ins.dst;
       inst.loopStack = loopStack;
@@ -376,15 +454,22 @@ std::optional<DynamicInst> IFU::nextInst() {
       const int64_t end = beginToEnd_.at(pc_);
       const int64_t loopId = beginLoopId_.at(pc_);
       const bool isInnermost = isInnermostBegin_.at(pc_);
-      const int64_t unroll = resolveInt(n.unrollRaw, analysis_.params(), 1, 1);
+      int64_t unroll = resolveInt(n.unrollRaw, analysis_.params(), 1, 1);
       if (iters <= 0) {
         pc_ = end + 1;
         continue;
       }
 
       const int64_t topBlockId = frames_.empty() ? beginTopBlockId_.at(pc_) : frames_.front().topBlockId;
-      if (isInnermost && unroll > 1 && iters % unroll != 0)
-        throw std::runtime_error("Invalid unroll: iters not divisible by unroll");
+      if (isInnermost && unroll > 1) {
+        if (iters % unroll != 0)
+          throw std::runtime_error("Invalid unroll: iters not divisible by unroll");
+        const auto membar = firstMembarInLoopBody(pc_);
+        if (membar.has_value()) {
+          recordMembarUnrollDisabled(n, *membar, loopId, unroll);
+          unroll = 1;
+        }
+      }
 
       frames_.push_back(LoopFrame{pc_, end, loopId, iters, 0, isInnermost,
                                   (isInnermost && unroll > 1) ? unroll : 1, topBlockId});
@@ -423,6 +508,12 @@ std::optional<DynamicInst> IFU::nextInst() {
       frames_.pop_back();
       ++pc_;
       continue;
+    }
+
+    if (n.type == "membar") {
+      DynamicInst out = emitNormalMembar(n);
+      ++pc_;
+      return out;
     }
 
     if (n.type != "inst") {

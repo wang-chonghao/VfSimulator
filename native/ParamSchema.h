@@ -10,8 +10,11 @@
 #define VFSIM_NATIVE_PARAM_SCHEMA_H
 
 #include <cstdint>
+#include <map>
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace vfsim {
 
@@ -83,6 +86,12 @@ struct ParamBundle {
   std::unordered_map<std::string, std::unordered_map<std::string, int64_t>> forwardingByForm;
   std::unordered_map<std::string, std::unordered_map<std::string, int64_t>> initiationIntervalByForm;
   UarchConfig uarch;
+};
+
+struct ModelWarning {
+  std::string kind;
+  std::map<std::string, std::string> fields;
+  int64_t count = 1;
 };
 
 } // namespace vfsim

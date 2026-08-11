@@ -28,17 +28,23 @@ struct ProgramInstNode {
   std::string form;
 };
 
+struct ProgramMembarNode {
+  std::string barrier;
+};
+
 struct ProgramLoopNode;
 
 struct ProgramNode {
-  enum class Kind { Inst, Loop };
+  enum class Kind { Inst, Loop, Membar };
 
   Kind kind = Kind::Inst;
   ProgramInstNode inst;
+  ProgramMembarNode membar;
   std::shared_ptr<ProgramLoopNode> loop;
 
   static ProgramNode makeInst(ProgramInstNode value);
   static ProgramNode makeLoop(ProgramLoopNode value);
+  static ProgramNode makeMembar(ProgramMembarNode value);
 };
 
 struct ProgramLoopNode {

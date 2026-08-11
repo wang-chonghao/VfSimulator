@@ -64,8 +64,8 @@ JSON / CCE
 - `latency`：指令 start 到 done 的 latency
 - `pipeline_startup_cost`：作为 form metadata 保留；当前 ready 主要由 `forwarding.json` 驱动
 - `pipeline_drain_cost`：作为 form metadata 保留；当前 ready 主要由 `forwarding.json` 驱动
-- `data_store_cost`：当前 store 执行时长仍根据 producer op/form 读取该字段
-- `data_load_cost`：字段保留，但主线 load 路径不直接使用
+- `data_store_cost`：字段保留为历史/校准参考，主线 store 路径不直接使用
+- `data_load_cost`：字段保留为历史/校准参考，主线 load 路径不直接使用
 - `EXU`：计算功能单元类别，通常是 `ALU` 或 `SFU`
 - `dispatch_exu`：合法 EXU port，例如 `EXU0_ONLY`、`EXU01`、`EXU012`
 - `throughput`：字段保留，但主线 issue spacing 主要由 `InitiationInterval.json` 控制
@@ -187,8 +187,8 @@ ISU 队列模型开启时，队列级计算唤醒使用 `forwarding - 1` 对齐�
 - compute-like op 进入 `SHQ`。
 - load-like op 会跟踪 memory dependency。
 - store-like op 会跟踪 outstanding store。
-- load-like op 通过 `load_ports` 发射；历史上使用 `VLD_COST`，当前活跃路径使用 `load_done_latency`。
-- store-like op 通过 `store_ports` 发射，执行时长取 producer 的 `data_store_cost`。
+- load-like op 通过 `load_ports` 发射；当前活跃路径使用该 load op 自身 ISA `latency`。
+- store-like op 通过 `store_ports` 发射；当前活跃路径使用该 store op 自身 ISA `latency`。
 - producer kind 记录为 `"LOAD"` 或 `"COMPUTE"`。
 
 ## 目标架构
@@ -288,23 +288,15 @@ load/store 执行可以继续分开，因为资源不同：
 
 ```text
 类 LOAD 的 LSU：
-  LSQ + load_ports + 当前活跃路径的 load_done_latency
+  LSQ + load_ports + load op 自身 ISA latency
 
 类 STORE 的 LSU：
-  LSQ + store_ports + 当前活跃路径的生产者 data_store_cost
+  LSQ + store_ports + store op 自身 ISA latency
 ```
 
-当前类 store 行为使用生产者的 `data_store_cost` 作为 store 执行时长。后续需要明确选择：
-
-1. 所有 store-like 指令使用 store op 自身 `latency`。
-2. 保留生产者到 store 的执行时长表。
-3. 迁移期间临时从旧 producer `data_store_cost` 推导 store op `latency`。
-
-建议第一步：
-
-- 目标上使用 store op `latency`。
-- 选择能尽量复现当前基线 case 的 `VST` / `VSTS` latency 或执行时长值。
-- 只有必要时才把旧行为保留在临时兼容开关后面。
+当前 Python 和 C++ native 主线已经统一为第一种口径：所有 load/store-like 指令
+使用指令自身 `latency`。`data_load_cost`、`data_store_cost` 和
+`load_done_latency` 不再作为主线执行时长来源，只能作为历史/校准参考字段保留。
 
 ### 内存依赖和屏障
 
@@ -405,10 +397,9 @@ python3 tools/run_cost_model_regression.py --tier smoke
 
 兼容映射：
 
-- `VLDS.latency` 或 `load_done_latency` 应匹配历史 load 完成延迟。
-- `VSTS.latency` 需要谨慎处理，因为当前执行时长来自生产者 `data_store_cost`。
-
-store 执行时长兼容逻辑仍然活跃：类 store 执行时长来自生产者指令的 `data_store_cost`。
+- `VLDS.latency` 应匹配 load 完成延迟。
+- `VSTS.latency` 应匹配 store 完成延迟。
+- 修改 producer `data_store_cost` 不应改变 store done cycle。
 
 ### 阶段 3：统一依赖时序
 
@@ -481,7 +472,7 @@ consumer.start_cycle + consumer_release_start_offset
 
 如果 `VLD` / `VST` 只是泛化 load/store 标签，应从活跃模型代码中移除：
 
-- `load_done_latency` 或 ISA load latency 建立后，移除 `VLD_COST` fallback；活跃 `load_done_latency` 路径已完成。
+- load 执行时长已统一到 ISA load latency；应移除旧 `VLD_COST` / `load_done_latency` fallback 表述。
 - 注释从 `VLD/VST` 改成 load/store LSU 指令。
 - 只有在指真实 ISA op 时，才保留 `VLD`、`VST`、`VLDS`、`VSTS`、`VSTUS`、`VSTAS` 这些名称。
 

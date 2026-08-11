@@ -67,6 +67,7 @@ public:
   std::vector<DynamicInst> dispatch(int64_t cycle, const IDUDispatchBudget &budget);
 
   const ParamDB &db() const noexcept { return db_; }
+  const std::deque<DynamicInst> &window() const noexcept { return window_; }
   const std::vector<IDUDispatchRecord> &dispatchLog() const noexcept { return dispatchLog_; }
   const std::vector<VloopTraceRecord> &vloopTrace() const noexcept { return vloopTrace_; }
 
