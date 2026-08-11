@@ -5,6 +5,57 @@
     "vf_drain_cost": 12
   },
   "instructions": {
+    "PLT": {
+      "op_class": "COMPUTE",
+      "_calibration_note": "latency=6 is user-confirmed real-hardware data. pipeline_startup_cost/pipeline_drain_cost/EXU/dispatch_exu are NOT calibrated placeholders (set equal/minimal defaults) -- revisit once real numbers are available. data_load_cost/data_store_cost are unused since PLT is never a load/store or a VST producer.",
+      "forms": {
+        "fp32": {
+          "pipeline_startup_cost": 6,
+          "latency": 6,
+          "throughput": 1,
+          "pipeline_drain_cost": 1,
+          "data_load_cost": 0,
+          "data_store_cost": 0,
+          "EXU": "ALU",
+          "dispatch_exu": "EXU01",
+          "src_dtypes": [],
+          "dst_dtypes": ["fp32"],
+          "dtype": "fp32"
+        }
+      }
+    },
+    "VRELU": {
+      "op_class": "COMPUTE",
+      "_calibration_note": "Same as VMAXS in every field except latency, which is 1 cycle less (user-confirmed real-hardware data: VRELU=5, VMAXS=6).",
+      "forms": {
+        "fp32": {
+          "pipeline_startup_cost": 6,
+          "latency": 5,
+          "throughput": 1,
+          "pipeline_drain_cost": 4,
+          "data_load_cost": 9,
+          "data_store_cost": 9,
+          "EXU": "ALU",
+          "dispatch_exu": "EXU01",
+          "src_dtypes": ["fp32"],
+          "dst_dtypes": ["fp32"],
+          "dtype": "fp32"
+        },
+        "fp16": {
+          "pipeline_startup_cost": 6,
+          "latency": 5,
+          "throughput": 1,
+          "pipeline_drain_cost": 4,
+          "data_load_cost": 9,
+          "data_store_cost": 9,
+          "EXU": "ALU",
+          "dispatch_exu": "EXU01",
+          "src_dtypes": ["fp16"],
+          "dst_dtypes": ["fp16"],
+          "dtype": "fp16"
+        }
+      }
+    },
     "VADDS": {
       "op_class": "COMPUTE",
       "forms": {
@@ -287,7 +338,7 @@
           "throughput": 2,
           "pipeline_drain_cost": 6,
           "data_load_cost": 9,
-          "data_store_cost": 9,
+          "data_store_cost": 18,
           "EXU": "ALU",
           "dispatch_exu": "EXU01",
           "src_dtypes": [
