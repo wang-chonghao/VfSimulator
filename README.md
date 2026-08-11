@@ -1,76 +1,76 @@
 # VF Simulator
 
-VF Simulator is a cycle-level performance model for Ascend-style vector function (VF) code. It predicts VF execution time from either a structured JSON trace or a CCE/DSL file containing `__VEC_SCOPE__` vector code.
+VF Simulator 是面向 Ascend 风格 VF（vector function）代码的周期级性能模型。它可以从结构化 JSON trace 或包含 `__VEC_SCOPE__` 的 CCE/DSL 文件预测 VF 执行时间。
 
-The project has two major parts:
+项目主要分为两部分：
 
-1. **VF modeling**: parse VF structure, lower it into simulator instructions, and estimate cycle-level timing.
-2. **VF optimization**: explore split/unroll/rewrite strategies using the model as a fast cost oracle.
+1. **VF 建模**：解析 VF 结构，lower 成模拟器指令，并估算周期级时序。
+2. **VF 优化**：用模型作为快速 cost oracle，搜索 split、unroll、rewrite 等策略。
 
-The current mainline model is focused on VF modeling. Optimization utilities are kept in the repository, but the default simulator path is the queue-level VF model described below.
+当前主线重点是 VF 建模。优化工具仍保留在仓库里，但默认模拟路径是下面描述的 queue-level VF 模型。
 
-## Current Default Model
+## 当前默认模型
 
-The default simulation path is:
+默认模拟路径是：
 
 - `queue_level4`
 - `consumer release = producer/consumer start + 4`
-- `vreg live-range normalization = ON`
+- `vreg` 活跃范围规范化：开启
 - `shq_depth = 58`
 - `exq_depth = 26`
 - `issue_ports = 2`
 - `load_ports = 2`
 - `store_ports = 1`
-- per-EXU inflight cap from `configs/uarch.json`
+- per-EXU inflight cap 来自 `configs/uarch.json`
 
-The model path is:
+模型链路是：
 
 ```text
-JSON/CCE input
-  -> api input adapter
+JSON/CCE 输入
+  -> API 输入适配层
   -> flatten
   -> IFU
   -> IDU
   -> OOO rename + SHQ/LSQ
   -> ISU / EXQ
-  -> EXU/VLD/VST timing
+  -> EXU/load/store timing
   -> VF end cycle
 ```
 
-The default command does not require an explicit model flag. `main.py` always selects the current queue-level mainline unless a theoretical-limit or experimental option is explicitly provided.
+默认命令不需要显式指定模型。除非使用 theoretical-limit 或实验选项，`main.py` 总是选择当前 queue-level 主线模型。
 
-## Quick Start
+## 快速开始
 
-Run a JSON trace:
+运行 JSON trace：
 
 ```bash
 python main.py --trace VFtest/GeLU_poly.json --out_dir results/demo_gelu_poly
 ```
 
-Run a CCE/DSL file:
+运行 CCE/DSL 文件：
 
 ```bash
 python main.py --cce cce_code/GeLU_poly.dsl --out_dir results/demo_gelu_poly_cce
 ```
 
-If a CCE file has multiple `__VEC_SCOPE__` kernels, select one explicitly:
+如果一个 CCE 文件里有多个 `__VEC_SCOPE__` kernel，需要显式选择：
 
 ```bash
 python main.py --cce path/to/file.dsl --cce-kernel kernel_name --out_dir results/demo_kernel
 ```
 
-Common outputs:
+常见输出：
 
-- `start_by_cycle.json`: instruction start events.
-- `done_by_cycle.json`: instruction done events.
-- `idu_to_ooo.json`: IDU to OOO admission trace.
-- `vloop_trace.json`: top-level loop dispatch trace.
-- `sim_history.json`: detailed simulation history.
-- terminal line `VF end cycle (with drain) = ...`: main timing result.
+- `start_by_cycle.json`：指令 start 事件。
+- `done_by_cycle.json`：指令 done 事件。
+- `idu_to_ooo.json`：IDU 到 OOO 的接收 trace。
+- `vloop_trace.json`：顶层 loop dispatch trace。
+- `sim_history.json`：详细模拟历史。
+- 终端输出 `VF end cycle (with drain) = ...`：主要时序结果。
 
-## Theoretical-Limit Modes
+## Theoretical-Limit 模式
 
-Two theoretical-limit candidates are currently exposed:
+当前暴露两个 theoretical-limit 候选模式：
 
 ```bash
 python main.py --trace VFtest/GeLU_poly.json \
@@ -84,93 +84,100 @@ python main.py --trace VFtest/GeLU_poly.json \
   --out_dir results/theory_direct_issue
 ```
 
-The first keeps the main queue-level path while relaxing top-level loop exposure constraints. The second is a more aggressive candidate that uses legacy forwarding and direct single-queue issue for comparison.
+第一个保留主队列级路径，但放宽顶层循环暴露限制。第二个更激进，使用旧版转发解释和直接单队列发射作为对比。
 
-## Experimental Three-Port Mode
+## 实验三端口模式
 
-The repository also contains an experimental three-port VF model:
+仓库还包含实验性的三端口 VF 模型：
 
 ```bash
 python main.py --trace VFtest/GeLU_poly.json --three-ports --out_dir results/demo_three_ports
 ```
 
-In this mode, compute issue ports and VLD issue capacity are expanded to three, while VST remains single-issue.
+该模式把 compute issue port 和 load issue capacity 扩展到 3，store issue 仍然单发射。
 
-## API Interface
+## API 接口
 
-The public API lives in `api/`.
+公共 API 位于 `api/`。
 
-Main pieces:
+主要文件：
 
-- `api/vf_costmodel.py`: data classes such as `VFInfo`, `InstInfo`, and `MemInfo`.
-- `api/cce_adapter.py`: parses `__VEC_SCOPE__` kernels from CCE/DSL files.
-- `api/vf_lowering.py`: lowers API-level VF information into simulator trace format.
-- `api/input_api.py`: unified loader for JSON and CCE input.
-- `api/simulator_costmodel.py`: programmatic cost model wrapper.
+- `api/vf_info.py`：公共数据类，包括 `VFInfo`、`VFLoop`、`VFInst`、`ValueInfo`、`MemInfo`、`Membar`。
+- `api/vf_costmodel.py`：兼容 re-export，并定义抽象接口 `VfCostModel`。
+- `api/cce_adapter.py`：从 CCE/DSL 文件解析 `__VEC_SCOPE__` kernel。
+- `api/vf_lowering.py`：把 API 层 `VFInfo` lower 到模拟器 trace 格式。
+- `api/input_api.py`：JSON 和 CCE 输入的统一 loader。
+- `api/simulator_costmodel.py`：程序化 cost model wrapper。
 
-Typical programmatic use:
+典型程序化用法：
 
 ```python
 from api.cce_adapter import parse_cce_vf_info
-from api.simulator_costmodel import predict_vf_cycles
+from api.simulator_costmodel import CoreVfCostModel
 
 vf_info = parse_cce_vf_info("cce_code/GeLU_poly.dsl")
-cycles = predict_vf_cycles(vf_info)
+cycles = CoreVfCostModel().predict_vf_cycles(vf_info)
 print(cycles)
 ```
 
-Direct construction of `VFInfo` is also supported for tests and tools that do not start from CCE code.
+不从 CCE 开始的测试和工具也可以直接构造 `VFInfo`。
 
-## Configuration Files
+## 配置文件
 
-Core configuration lives in `configs/`:
+核心配置位于 `configs/`：
 
-- `uarch.json`: queue depths, issue widths, delay knobs, inflight caps, and other microarchitecture parameters.
-- `isa.json`: per-instruction latency, startup/drain cost, execution unit type, and dispatch restriction.
-- `forwarding.json`: producer-consumer forwarding timing.
-- `InitiationInterval.json`: instruction pair initiation interval table.
+- `uarch.json`：queue depth、issue width、delay knob、inflight cap 等微架构参数。
+- `isa.json`：schema v2 指令元数据。记录方式是 `instructions.<op>.forms.<form>`，op 级别记录 `op_class`，form 级别记录 latency、startup、drain、dtype 等字段。
+- `forwarding.json`：schema v2 生产者到消费者的依赖时序表，按 `OP.form` 建 key，例如 `VADDS.fp32 -> VEXP.fp32`。
+- `InitiationInterval.json`：schema v2 指令对 initiation interval 表，同样按 `OP.form` 建 key。
 
-Important ISA dispatch markers:
+重要 ISA 字段：
 
-- `EXU0_ONLY`: instruction can only execute on EXU0.
-- `EXU01`: instruction can execute on EXU0 or EXU1.
-- `EXU012`: used by experimental three-port mode.
+- `op_class`：`COMPUTE`、`LOAD` 或 `STORE`，用于决定走 SHQ/EXQ/EXU 还是 LSQ 资源路径。
+- `forms`：每种 form 的参数，例如 `fp32`、`fp16`，或 `f32_to_f16` 这样的转换 form。
+- `dispatch_exu`：compute 指令可使用的执行端口。
 
-## Directory Layout
+重要 `dispatch_exu` 标记：
 
-Core directories intended for normal development and release branches:
+- `EXU0_ONLY`：只能在 EXU0 执行。
+- `EXU01`：可以在 EXU0 或 EXU1 执行。
+- `EXU012`：实验三端口模式使用。
+
+## 目录结构
+
+正常开发和 release 分支主要关注这些目录：
 
 ```text
-api/                 Public input/API adapter layer
-ascend_runner/       CCE/camodel build, run, and calibration helpers
-cce_code/            CCE/DSL examples and selected regression/optimization sources
-configs/             uarch, ISA, forwarding, and II configuration
-core/                Main simulator implementation
-docs/                Architecture notes and modeling documentation
-notes/               Curated working notes used by optimization/modeling flows
-optimizer/           VF optimization and split/unroll search tools
-regression_suite/    Regression package: cases, inputs, reports, docs
-skills/              Codex skill docs/scripts for VF optimization workflow
-tools/               Utility scripts for reports, plots, calibration, and experiments
-VFtest/              JSON trace examples and selected regression inputs
+api/                 公共输入/API 适配层
+ascend_runner/       CCE/camodel 构建、运行、校准辅助工具
+cce_code/            CCE/DSL 示例以及部分回归/优化源
+configs/             uarch、ISA、forwarding、II 配置
+core/                主模拟器实现
+docs/                架构说明和建模文档
+notes/               优化/建模流程使用的整理笔记
+optimizer/           VF 优化和 split/unroll 搜索工具
+regression_suite/    回归包：case、输入、报告、文档
+skills/              VF 优化工作流相关 Codex skill 文档/脚本
+tools/               报告、绘图、校准、实验工具脚本
+VFtest/              JSON trace 示例和部分回归输入
 ```
 
-Top-level documentation:
+顶层文档：
 
-- `VF_modeling.md`: detailed VF modeling design.
-- `README.md`: current project entry point.
-- `api.md`: API design notes.
+- `VF_modeling.md`：详细 VF 建模设计。
+- `README.md`：当前项目入口。
+- `api.md`：API 设计说明。
 
-Generated outputs and temporary material should normally stay out of release commits:
+生成输出和临时材料通常不要放进 release commit：
 
 - `results/`
 - `__pycache__/`
-- large `msprof`/camodel dump folders
-- ad-hoc figures and scratch files unless intentionally curated
+- 大型 `msprof`/camodel dump 目录
+- 临时图片、日志和 scratch 文件，除非已经整理成稳定资料
 
-## Regression Suite
+## 回归测试
 
-The regression package is now organized as:
+回归包结构：
 
 ```text
 regression_suite/
@@ -188,42 +195,41 @@ regression_suite/
     unroll_precision_debug_guide.md
 ```
 
-Run smoke regression:
+运行 smoke 回归：
 
 ```bash
 python tools/run_cost_model_regression.py --tier smoke
 ```
 
-Run full regression:
+运行 full 回归：
 
 ```bash
 python tools/run_cost_model_regression.py --tier full
 ```
 
-Update baseline intentionally:
+有意刷新 baseline：
 
 ```bash
 python tools/run_cost_model_regression.py --tier full --update-baseline
 ```
 
-The run output is written under `results/regression_suite/latest/` by default. Stable, curated reports belong under `regression_suite/reports/`.
-The default comparison baseline is the `queue_level4+ooo-transfer-delay` column
-from `regression_suite/reports/precision_compare_3modes.md`.
+默认输出写到 `results/regression_suite/latest/`。稳定、整理过的报告应放在 `regression_suite/reports/`。
+默认对比 baseline 来自 `regression_suite/reports/precision_compare_3modes.md` 中的 `queue_level4+ooo-transfer-delay` 列。
 
 ## Ascend Runner
 
-`ascend_runner/` is the CCE/camodel companion toolchain. It is used to:
+`ascend_runner/` 是 CCE/camodel 伴随工具链，用于：
 
-- compile CCE/DSL cases through `ccec` and `ld.lld`;
-- run native simulator executables with `runtime_camodel`;
-- collect camodel logs such as instruction start/done and EXU traces;
-- calibrate `isa.json`, `forwarding.json`, and `InitiationInterval.json`.
+- 通过 `ccec` 和 `ld.lld` 编译 CCE/DSL case；
+- 使用 `runtime_camodel` 运行 native 模拟器可执行文件；
+- 收集 camodel 日志，例如指令 start/done 和 EXU trace；
+- 校准 `isa.json`、`forwarding.json`、`InitiationInterval.json`。
 
-Current mainline scripts are in `ascend_runner/current/`. Historical debug and legacy scripts remain in `ascend_runner/debug/` and `ascend_runner/legacy/`.
+当前主线脚本位于 `ascend_runner/current/`。历史 debug 和 legacy 脚本保留在 `ascend_runner/debug/` 和 `ascend_runner/legacy/`。
 
-## Development Notes
+## 开发备注
 
-Recommended sanity checks after simulator changes:
+修改模拟器后建议运行：
 
 ```bash
 python main.py --trace VFtest/GeLU_poly.json --out_dir results/sanity_gelu
@@ -231,4 +237,4 @@ python main.py --cce cce_code/GeLU_poly.dsl --out_dir results/sanity_gelu_cce
 python tools/run_cost_model_regression.py --tier smoke
 ```
 
-When preparing a clean release branch, prefer committing source, curated docs, selected regression inputs, and selected tools only. Avoid committing generated caches, temporary run logs, and large raw dumps.
+准备干净 release 分支时，优先提交源码、整理过的文档、选定的回归输入和必要工具。不要提交生成缓存、临时运行日志和大型原始 dump。

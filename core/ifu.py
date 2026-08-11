@@ -143,7 +143,9 @@ class IFUUnroll:
                 continue
             e = self.begin_to_end[b]
             body = self.nodes[b + 1 : e]
-            self.loop_body_cache[b] = [dict(x) for x in body if x.get("type") == "inst"]
+            self.loop_body_cache[b] = [
+                dict(x) for x in body if x.get("type") in ("inst", "membar")
+            ]
 
         # cache last static inst index inside each loop body
         self.loop_last_inst_idx: Dict[int, Optional[int]] = {}
@@ -169,9 +171,36 @@ class IFUUnroll:
         self.pc = 0
         self.frames: List[LoopFrame] = []
         self.inst_id = 0
+        self.stream_seq = 0
 
         self._pending: List[Dict[str, Any]] = []
         self._unroll_group = 0
+
+    def _first_membar_in_loop_body(self, begin_idx: int) -> Optional[Dict[str, Any]]:
+        for node in self.loop_body_cache.get(begin_idx, []):
+            if node.get("type") == "membar":
+                return node
+        return None
+
+    def _record_membar_unroll_disabled(
+        self,
+        loop_node: Dict[str, Any],
+        membar_node: Dict[str, Any],
+        loop_id: int,
+        requested_unroll: int,
+    ) -> None:
+        if not hasattr(self.db, "record_warning"):
+            return
+        barrier = membar_node.get("barrier", membar_node.get("scope", ""))
+        self.db.record_warning(
+            "membar_unroll_disabled",
+            pc=int(membar_node.get("pc", loop_node.get("pc", -1))),
+            barrier=str(barrier),
+            loop_id=int(loop_node.get("loop_id", loop_id)),
+            requested_unroll=int(requested_unroll),
+            used_unroll=1,
+            reason="membar_in_unrolled_innermost_loop",
+        )
 
     def done(self) -> bool:
         return self.pc >= len(self.nodes) and not self._pending
@@ -260,6 +289,8 @@ class IFUUnroll:
 
         out["inst_id"] = self.inst_id
         self.inst_id += 1
+        out["stream_seq"] = self.stream_seq
+        self.stream_seq += 1
         out["loop_stack"] = list(loop_stack)
         out["iter_stack"] = list(iter_stack)
         out["loop_depth"] = len(loop_stack)
@@ -274,6 +305,25 @@ class IFUUnroll:
         # nested-loop metadata
         out["block_key_by_level"] = self._build_block_key_by_level(loop_stack, iter_stack)
         out["block_end_levels"] = self._calc_block_end_levels_normal()
+
+        return out
+
+    def _emit_normal_membar(self, n: Dict[str, Any]) -> Dict[str, Any]:
+        out = dict(n)
+        loop_stack, iter_stack = self._snapshot()
+
+        out["type"] = "membar"
+        out["stream_seq"] = self.stream_seq
+        self.stream_seq += 1
+        out["loop_stack"] = list(loop_stack)
+        out["iter_stack"] = list(iter_stack)
+        out["loop_depth"] = len(loop_stack)
+        out["in_loop"] = bool(loop_stack)
+        out["unroll_factor"] = 1
+        out["lane"] = None
+        out["top_block_id"] = self._current_top_block_id()
+        out["block_key_by_level"] = self._build_block_key_by_level(loop_stack, iter_stack)
+        out["block_end_levels"] = []
 
         return out
 
@@ -293,9 +343,35 @@ class IFUUnroll:
 
         for ins in body:
             for lane in range(U):
+                if ins.get("type") == "membar":
+                    membar = dict(ins)
+                    membar["type"] = "membar"
+                    membar["stream_seq"] = self.stream_seq
+                    self.stream_seq += 1
+                    membar["loop_stack"] = list(loop_stack)
+                    if iter_stack:
+                        membar["iter_stack"] = list(iter_stack[:-1] + [super_iter])
+                    else:
+                        membar["iter_stack"] = []
+                    membar["loop_depth"] = len(loop_stack)
+                    membar["in_loop"] = True
+                    membar["unroll_factor"] = U
+                    membar["unroll_group"] = self._unroll_group
+                    membar["unroll_lane"] = lane
+                    membar["orig_iter_base"] = orig_base
+                    membar["lane"] = lane
+                    membar["top_block_id"] = int(frame.top_block_id)
+                    bs = list(membar["iter_stack"])
+                    membar["block_key_by_level"] = self._build_block_key_by_level(loop_stack, bs)
+                    membar["block_end_levels"] = []
+                    pending.append(membar)
+                    continue
+
                 inst = dict(ins)
                 inst["inst_id"] = self.inst_id
                 self.inst_id += 1
+                inst["stream_seq"] = self.stream_seq
+                self.stream_seq += 1
 
                 inst["loop_stack"] = list(loop_stack)
                 if iter_stack:
@@ -396,6 +472,10 @@ class IFUUnroll:
                 if is_innermost and unroll > 1:
                     if iters % unroll != 0:
                         raise ValueError(f"Invalid unroll={unroll}: iters={iters} not divisible by unroll")
+                    membar = self._first_membar_in_loop_body(self.pc)
+                    if membar is not None:
+                        self._record_membar_unroll_disabled(n, membar, loop_id, unroll)
+                        unroll = 1
 
                 frame = LoopFrame(
                     begin_idx=self.pc,
@@ -439,6 +519,11 @@ class IFUUnroll:
                         self.frames.pop()
                         self.pc += 1
                         continue
+
+            if t == "membar":
+                out = self._emit_normal_membar(n)
+                self.pc += 1
+                return out
 
             if t != "inst":
                 self.pc += 1

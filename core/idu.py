@@ -365,7 +365,7 @@ class IDU:
 
     # ---------------- dispatch ----------------
 
-    def dispatch(self, cycle, ooo):
+    def dispatch(self, cycle, ooo, control_unit=None):
         if not self.window:
             return []
 
@@ -408,6 +408,9 @@ class IDU:
             op = inst.get("op", "")
             iter_stack = inst.get("iter_stack", [])
             top_block_id = int(inst.get("top_block_id", 0))
+
+            if control_unit is not None and control_unit.blocks(inst):
+                break
 
             # -------------------------------------------------
             # -1) sibling top-block gate

@@ -164,6 +164,10 @@ class _VFScopeParser:
         if "pset_" in stmt:
             return None
 
+        smem_bar = re.match(r"SMEM_BAR\s*\.\s*([A-Za-z_]\w*)\s*;", stmt, re.IGNORECASE)
+        if smem_bar:
+            return Membar(smem_bar.group(1).upper())
+
         match = _CALL_RE.fullmatch(stmt)
         if not match:
             return None

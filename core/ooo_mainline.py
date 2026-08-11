@@ -265,6 +265,7 @@ class RenameController:
         iter_stack = list(inst.get("iter_stack", []))
         top_block_id = int(inst.get("top_block_id", 0))
         is_last_in_top_block = bool(inst.get("is_last_in_top_block", False))
+        stream_seq = int(inst.get("stream_seq", -1))
 
         srcs = inst.get("src", [])
         dsts = inst.get("dst", [])
@@ -331,6 +332,7 @@ class RenameController:
             top_block_id=top_block_id,
             iter_stack=list(iter_stack),
             is_last_in_top_block=is_last_in_top_block,
+            stream_seq=stream_seq,
         )
         setattr(u, "preg_src_gen", preg_src_gen)
 
@@ -697,7 +699,7 @@ class OoOCoreMainline(OoOCore):
                 break
 
             u.start_cycle = c
-            u.done_cycle = c + self.load_done_latency
+            u.done_cycle = c + self._latency(u.op, u.form)
             u.state = "running"
             self._schedule_src_release_from_start(u)
             self._log("start", u)
@@ -776,10 +778,7 @@ class OoOCoreMainline(OoOCore):
                 continue
 
             u.start_cycle = c
-            u.done_cycle = c + self._data_store_cost(
-                u.producer_op_for_store,
-                u.producer_form_for_store,
-            )
+            u.done_cycle = c + self._latency(u.op, u.form)
             u.state = "running"
             self._schedule_src_release_from_start(u)
             # SHQ credit release for store-like LSU ops.

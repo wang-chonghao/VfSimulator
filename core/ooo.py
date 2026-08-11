@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple, Deque
 from collections import deque
 import json
 
-from core.isa_traits import is_compute_op, is_load_op
+from core.isa_traits import is_compute_op, is_load_op, is_store_op
 from core.value_storage import ValueStorageLookup
 
 
@@ -52,6 +52,7 @@ class Uop:
     top_block_id: int = 0
     iter_stack: List[Any] = field(default_factory=list)
     is_last_in_top_block: bool = False
+    stream_seq: int = -1
     exu_port: Optional[int] = None
     shq_ready_cycle: int = 0
     lsq_ready_cycle: int = 0
@@ -398,6 +399,20 @@ class OoOCore:
             return 10 ** 9, None, None, None
         best_t = max(best_t, int(getattr(u, "lsq_ready_cycle", 0)))
         return best_t, pop, pform, pst
+
+    def has_pending_lsu_before(self, stream_seq: int, op_class: str) -> bool:
+        target = str(op_class).upper()
+        for u in self.ROB:
+            if int(getattr(u, "stream_seq", -1)) >= int(stream_seq):
+                continue
+            if u.state == "done":
+                continue
+            cls = "LOAD" if is_load_op(u.op, self.db, u.form) else None
+            if cls is None:
+                cls = "STORE" if is_store_op(u.op, self.db, u.form) else None
+            if cls == target:
+                return True
+        return False
 
     # -------- retire helper --------
     def _free_old_pregs(self, u: Uop) -> None:

@@ -1,165 +1,68 @@
-# OOO Models
+# OOO 主线模型
 
-This document summarizes the current OoO register-lifetime models, their defaults,
-and the most important simulator/optimizer knobs.
+本文说明当前公开的 OoO 模型接口。旧版本 VF Simulator 曾经暴露多个 `--ooo-model` 选项，例如 `consumer-done`、`default`、`last-use`、`npu-hybrid`、`queue_level1/2/3/4`。当前 `main.py` 已不再暴露这个 selector。
 
-## Default
+## 当前默认模型
 
-The current default OoO model is:
+当前公开主线只有一个 queue-level 模型：
 
-- `consumer-done`
-
-This default is used by:
-
-- [`main.py`](/d:/VfSimulator/main.py)
-- [`optimizer/split_only_optimizer.py`](/d:/VfSimulator/optimizer/split_only_optimizer.py)
-- [`optimizer/generic_heuristic_split_optimizer.py`](/d:/VfSimulator/optimizer/generic_heuristic_split_optimizer.py)
-- [`core/ooo_factory.py`](/d:/VfSimulator/core/ooo_factory.py)
-
-## Available `--ooo-model` Options
-
-### `consumer-done`
-
-Current recommended/default model.
-
-Rule of thumb:
-
-- when an architectural vreg is overwritten by a younger write, the old preg is
-  sealed and will not gain new younger consumers
-- that old preg is released only after:
-  - it is no longer the current RAT mapping
-  - all already-bound consumers have finished execution (`done`)
-  - the producer itself has finished execution
-
-Characteristics:
-
-- does not require future/global oracle information
-- more aggressive than `default`
-- more realistic than `last-use`
-- currently the preferred mainline model
-
-Implementation:
-
-- [`core/ooo_mainline.py`](/d:/VfSimulator/core/ooo_mainline.py)
-
-### `default`
-
-Original conservative model.
-
-Rule of thumb:
-
-- old preg lifetime is tied to in-order retirement behavior
-- more CPU-like / textbook conservative rename-free behavior
-
-Characteristics:
-
-- most conservative of the current practical models
-- tends to increase perceived register pressure
-- tends to prefer more loop cuts during optimization
-
-Implementation:
-
-- [`core/ooo.py`](/d:/VfSimulator/core/ooo.py)
-
-### `last-use`
-
-Aggressive oracle-style model.
-
-Rule of thumb:
-
-- uses globally precomputed last-use information
-- can release preg lifetime based on future knowledge of the dynamic trace
-
-Characteristics:
-
-- not hardware-realistic as a strict implementation model
-- useful as an aggressive sensitivity / upper-bound style reference
-- tends to reduce perceived register pressure the most
-
-Implementation:
-
-- [`core/ooo_last_use.py`](/d:/VfSimulator/core/ooo_last_use.py)
-- last-use annotation:
-  [`core/dynamic_trace.py`](/d:/VfSimulator/core/dynamic_trace.py)
-
-### `npu-hybrid`
-
-Experimental mixed model.
-
-Characteristics:
-
-- retained as an optional experiment path
-- not the current recommended default
-
-Implementation:
-
-- [`core/ooo_npu_hybrid.py`](/d:/VfSimulator/core/ooo_npu_hybrid.py)
-
-## CLI Defaults
-
-### `main.py`
-
-Current important defaults:
-
-- `--ooo-model consumer-done`
-- `--theoretical-limit` disabled by default
-- `--out_dir results`
-
-Example:
-
-```bash
-python main.py --trace VFtest/GeLU_poly.json
-```
-
-This now uses `consumer-done` unless `--ooo-model` is explicitly passed.
-
-### Optimizers
-
-Current optimizer defaults:
-
-- `--ooo-model consumer-done`
-- `--cut-penalty off`
-- `--cut-penalty-scale 1.0`
-
-Examples:
-
-```bash
-python optimizer/generic_heuristic_split_optimizer.py VFtest/GeLU_poly.json --trip-count 64 --output results/out.json
-```
-
-```bash
-python optimizer/generic_heuristic_split_optimizer.py VFtest/GeLU_poly.json --trip-count 64 --ooo-model default --cut-penalty on --cut-penalty-scale 1.0 --output results/out.json
-```
-
-## Current uArch Defaults
-
-From [`configs/uarch.json`](/d:/VfSimulator/configs/uarch.json):
-
+- `queue_level4`
+- consumer release rule：consumer start cycle + 4
+- `vreg` 活跃范围规范化：开启
+- `shq_depth = 58`
+- `exq_depth = 26`
 - `issue_ports = 2`
 - `load_ports = 2`
 - `store_ports = 1`
-- `IDU_window_width = 6`
-- `IDU_issue_width = 5`
-- `OoO_window_width = 2600000`
-- `LDQ_width = 2400000`
-- `vreg_num = 68`
-- `mem_bar_mode = strong`
+- `exq_issue_inflight_cap_per_port = 7`
 
-## Current ISA Defaults
+因此默认 CLI 直接使用：
 
-From [`configs/isa.json`](/d:/VfSimulator/configs/isa.json):
+```bash
+python main.py --trace VFtest/GeLU_poly.json --out_dir results/gelu_poly
+```
 
-- `vf_startup_cost = 23`
-- `vf_drain_cost = 12`
+CCE/DSL 输入使用：
 
-## Current Recommendation
+```bash
+python main.py --cce cce_code/GeLU_poly.dsl --out_dir results/gelu_poly_cce
+```
 
-For normal simulation and optimization work:
+## 实现拆分
 
-- use `consumer-done`
-- keep `cut_penalty=off` unless you explicitly want more regular/less fragmented partition shapes
+- `core/ooo_factory.py`：规范化 uarch 配置，并创建唯一支持的 OoO core。
+- `core/uarch_normalize.py`：集中维护主线默认值和理论上界覆盖配置。
+- `core/ooo_mainline.py`：负责重命名、物理寄存器生命周期、SHQ/LSQ/ROB、就绪计算、load/store 路径和源寄存器释放记录。
+- `core/isu.py`：负责计算指令离开 SHQ 之后的路径，包括 SHQ 到 EXQ 入队、EXQ 仲裁、EXQ 到 EXU 启动、端口选择和 II 检查。
 
-For comparison/debug:
+## 公开变体
 
-- use `default` for conservative baseline behavior
-- use `last-use` as an aggressive oracle-style reference
+当前活跃的公开变体是上界参考或实验模式，不是另一个真实硬件默认模型：
+
+```bash
+python main.py --trace VFtest/GeLU_poly.json \
+  --theoretical-limit-vloop-only \
+  --out_dir results/theory_vloop_only
+```
+
+```bash
+python main.py --trace VFtest/GeLU_poly.json \
+  --theoretical-limit-vloop-only-legacy-forwarding-direct-issue \
+  --out_dir results/theory_direct_issue
+```
+
+```bash
+python main.py --trace VFtest/GeLU_poly.json \
+  --three-ports \
+  --out_dir results/three_ports
+```
+
+## 历史说明
+
+`consumer-done`、`default`、`last-use`、`npu-hybrid`、`queue_level1/2/3` 等历史名称仍然有助于理解旧报告和归档实验，但不应再被写成当前 `main.py` 的可用选项。
+
+部分优化器脚本仍保留旧版 `--ooo-model` 参数。在这些脚本明确迁移到当前队列级主线前，应把它们看作优化器内部的兼容开关。
+
+## 当前建议
+
+正常模拟、回归和 API 使用都应直接使用默认队列级主线，不传模型选择参数。理论上界模式只用于估计优化上界；`--three-ports` 只用于实验三端口模型。

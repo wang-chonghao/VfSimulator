@@ -159,22 +159,62 @@ def build_uarch(
     return uarch
 
 
-def write_warning_log(results_dir: str, warnings: list[Dict[str, Any]]) -> None:
-    if not warnings:
+def scan_instruction_fallback_warnings(program, db: ParamDB, dtype: str) -> None:
+    def visit(node):
+        if isinstance(node, list):
+            for item in node:
+                visit(item)
+            return
+        if not isinstance(node, dict):
+            return
+        ntype = node.get("type")
+        if ntype == "inst":
+            op = str(node.get("op", ""))
+            form = str(node.get("form", "") or dtype)
+            db.get_inst_form(op, form=form, dtype=dtype)
+            return
+        if ntype == "loop":
+            visit(node.get("body", []))
+
+    visit(program)
+
+
+def write_warning_log(
+    results_dir: str,
+    vreg_warnings: list[Dict[str, Any]],
+    instruction_warnings: list[Dict[str, Any]],
+) -> None:
+    if not vreg_warnings and not instruction_warnings:
         return
     print("[WARN] Low-confidence scenario detected:")
-    for warning in warnings:
+    for warning in vreg_warnings:
         print(
             "[WARN]",
             f"{warning['loop_path']}: expanded_vreg_namespace={warning['expanded_vreg_namespace']}",
             f"> preg_num={warning['preg_num']}",
+        )
+    if instruction_warnings:
+        unsupported = sum(
+            1
+            for warning in instruction_warnings
+            if str(warning.get("kind", "")).startswith("unsupported_isa")
+        )
+        timing = sum(
+            1
+            for warning in instruction_warnings
+            if str(warning.get("kind", "")).startswith("missing_")
+        )
+        print(
+            "[WARN]",
+            f"instruction fallback warnings: unsupported={unsupported}, timing={timing}",
         )
     warning_path = os.path.join(results_dir, "model_warnings.json")
     with open(warning_path, "w", encoding="utf-8") as f:
         json.dump(
             {
                 "has_warning": True,
-                "warnings": warnings,
+                "vreg_capacity_warnings": vreg_warnings,
+                "instruction_fallback_warnings": instruction_warnings,
             },
             f,
             indent=2,
@@ -218,6 +258,7 @@ def main():
         "[INFO] single-super-iteration loops expanded =",
         int(canonicalization_stats["expanded_loops"]),
     )
+    scan_instruction_fallback_warnings(program, db, dtype)
 
     analyzer = ProgramAnalyzer(params, values=values)
     top_block_loop_bounds = analyzer.infer_top_block_loop_bounds(program)
@@ -265,7 +306,7 @@ def main():
         program,
         int(ooo.preg_num),
     )
-    write_warning_log(results_dir, vreg_capacity_warnings)
+    write_warning_log(results_dir, vreg_capacity_warnings, db.get_warnings())
 
     print(f"Wrote {os.path.join(results_dir, 'sim_history.json')}")
     print(f"Wrote logs to {results_dir}")

@@ -1,28 +1,23 @@
-# API Layer
+# API 层
 
-This directory contains the simulator input API layer.
+本目录包含 VF Simulator 的 typed input boundary。
 
-Current goal:
-- support reading VF structure from `CCE` source files
-- keep the existing JSON-trace input path as a fallback
+当前两个 frontend 都返回同一个公共 `VFInfo` 结构：
 
-Recommended responsibility split:
-- `cce_adapter.py`: find/select `__VEC_SCOPE__` kernels and parse supported CCE
-  vector code into `VFInfo`
-- `simulator_costmodel.py`: run `VFInfo` objects through the current core
-  simulator and return predicted cycles
-- `json_*`: load legacy JSON traces into the same internal form
-- `vf_lowering.py`: lower public `VFInfo` objects into the current core payload
-- shared helpers: normalize the parsed result into the shape expected by `main.py`
+- `InputAPI.load_json_trace(path)`：把旧 JSON trace 加载为 `VFInfo`。
+- `InputAPI.load_cce_file(path, kernel_name=None, loop_params=None)`：解析 CCE/DSL 文件，并从一个 `__VEC_SCOPE__` kernel 提取 `VFInfo`。
+- `JsonVfInfoAdapter.from_payload(payload)`：适配内存中的 JSON-shaped payload。
+- `parse_cce_vf_info(path, kernel_name=None, loop_params=None)`：直接 CCE parser 入口。
+- `VFInfoLowerer().lower(vf_info)`：把公共 `VFInfo` lower 成当前 core simulator payload。
+- `CoreVfCostModel().predict_vf_cycles(vf_info)`：用当前 queue-level 主线模拟器运行 `VFInfo`。
 
-Planned interface direction:
-- one entry for `CCE` input
-- one entry for legacy `JSON` input
-- both return the same normalized payload:
-  - `dtype`
-  - `params`
-  - `program`
-  - optional `uarch`
+公共数据模型定义在 `vf_info.py`：
 
-This folder is intentionally lightweight for now. We are creating the interface
-boundary first, then wiring concrete parsers into it step by step.
+- `VFInfo`：顶层 program 容器，包含 `context`、`values`、`params`、`default_dtype` 和可选 `uarch` override。
+- `VFLoop`：结构化 loop 节点，包含 `count`、`unroll`、`body` 和可选 `loop_id`。
+- `VFInst`：向量指令节点，包含 `name`、`src`、`dst` 和可选 `form`。
+- `ValueInfo`：typed value 描述，包含 `value_id`、`storage`、`dtype`、`shape`。
+- `MemInfo`：`ValueInfo` 的兼容别名。
+- `Membar`：显式 memory/order barrier 节点。
+
+`core/` 后端仍消费历史 JSON-like payload。该格式被有意放在 `VFInfoLowerer` 后面，调用方不需要依赖模拟器内部 operand 命名或 loop flattening 细节。

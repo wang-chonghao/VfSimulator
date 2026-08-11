@@ -6,22 +6,66 @@ import os
 from collections import deque
 from typing import Any, Dict
 
+from core.control_unit import ControlUnit
+from core.isa_traits import get_op_class
 from core.isa_traits import uses_lsq, uses_shared_shq_credit, uses_shq_queue
 from core.value_storage import ValueStorageLookup
 
 
-def _inst_reservation(inst: Dict[str, Any], value_storage: ValueStorageLookup) -> Dict[str, int]:
+def _inst_reservation(
+    inst: Dict[str, Any],
+    value_storage: ValueStorageLookup,
+    pdb: Any = None,
+    dtype: str = "fp32",
+) -> Dict[str, int]:
     op = str(inst.get("op", ""))
+    form = str(inst.get("form", "") or dtype)
     dsts = inst.get("dst", [])
     if isinstance(dsts, str):
         dsts = [dsts]
     if not isinstance(dsts, list):
         dsts = []
     preg = sum(1 for d in dsts if value_storage.is_register(d))
-    shq_queue = 1 if uses_shq_queue(op) else 0
-    lsq = 1 if uses_lsq(op) else 0
-    shq = 1 if uses_shared_shq_credit(op) else 0
+    shq_queue = 1 if uses_shq_queue(op, pdb, form) else 0
+    lsq = 1 if uses_lsq(op, pdb, form) else 0
+    shq = 1 if uses_shared_shq_credit(op, pdb, form) else 0
     return {"preg": preg, "shq_queue": shq_queue, "lsq": lsq, "shq": shq}
+
+
+def _inst_matches_op_class(inst: Dict[str, Any], pdb: Any, dtype: str, op_class: str) -> bool:
+    return (
+        get_op_class(
+            inst.get("op", ""),
+            pdb,
+            str(inst.get("form", "") or dtype),
+        )
+        == str(op_class).upper()
+    )
+
+
+def _has_pending_prior_lsu(
+    *,
+    idu,
+    idu_to_ooo_pipe,
+    ooo,
+    stream_seq: int,
+    op_class: str,
+    pdb: Any,
+    dtype: str,
+) -> bool:
+    for inst in getattr(idu, "window", []):
+        if int(inst.get("stream_seq", -1)) < int(stream_seq) and _inst_matches_op_class(
+            inst, pdb, dtype, op_class
+        ):
+            return True
+    for _, inst in idu_to_ooo_pipe:
+        if int(inst.get("stream_seq", -1)) < int(stream_seq) and _inst_matches_op_class(
+            inst, pdb, dtype, op_class
+        ):
+            return True
+    if hasattr(ooo, "has_pending_lsu_before"):
+        return bool(ooo.has_pending_lsu_before(stream_seq, op_class))
+    return False
 
 
 class _IDUCreditProxy:
@@ -56,7 +100,6 @@ def run_simulation(
     values: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """
-    value_storage = ValueStorageLookup(values)
     Run the main IFU -> IDU -> OoO simulation loop and dump the standard logs.
 
     Returns:
@@ -66,6 +109,10 @@ def run_simulation(
         "results_dir": str,
       }
     """
+    value_storage = ValueStorageLookup(values)
+    pdb = getattr(ooo, "db", None)
+    dtype = str(getattr(ooo, "dtype", "fp32"))
+    control_unit = ControlUnit(pdb, dtype)
     idu_to_ooo_delay = int(uarch.get("idu_to_ooo_delay", 0))
     idu_to_ooo_pipe = deque()
     use_explicit_idu_credit_bank = bool(
@@ -89,7 +136,7 @@ def run_simulation(
         while idu_to_ooo_pipe and idu_to_ooo_pipe[0][0] <= cycle:
             _, inst = idu_to_ooo_pipe.popleft()
             if use_explicit_idu_credit_bank:
-                r = _inst_reservation(inst, value_storage)
+                r = _inst_reservation(inst, value_storage, pdb, dtype)
                 idu_pending_shq_queue = max(
                     0, int(idu_pending_shq_queue) - int(r["shq_queue"])
                 )
@@ -99,7 +146,7 @@ def run_simulation(
         pending_preg = pending_shq_queue = pending_lsq = pending_shq = 0
         if not use_explicit_idu_credit_bank:
             for _, inst in idu_to_ooo_pipe:
-                r = _inst_reservation(inst, value_storage)
+                r = _inst_reservation(inst, value_storage, pdb, dtype)
                 pending_preg += int(r["preg"])
                 pending_shq_queue += int(r["shq_queue"])
                 pending_lsq += int(r["lsq"])
@@ -111,9 +158,24 @@ def run_simulation(
             inst = ifu.next_inst()
             if inst is None:
                 break
+            if inst.get("type") == "membar":
+                control_unit.accept_membar(inst)
+                continue
             if "inst_id" not in inst and "id" in inst:
                 inst["inst_id"] = inst["id"]
             idu.accept(inst)
+
+        control_unit.update(
+            lambda seq, cls: _has_pending_prior_lsu(
+                idu=idu,
+                idu_to_ooo_pipe=idu_to_ooo_pipe,
+                ooo=ooo,
+                stream_seq=seq,
+                op_class=cls,
+                pdb=pdb,
+                dtype=dtype,
+            )
+        )
 
         if use_explicit_idu_credit_bank:
             idu_credit_proxy = _IDUCreditProxy(ooo, 0, 0, 0, 0)
@@ -130,10 +192,10 @@ def run_simulation(
                 ooo, pending_preg, pending_shq_queue, pending_lsq, pending_shq
             )
 
-        to_send = idu.dispatch(cycle, idu_credit_proxy)
+        to_send = idu.dispatch(cycle, idu_credit_proxy, control_unit=control_unit)
         for inst in to_send:
             if use_explicit_idu_credit_bank:
-                r = _inst_reservation(inst, value_storage)
+                r = _inst_reservation(inst, value_storage, pdb, dtype)
                 idu_preg_credit = max(0, int(idu_preg_credit) - int(r["preg"]))
                 idu_shq_credit = max(0, int(idu_shq_credit) - int(r["shq"]))
                 if idu_to_ooo_delay > 0:
