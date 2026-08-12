@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 
 namespace vfsim {
@@ -17,24 +18,105 @@ std::string lower(std::string value) {
   return value;
 }
 
+std::string upper(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+  return value;
+}
+
+std::string normalizeDtype(const std::string &dtype) {
+  const std::string text = lower(dtype);
+  static const std::unordered_map<std::string, std::string> aliases = {
+      {"f32", "fp32"},       {"float32", "fp32"},   {"fp32", "fp32"},
+      {"f16", "fp16"},       {"float16", "fp16"},   {"fp16", "fp16"},
+      {"bf16", "bf16"},      {"bfloat16", "bf16"},  {"s32", "int32"},
+      {"i32", "int32"},      {"int32", "int32"},    {"u32", "uint32"},
+      {"uint32", "uint32"},  {"bool", "bool"},      {"boolean", "bool"},
+      {"predicate", "bool"},
+  };
+  const auto it = aliases.find(text);
+  return it == aliases.end() ? text : it->second;
+}
+
+std::string compactDtype(const std::string &dtype) {
+  const std::string normalized = normalizeDtype(dtype);
+  if (normalized == "fp32")
+    return "f32";
+  if (normalized == "fp16")
+    return "f16";
+  if (normalized == "int32")
+    return "s32";
+  if (normalized == "uint32")
+    return "u32";
+  return normalized;
+}
+
+std::string normalizeForm(const std::string &form) {
+  const std::string text = lower(form);
+  const std::size_t pos = text.find("_to_");
+  if (pos == std::string::npos)
+    return normalizeDtype(text);
+  return compactDtype(text.substr(0, pos)) + "_to_" +
+         compactDtype(text.substr(pos + 4));
+}
+
+std::string normalizeOpcode(const std::string &op) {
+  const std::string text = lower(op);
+  static const std::unordered_map<std::string, std::string> aliases = {
+      {"vld", "VLDS"},
+      {"vlds", "VLDS"},
+      {"vst", "VSTS"},
+      {"vsts", "VSTS"},
+      {"vstus", "VSTUS"},
+      {"vstas", "VSTAS"},
+      {"vadd", "VADD"},
+      {"vadds", "VADDS"},
+      {"vmul", "VMUL"},
+      {"vmuls", "VMULS"},
+      {"vcvt", "VCVT"},
+      {"vcvt_f32_to_f16", "VCVT_F32_TO_F16"},
+      {"vcvt_f16_to_f32", "VCVT_F16_TO_F32"},
+      {"vcvt_f32_to_s32", "VCVT_F32_TO_S32"},
+      {"vcvt_s32_to_f32", "VCVT_S32_TO_F32"},
+  };
+  const auto it = aliases.find(text);
+  return it == aliases.end() ? upper(op) : it->second;
+}
+
+std::string specializeOpcode(const std::string &op, const std::string &form) {
+  const std::string canonicalOp = normalizeOpcode(op);
+  if (canonicalOp != "VCVT")
+    return canonicalOp;
+  const std::string canonicalForm = normalizeForm(form);
+  if (canonicalForm == "f32_to_f16")
+    return "VCVT_F32_TO_F16";
+  if (canonicalForm == "f16_to_f32")
+    return "VCVT_F16_TO_F32";
+  if (canonicalForm == "f32_to_s32")
+    return "VCVT_F32_TO_S32";
+  if (canonicalForm == "s32_to_f32")
+    return "VCVT_S32_TO_F32";
+  return canonicalOp;
+}
+
+std::string normalizeMembarType(const std::string &barrier) {
+  std::string text = upper(barrier.empty() ? "VST_VLD" : barrier);
+  const std::size_t dot = text.rfind('.');
+  if (dot != std::string::npos)
+    text = text.substr(dot + 1);
+  if (text == "VST_VLD" || text == "VLD_VST")
+    return text;
+  return text;
+}
+
 std::pair<std::string, std::string>
 conversionDtypes(const std::string &form) {
-  const std::size_t pos = form.find("_to_");
+  const std::string normalizedForm = normalizeForm(form);
+  const std::size_t pos = normalizedForm.find("_to_");
   if (pos == std::string::npos)
     return {"", ""};
-  auto normalize = [](const std::string &dtype) {
-    if (dtype == "f32")
-      return std::string("fp32");
-    if (dtype == "f16")
-      return std::string("fp16");
-    if (dtype == "s32")
-      return std::string("int32");
-    if (dtype == "u32")
-      return std::string("uint32");
-    return dtype;
-  };
-  return {normalize(form.substr(0, pos)),
-          normalize(form.substr(pos + 4))};
+  return {normalizeDtype(normalizedForm.substr(0, pos)),
+          normalizeDtype(normalizedForm.substr(pos + 4))};
 }
 
 void registerValue(VfInfo &vfInfo, const std::string &valueId) {
@@ -54,10 +136,14 @@ void canonicalizeNodes(std::vector<ProgramNode> &nodes, VfInfo &vfInfo) {
       canonicalizeNodes(node.loop->body, vfInfo);
       continue;
     }
-    if (node.kind == ProgramNode::Kind::Membar)
+    if (node.kind == ProgramNode::Kind::Membar) {
+      node.membar.barrier = normalizeMembarType(node.membar.barrier);
       continue;
+    }
 
     ProgramInstNode &inst = node.inst;
+    inst.op = normalizeOpcode(inst.op);
+    inst.form = normalizeForm(inst.form);
     for (const std::string &valueId : inst.src)
       registerValue(vfInfo, valueId);
     for (const std::string &valueId : inst.dst)
@@ -91,26 +177,16 @@ void canonicalizeNodes(std::vector<ProgramNode> &nodes, VfInfo &vfInfo) {
       if (!inst.dst.empty())
         dstDtype = vfInfo.values.at(inst.dst.front()).dtype;
       if (!srcDtype.empty() && !dstDtype.empty() && srcDtype != dstDtype) {
-        auto compact = [](const std::string &dtype) {
-          if (dtype == "fp32")
-            return std::string("f32");
-          if (dtype == "fp16")
-            return std::string("f16");
-          if (dtype == "int32")
-            return std::string("s32");
-          if (dtype == "uint32")
-            return std::string("u32");
-          return dtype;
-        };
-        inst.form = compact(srcDtype) + "_to_" + compact(dstDtype);
+        inst.form = compactDtype(srcDtype) + "_to_" + compactDtype(dstDtype);
       } else if (!dstDtype.empty()) {
-        inst.form = dstDtype;
+        inst.form = normalizeDtype(dstDtype);
       } else if (!srcDtype.empty()) {
-        inst.form = srcDtype;
+        inst.form = normalizeDtype(srcDtype);
       } else {
-        inst.form = vfInfo.defaultDtype;
+        inst.form = normalizeDtype(vfInfo.defaultDtype);
       }
     }
+    inst.op = specializeOpcode(inst.op, inst.form);
   }
 }
 
@@ -140,12 +216,14 @@ std::string valueStorageName(ValueStorageKind storage) {
 void canonicalizeVfInfo(VfInfo &vfInfo) {
   if (vfInfo.defaultDtype.empty())
     vfInfo.defaultDtype = "fp32";
+  vfInfo.defaultDtype = normalizeDtype(vfInfo.defaultDtype);
   for (auto &[valueId, value] : vfInfo.values) {
     if (value.valueId.empty())
       value.valueId = valueId;
     if (value.valueId != valueId)
       throw std::runtime_error("VfInfo value map key does not match valueId: " +
                                valueId);
+    value.dtype = normalizeDtype(value.dtype);
   }
   canonicalizeNodes(vfInfo.body, vfInfo);
 }

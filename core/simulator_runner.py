@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 from collections import deque
 from typing import Any, Dict
 
@@ -87,6 +88,33 @@ class _IDUCreditProxy:
 
     def get_free_shq(self):
         return max(0, int(self.core.get_free_shq()) - self.shq)
+
+
+def dump_model_warnings(
+    results_dir: str,
+    *,
+    instruction_warnings: list[Dict[str, Any]] | None = None,
+    vreg_warnings: list[Dict[str, Any]] | None = None,
+) -> bool:
+    instruction_warnings = list(instruction_warnings or [])
+    vreg_warnings = list(vreg_warnings or [])
+    if not instruction_warnings and not vreg_warnings:
+        return False
+    if not os.path.exists(results_dir):
+        os.makedirs(results_dir)
+    warning_path = os.path.join(results_dir, "model_warnings.json")
+    with open(warning_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "has_warning": True,
+                "vreg_capacity_warnings": vreg_warnings,
+                "instruction_fallback_warnings": instruction_warnings,
+            },
+            f,
+            indent=2,
+            ensure_ascii=False,
+        )
+    return True
 
 
 def run_simulation(
@@ -241,6 +269,11 @@ def run_simulation(
     )
     idu.dump_dispatch_log(os.path.join(results_dir, "idu_to_ooo.json"))
     idu.dump_vloop_trace(os.path.join(results_dir, "vloop_trace.json"))
+    if pdb is not None and hasattr(pdb, "get_warnings"):
+        dump_model_warnings(
+            results_dir,
+            instruction_warnings=pdb.get_warnings(),
+        )
 
     return {
         "cycles_executed": int(cycle),

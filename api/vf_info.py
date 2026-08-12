@@ -3,6 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Literal, TypeAlias
 
+from api.input_symbols import (
+    compact_dtype,
+    normalize_dtype,
+    normalize_form,
+    normalize_membar_type,
+    normalize_opcode,
+    normalize_storage,
+    specialize_opcode,
+)
+
 
 ValueStorageKind: TypeAlias = Literal["Register", "UB", "Scalar"]
 
@@ -33,12 +43,10 @@ class ValueInfo:
         resolved_id = value_id if value_id is not None else name
         if resolved_id is None or not str(resolved_id):
             raise ValueError("ValueInfo requires a non-empty value_id")
-        resolved_storage = location if location is not None else storage
-        if resolved_storage not in ("Register", "UB", "Scalar"):
-            raise ValueError(f"Unsupported value storage: {resolved_storage}")
+        resolved_storage = normalize_storage(location if location is not None else storage)
         object.__setattr__(self, "value_id", str(resolved_id))
         object.__setattr__(self, "storage", resolved_storage)
-        object.__setattr__(self, "dtype", str(dtype) if dtype else None)
+        object.__setattr__(self, "dtype", normalize_dtype(dtype))
         object.__setattr__(self, "shape", tuple(int(dim) for dim in shape))
 
     @property
@@ -105,14 +113,7 @@ def _dtype_from_conversion_form(form: str | None) -> tuple[str | None, str | Non
     if not form or "_to_" not in form:
         return None, None
     src, dst = form.split("_to_", 1)
-    aliases = {
-        "f32": "fp32",
-        "f16": "fp16",
-        "bf16": "bf16",
-        "s32": "int32",
-        "u32": "uint32",
-    }
-    return aliases.get(src, src), aliases.get(dst, dst)
+    return normalize_dtype(src), normalize_dtype(dst)
 
 
 def _merge_value(existing: ValueInfo | None, incoming: ValueInfo) -> ValueInfo:
@@ -143,15 +144,14 @@ def _merge_value(existing: ValueInfo | None, incoming: ValueInfo) -> ValueInfo:
 
 def _infer_inst_form(inst: VFInst, values: dict[str, ValueInfo], default_dtype: str) -> str:
     if inst.form:
-        return str(inst.form)
+        return str(normalize_form(inst.form))
     src_dtypes = [values[value_id].dtype for value_id in inst.src if values[value_id].dtype]
     dst_dtypes = [values[value_id].dtype for value_id in inst.dst if values[value_id].dtype]
     if src_dtypes and dst_dtypes and src_dtypes[0] != dst_dtypes[0]:
-        compact = {"fp32": "f32", "fp16": "f16", "int32": "s32", "uint32": "u32"}
-        src = compact.get(src_dtypes[0], src_dtypes[0])
-        dst = compact.get(dst_dtypes[0], dst_dtypes[0])
+        src = compact_dtype(src_dtypes[0])
+        dst = compact_dtype(dst_dtypes[0])
         return f"{src}_to_{dst}"
-    return str((dst_dtypes or src_dtypes or [default_dtype])[0])
+    return str(normalize_dtype((dst_dtypes or src_dtypes or [default_dtype])[0]))
 
 
 def canonicalize_vf_info(vf_info: VFInfo) -> VFInfo:
@@ -184,7 +184,14 @@ def canonicalize_vf_info(vf_info: VFInfo) -> VFInfo:
             if isinstance(node, VFInst):
                 src_ids = [register(ref) for ref in node.src]
                 dst_ids = [register(ref) for ref in node.dst]
-                normalized.append(VFInst(str(node.name), src_ids, dst_ids, node.form))
+                normalized.append(
+                    VFInst(
+                        normalize_opcode(node.name),
+                        src_ids,
+                        dst_ids,
+                        normalize_form(node.form) if node.form else None,
+                    )
+                )
             elif isinstance(node, VFLoop):
                 normalized.append(
                     VFLoop(
@@ -195,7 +202,7 @@ def canonicalize_vf_info(vf_info: VFInfo) -> VFInfo:
                     )
                 )
             elif isinstance(node, Membar):
-                normalized.append(Membar(str(node.type)))
+                normalized.append(Membar(normalize_membar_type(node.type)))
             else:
                 raise TypeError(f"Unsupported VFInfo node: {type(node).__name__}")
         return normalized
@@ -216,11 +223,11 @@ def canonicalize_vf_info(vf_info: VFInfo) -> VFInfo:
             simple_form = node.form if node.form and "_to_" not in node.form else None
             for value_id in node.src:
                 value = values[value_id]
-                dtype = value.dtype or src_dtype or simple_form or vf_info.default_dtype
+                dtype = value.dtype or src_dtype or simple_form or normalize_dtype(vf_info.default_dtype)
                 values[value_id] = replace(value, dtype=str(dtype))
             for value_id in node.dst:
                 value = values[value_id]
-                dtype = value.dtype or dst_dtype or simple_form or vf_info.default_dtype
+                dtype = value.dtype or dst_dtype or simple_form or normalize_dtype(vf_info.default_dtype)
                 values[value_id] = replace(value, dtype=str(dtype))
             completed.append(node)
         return completed
@@ -233,7 +240,9 @@ def canonicalize_vf_info(vf_info: VFInfo) -> VFInfo:
             if isinstance(node, VFLoop):
                 out.append(replace(node, body=resolve_forms(node.body)))
             elif isinstance(node, VFInst):
-                out.append(replace(node, form=_infer_inst_form(node, values, vf_info.default_dtype)))
+                form = _infer_inst_form(node, values, vf_info.default_dtype)
+                op = specialize_opcode(node.name, form)
+                out.append(replace(node, name=op, form=form))
             else:
                 out.append(node)
         return out
@@ -242,7 +251,7 @@ def canonicalize_vf_info(vf_info: VFInfo) -> VFInfo:
         context=resolve_forms(context),
         values=values,
         params={str(key): int(value) for key, value in vf_info.params.items()},
-        default_dtype=str(vf_info.default_dtype or "fp32"),
+        default_dtype=str(normalize_dtype(vf_info.default_dtype, default="fp32")),
         uarch=dict(vf_info.uarch),
     )
 

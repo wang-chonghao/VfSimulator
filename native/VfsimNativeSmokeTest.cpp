@@ -336,6 +336,74 @@ void verifyUnsupportedMembarWarning(const ParamDB &db) {
           "native unsupported membar must write warning");
 }
 
+void verifyNativeInputSymbolNormalization() {
+  VfInfo vfInfo;
+  vfInfo.defaultDtype = "float32";
+  ValueInfo mem;
+  mem.valueId = "input";
+  mem.storage = ValueStorageKind::UB;
+  mem.dtype = "float32";
+  ValueInfo fp;
+  fp.valueId = "fp";
+  fp.storage = ValueStorageKind::Register;
+  fp.dtype = "f32";
+  ValueInfo intValue;
+  intValue.valueId = "ival";
+  intValue.storage = ValueStorageKind::Register;
+  intValue.dtype = "s32";
+  ValueInfo out;
+  out.valueId = "output";
+  out.storage = ValueStorageKind::UB;
+  out.dtype = "int32";
+  vfInfo.values = {
+      {"input", mem},
+      {"fp", fp},
+      {"ival", intValue},
+      {"output", out},
+  };
+  vfInfo.body = {makeLoopNode(
+      "1",
+      {makeInstNode("vld", {"fp"}, {"input"}),
+       makeInstNode("vcvt", {"ival"}, {"fp"}),
+       makeInstNode("vst", {"output"}, {"ival"}),
+       makeMembarNode("SMEM_BAR.VLD_VST")})};
+
+  canonicalizeVfInfo(vfInfo);
+  auto &body = vfInfo.body.front().loop->body;
+  require(vfInfo.defaultDtype == "fp32", "native default dtype alias not normalized");
+  require(vfInfo.values.at("fp").dtype == "fp32", "native value dtype alias not normalized");
+  require(vfInfo.values.at("ival").dtype == "int32", "native int dtype alias not normalized");
+  require(body[0].inst.op == "VLDS", "native vld alias not normalized");
+  require(body[0].inst.form == "fp32", "native vld form alias not normalized");
+  require(body[1].inst.op == "VCVT_F32_TO_S32", "native vcvt not specialized");
+  require(body[1].inst.form == "f32_to_s32", "native vcvt form not normalized");
+  require(body[2].inst.op == "VSTS", "native vst alias not normalized");
+  require(body[3].membar.barrier == "VLD_VST", "native membar alias not normalized");
+}
+
+void verifyNativeUnknownVcvtFallsBack(const ParamDB &db) {
+  VfInfo vfInfo;
+  vfInfo.defaultDtype = "fp32";
+  ValueInfo fp16;
+  fp16.valueId = "half";
+  fp16.storage = ValueStorageKind::Register;
+  fp16.dtype = "fp16";
+  ValueInfo intValue;
+  intValue.valueId = "ival";
+  intValue.storage = ValueStorageKind::Register;
+  intValue.dtype = "int32";
+  vfInfo.values = {{"half", fp16}, {"ival", intValue}};
+  vfInfo.body = {makeLoopNode(
+      "1",
+      {makeInstNode("vcvt", {"ival"}, {"half"})})};
+
+  const auto outDir = std::filesystem::temp_directory_path() / "vfsim_native_unknown_vcvt";
+  (void)runVfInfo(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
+  const std::string warnings = readText(outDir / "model_warnings.json");
+  require(warnings.find("unsupported_isa_op") != std::string::npos,
+          "native unknown vcvt must fall back through ParamDB warning");
+}
+
 void verifySingleIterationLoopRunner(const ParamDB &db) {
   VfInfo vfInfo;
   vfInfo.defaultDtype = "fp32";
@@ -370,6 +438,8 @@ int main() {
     verifyNativeLoadStoreDurationUsesOwnLatency();
     verifyNativeSameAddressStoreLoadDependency(db);
     verifyUnsupportedMembarWarning(db);
+    verifyNativeInputSymbolNormalization();
+    verifyNativeUnknownVcvtFallsBack(db);
     verifySingleIterationLoopRunner(db);
 
     const auto program = buildTaddTmulProgram();

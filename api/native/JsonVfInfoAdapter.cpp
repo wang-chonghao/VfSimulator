@@ -5,6 +5,8 @@
 
 #include "native/Json.h"
 
+#include <algorithm>
+#include <cctype>
 #include <stdexcept>
 #include <utility>
 
@@ -19,6 +21,12 @@ const json::Value *findKey(const json::Value::Object &object,
 
 std::string scalarText(const json::Value &value) {
   return value.isString() ? value.asString() : std::to_string(value.asInt());
+}
+
+std::string lower(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return value;
 }
 
 std::vector<std::string> parseStringArray(const json::Value &value,
@@ -90,11 +98,13 @@ std::vector<ProgramNode> parseNodes(const json::Value &value) {
 }
 
 ValueStorageKind parseStorage(const std::string &storage) {
-  if (storage == "Register")
+  const std::string text = lower(storage);
+  if (text == "register" || text == "reg" || text == "vreg")
     return ValueStorageKind::Register;
-  if (storage == "UB")
+  if (text == "ub" || text == "unified_buffer" || text == "memory" ||
+      text == "mem")
     return ValueStorageKind::UB;
-  if (storage == "Scalar")
+  if (text == "scalar" || text == "imm")
     return ValueStorageKind::Scalar;
   throw std::runtime_error("unsupported value storage: " + storage);
 }

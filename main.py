@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import argparse
-import json
 import os
 from typing import Any, Dict
 
@@ -20,7 +19,7 @@ from core.ooo_factory import (
 from core.param_db import ParamDB
 from core.program_canonicalization import canonicalize_single_super_iteration_loops
 from core.program_analysis import ProgramAnalyzer
-from core.simulator_runner import run_simulation
+from core.simulator_runner import dump_model_warnings, run_simulation
 from core.vreg_live_range_normalization import normalize_program_vreg_live_ranges
 
 
@@ -208,19 +207,12 @@ def write_warning_log(
             "[WARN]",
             f"instruction fallback warnings: unsupported={unsupported}, timing={timing}",
         )
-    warning_path = os.path.join(results_dir, "model_warnings.json")
-    with open(warning_path, "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "has_warning": True,
-                "vreg_capacity_warnings": vreg_warnings,
-                "instruction_fallback_warnings": instruction_warnings,
-            },
-            f,
-            indent=2,
-            ensure_ascii=False,
-        )
-    print(f"Wrote {warning_path}")
+    if dump_model_warnings(
+        results_dir,
+        instruction_warnings=instruction_warnings,
+        vreg_warnings=vreg_warnings,
+    ):
+        print(f"Wrote {os.path.join(results_dir, 'model_warnings.json')}")
 
 
 def main():

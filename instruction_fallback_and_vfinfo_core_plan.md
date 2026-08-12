@@ -756,11 +756,55 @@ VFInfo
 
 - operand storage 来自 `ValueInfo.storage`，不再从 `V*` / `mem*` 前缀推断。
 - op/form/canonicalization 在统一 instruction resolution 层完成。
+- API/adapter 层新增输入符号规范化层，集中维护外部 dtype/opcode/storage/membar
+  写法到核心 canonical 字符串的映射。
 - 日志中保留原始 value_id，必要时额外记录 canonical/debug name。
+
+### 输入符号规范化层
+
+新增 `api/input_symbols.py`，职责限定在外部输入规范化：
+
+- `DType`：维护常见 dtype alias，例如 `float32 -> fp32`、`f32 -> fp32`、
+  `s32 -> int32`。未知 dtype 保留原字符串，交给后端 fallback/warning。
+- `OpCode`：维护常见外部 opcode alias，例如 `vld -> VLDS`、`vst -> VSTS`、
+  `vadd -> VADD`、`vcvt -> VCVT`。它只是便利用法和常见 alias 集合，不是支持清单；
+  未知 opcode 只做大写规范化。
+- `StorageKind`：维护 `Register`、`UB`、`Scalar`。
+- `MembarType`：维护 `VST_VLD`、`VLD_VST`。
+- alias map 维护外部可能写法，例如 `float32 -> fp32`、`f32 -> fp32`、
+  `vld -> VLDS`、`reg -> Register`、`SMEM_BAR.VST_VLD -> VST_VLD`。
+- normalize 函数只在 API / adapter / lowering 层调用，核心 IFU / IDU / OoO /
+  ParamDB 尽量只接收 canonical 字符串。
+- `VCVT` 作为外部泛化 opcode 做 best-effort specialize：已知转换
+  `f32_to_f16`、`f16_to_f32`、`f32_to_s32`、`s32_to_f32` 映射到具体
+  `VCVT_*` opcode；未知转换保留为 `VCVT`，由 `ParamDB` fallback/warning 承接。
+- `membar` 只做大小写和带点名称归一化。未知 membar 类型保留 canonical 字符串，
+  由 `ControlUnit` 记录 `unsupported_membar_type` warning。
+
+该层不替代 `isa.json`。`isa.json` 仍然决定某个 canonical opcode + form 是否有
+模型参数；若没有参数，继续由 `ParamDB` 的 fallback / warning 逻辑处理。该层不维护
+opcode 支持矩阵，不做 strict 支持性校验，避免和 `isa.json` 形成双源真相。
+
+公开 API / JSON adapter / CCE adapter 和历史 lowered core payload 采用同一套策略：
+输入符号尽量规范化，然后进入 core。未覆盖指令、form、forwarding、II 或 membar 统一
+由 `ParamDB` / `ControlUnit` 使用默认参数并写入 `model_warnings.json`。
+Python API 路径也必须写出同样的 `model_warnings.json`，不能只在 CLI `main.py`
+路径可见。
 
 ### 迁移阶段
 
-#### 阶段一：保留历史 dict，但消除剩余前缀依赖
+#### 阶段一：引入 API 输入符号规范化
+
+- 新增 `api/input_symbols.py`。
+- `ValueInfo` 构造阶段规范化 `storage` / `dtype`。
+- `canonicalize_vf_info()` 规范化 `VFInst.name`、`form`、`Membar.type` 和
+  `default_dtype`。
+- `canonicalize_vf_info()` 对 `VCVT` 做 best-effort specialize。
+- JSON / CCE adapter 继续返回 `VFInfo`，不直接把外部别名传入 core。
+- 增加回归覆盖小写 opcode、dtype alias、storage alias、带点 membar 名称、VCVT
+  specialize、未知符号保留并继续走 core fallback。
+
+#### 阶段二：保留历史 dict，但消除剩余前缀依赖
 
 这一步在短期默认回退中已经要先做一部分，尤其是资源分类和物理寄存器 credit 预约。
 后续继续清理：
@@ -769,7 +813,7 @@ VFInfo
 - 修复 IDU 中仍直接使用 `d[:1].lower() == "v"` 的物理寄存器 credit 估算。
 - unroll lane 后缀通过 values/base value metadata 识别 storage。
 
-#### 阶段二：引入类型化 CoreIR
+#### 阶段三：引入类型化 CoreIR
 
 定义 core 内部节点，例如：
 
@@ -791,7 +835,7 @@ VFInfo
 
 `Flattener` 和 `IFU` 先支持 CoreIR，同时保留历史 dict 兼容入口。
 
-#### 阶段三：main.py 不再调用 VFInfoLowerer 历史 lowering
+#### 阶段四：main.py 不再调用 VFInfoLowerer 历史 lowering
 
 新链路：
 
@@ -801,7 +845,7 @@ InputAPI -> VFInfo -> canonicalize/resolve -> CoreIR -> simulation
 
 `VFInfoLowerer` 保留为兼容老工具的 adapter，退出主线。
 
-#### 阶段四：日志和回归更新
+#### 阶段五：日志和回归更新
 
 - 日志输出保留 `value_id`。
 - 若仍需要旧字段，提供兼容字段或转换工具。

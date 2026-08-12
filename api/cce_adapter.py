@@ -5,6 +5,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+from api.input_symbols import (
+    compact_dtype,
+    normalize_dtype,
+    normalize_form,
+    normalize_membar_type,
+    normalize_opcode,
+    specialize_opcode,
+)
 from api.vf_info import (
     Membar,
     MemInfo,
@@ -166,7 +174,7 @@ class _VFScopeParser:
 
         smem_bar = re.match(r"SMEM_BAR\s*\.\s*([A-Za-z_]\w*)\s*;", stmt, re.IGNORECASE)
         if smem_bar:
-            return Membar(smem_bar.group(1).upper())
+            return Membar(normalize_membar_type(smem_bar.group(1)))
 
         match = _CALL_RE.fullmatch(stmt)
         if not match:
@@ -180,7 +188,7 @@ class _VFScopeParser:
         if not low.startswith("v"):
             return None
 
-        op = _normalize_op(callee)
+        op = normalize_opcode(callee)
         if op in _LOAD_OPS:
             if len(args) < 2:
                 raise ValueError(f"{callee} expects at least dst and UB source")
@@ -334,26 +342,8 @@ def _resolve_loop_step(step_expr: str, var: str, loop_params: Dict[str, int]) ->
     raise ValueError(f"Unsupported for-loop step: {step_expr}")
 
 
-def _normalize_op(callee: str) -> str:
-    return callee.upper()
-
-
 def _vector_dtype_to_form(dtype: str) -> str:
-    text = dtype.lower()
-    mapping = {
-        "f32": "fp32",
-        "float32": "fp32",
-        "fp32": "fp32",
-        "f16": "fp16",
-        "float16": "fp16",
-        "fp16": "fp16",
-        "s32": "int32",
-        "i32": "int32",
-        "int32": "int32",
-        "u32": "uint32",
-        "uint32": "uint32",
-    }
-    return mapping.get(text, text)
+    return str(normalize_dtype(dtype, default=str(dtype).lower()))
 
 
 def _extract_vector_decls(source: str) -> Dict[str, str]:
@@ -368,7 +358,7 @@ def _extract_vector_decls(source: str) -> Dict[str, str]:
 
 
 def _infer_inst_form(op: str, dst: Sequence[MemInfo], src: Sequence[MemInfo]) -> str | None:
-    op = op.upper()
+    op = normalize_opcode(op)
     src_dtype = next((operand.dtype for operand in src if operand.dtype), None)
     dst_dtype = next((operand.dtype for operand in dst if operand.dtype), None)
     if op in {"VCVT_F32_TO_F16", "VCVT_F16_TO_F32", "VCVT_F32_TO_S32", "VCVT_S32_TO_F32"}:
@@ -380,29 +370,17 @@ def _infer_inst_form(op: str, dst: Sequence[MemInfo], src: Sequence[MemInfo]) ->
         }
         return explicit[op]
     if op == "VCVT" and src_dtype and dst_dtype:
-        compact = {
-            "fp32": "f32",
-            "fp16": "f16",
-            "int32": "s32",
-        }
-        src_key = compact.get(src_dtype)
-        dst_key = compact.get(dst_dtype)
+        src_key = compact_dtype(src_dtype)
+        dst_key = compact_dtype(dst_dtype)
         if src_key and dst_key:
             return f"{src_key}_to_{dst_key}"
     return dst_dtype or src_dtype
 
 
 def _specialize_op_for_form(op: str, form: str | None) -> str:
-    op = op.upper()
-    if op != "VCVT" or not form:
-        return op
-    mapping = {
-        "f32_to_f16": "VCVT_F32_TO_F16",
-        "f16_to_f32": "VCVT_F16_TO_F32",
-        "f32_to_s32": "VCVT_F32_TO_S32",
-        "s32_to_f32": "VCVT_S32_TO_F32",
-    }
-    return mapping.get(form, op)
+    op = normalize_opcode(op)
+    form = normalize_form(form) if form else None
+    return specialize_opcode(op, form) if form else op
 
 
 def _split_args(text: str) -> List[str]:
