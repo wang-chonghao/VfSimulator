@@ -190,6 +190,43 @@ ParamDB makeDurationTestDb() {
   return ParamDB(root);
 }
 
+ParamDB makePartialCompatTestDb() {
+  const auto root = std::filesystem::temp_directory_path() / "vfsim_native_partial_compat_cfg";
+  writeText(
+      root / "configs" / "isa.json",
+      R"JSON({
+        "defaults": {"vf_startup_cost": 0, "vf_drain_cost": 0},
+        "instructions": {
+          "VPARTIAL": {
+            "op_class": "COMPUTE",
+            "forms": {
+              "fp16": {
+                "latency": 7,
+                "throughput": 2,
+                "data_load_cost": 9,
+                "data_store_cost": 9,
+                "EXU": "ALU",
+                "dispatch_exu": "EXU01"
+              },
+              "b16": {"latency": 123}
+            }
+          }
+        }
+      })JSON");
+  writeText(
+      root / "configs" / "uarch.json",
+      R"JSON({
+        "issue_ports": 2,
+        "load_ports": 2,
+        "store_ports": 1,
+        "IDU_window_width": 8,
+        "IDU_issue_width": 5,
+        "LDQ_width": 8,
+        "vreg_num": 16
+      })JSON");
+  return ParamDB(root);
+}
+
 void verifyInstructionFallback(ParamDB &db) {
   const InstConfig &unknown = db.inst("VUNKNOWN_NATIVE", "fp32");
   require(unknown.opClass == "COMPUTE", "unknown native op must fallback to compute");
@@ -209,6 +246,103 @@ void verifyInstructionFallback(ParamDB &db) {
   }
   require(sawUnsupported, "native fallback must record unsupported_isa_op");
   require(sawForwarding, "native fallback must record missing_forwarding_pair");
+}
+
+void verifyNativePartialCompatibleFormMerge() {
+  ParamDB db = makePartialCompatTestDb();
+  const InstConfig &partial = db.inst("VPARTIAL", "b16");
+  require(partial.latency == 123, "native partial b16 latency override mismatch");
+  require(partial.throughput == 2, "native partial b16 throughput must inherit fp16");
+  require(partial.dataLoadCost == 9, "native partial b16 data_load_cost must inherit fp16");
+  require(partial.dataStoreCost == 9, "native partial b16 data_store_cost must inherit fp16");
+  require(partial.dispatchExu == "EXU01", "native partial b16 dispatch_exu must inherit fp16");
+}
+
+void verifyVpackVsstbConfig(const ParamDB &db) {
+  const InstConfig &vpack = db.inst("VPACK", "b32");
+  const InstConfig &vsstb = db.inst("VSSTB", "b16");
+  require(vpack.opClass == "COMPUTE", "VPACK must be modeled as compute");
+  require(vpack.latency == 11, "VPACK latency mismatch");
+  require(vpack.dispatchExu == "EXU0_ONLY", "VPACK must dispatch to EXU0 only");
+  require(vsstb.opClass == "STORE", "VSSTB must be modeled as store");
+  require(vsstb.latency == 9, "VSSTB latency mismatch");
+  require(vsstb.dataStoreCost == 9, "VSSTB data store cost mismatch");
+  require(db.forwardingCycles("VCVT_F32_TO_F16", "f32_to_f16", "VPACK",
+                              "b32") == 4,
+          "VCVT_F32_TO_F16 -> VPACK forwarding mismatch");
+  require(db.forwardingCycles("VPACK", "b32", "VADD", "fp16") == 8,
+          "VPACK -> VADD(fp16) forwarding mismatch");
+  require(db.forwardingCycles("VPACK", "b32", "VSSTB", "b16") == 9,
+          "VPACK -> VSSTB forwarding mismatch");
+}
+
+void verifyCompatibleFormFallback(ParamDB &db) {
+  const InstConfig &vaddB16 = db.inst("VADD", "b16");
+  const InstConfig &vaddFp16 = db.inst("VADD", "fp16");
+  require(db.hasInst("VADD", "b16"), "native compatible form must satisfy hasInst");
+  require(vaddB16.latency == vaddFp16.latency,
+          "native b16 ISA params must fall back to fp16");
+  require(db.forwardingCycles("VADD", "b16", "VMUL", "b16") ==
+              db.forwardingCycles("VADD", "fp16", "VMUL", "fp16"),
+          "native b16 forwarding pair must fall back to fp16");
+  require(db.initiationInterval("VADD", "b16", "VMUL", "b16") ==
+              db.initiationInterval("VADD", "fp16", "VMUL", "fp16"),
+          "native b16 II pair must fall back to fp16");
+
+  bool sawIsa = false;
+  bool sawForwarding = false;
+  bool sawIi = false;
+  for (const auto &warning : db.warnings()) {
+    sawIsa = sawIsa || warning.kind == "compatible_isa_form_fallback";
+    sawForwarding = sawForwarding || warning.kind == "compatible_forwarding_pair_fallback";
+    sawIi = sawIi || warning.kind == "compatible_ii_pair_fallback";
+  }
+  require(sawIsa, "native compatible ISA fallback must record warning");
+  require(sawForwarding, "native compatible forwarding fallback must record warning");
+  require(sawIi, "native compatible II fallback must record warning");
+}
+
+void verifyNativeVpackVsstbScheduling(const ParamDB &db) {
+  VfInfo vfInfo;
+  vfInfo.defaultDtype = "fp32";
+  ValueInfo input;
+  input.valueId = "memA";
+  input.storage = ValueStorageKind::UB;
+  input.dtype = "fp16";
+  ValueInfo output;
+  output.valueId = "memB";
+  output.storage = ValueStorageKind::UB;
+  output.dtype = "bf16";
+  ValueInfo loaded;
+  loaded.valueId = "v0";
+  loaded.storage = ValueStorageKind::Register;
+  loaded.dtype = "fp16";
+  ValueInfo packed;
+  packed.valueId = "v1";
+  packed.storage = ValueStorageKind::Register;
+  packed.dtype = "bf16";
+  vfInfo.values = {{"memA", input}, {"memB", output}, {"v0", loaded}, {"v1", packed}};
+  ProgramNode vlds = makeInstNode("VLDS", {"v0"}, {"memA"});
+  vlds.inst.form = "fp16";
+  ProgramNode vpack = makeInstNode("VPACK", {"v1"}, {"v0"});
+  vpack.inst.form = "b32";
+  ProgramNode vsstb = makeInstNode("VSSTB", {"memB"}, {"v1"});
+  vsstb.inst.form = "b16";
+  vfInfo.body = {makeLoopNode("1", {vlds, vpack, vsstb})};
+
+  const auto outDir = std::filesystem::temp_directory_path() / "vfsim_native_vpack_vsstb";
+  const auto result = runVfInfo(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
+  require(result.vfEndCycle > 0, "native VPACK/VSSTB scheduling did not complete");
+  const std::string starts = readText(outDir / "start_by_cycle.json");
+  const std::string warnings = readText(outDir / "model_warnings.json");
+  require(starts.find("\"op\":\"VPACK\"") != std::string::npos,
+          "native VPACK must reach execution start log");
+  require(starts.find("\"op\":\"VSSTB\"") != std::string::npos,
+          "native VSSTB must reach execution start log");
+  require(warnings.find("VPACK.fp32") == std::string::npos,
+          "native VPACK must not be looked up through global fp32 form");
+  require(warnings.find("VSSTB.fp32") == std::string::npos,
+          "native VSSTB must not be looked up through global fp32 form");
 }
 
 void verifyMembarDisablesUnroll(ParamDB &db) {
@@ -351,6 +485,14 @@ void verifyNativeInputSymbolNormalization() {
   intValue.valueId = "ival";
   intValue.storage = ValueStorageKind::Register;
   intValue.dtype = "s32";
+  ValueInfo packed;
+  packed.valueId = "packed";
+  packed.storage = ValueStorageKind::Register;
+  packed.dtype = "bf16";
+  ValueInfo packedOut;
+  packedOut.valueId = "packedOut";
+  packedOut.storage = ValueStorageKind::UB;
+  packedOut.dtype = "bf16";
   ValueInfo out;
   out.valueId = "output";
   out.storage = ValueStorageKind::UB;
@@ -359,13 +501,21 @@ void verifyNativeInputSymbolNormalization() {
       {"input", mem},
       {"fp", fp},
       {"ival", intValue},
+      {"packed", packed},
+      {"packedOut", packedOut},
       {"output", out},
   };
+  ProgramNode vpackNode = makeInstNode("vpack", {"packed"}, {"fp"});
+  vpackNode.inst.form = "b32";
+  ProgramNode vsstbNode = makeInstNode("vsstb", {"packedOut"}, {"packed"});
+  vsstbNode.inst.form = "b16";
   vfInfo.body = {makeLoopNode(
       "1",
       {makeInstNode("vld", {"fp"}, {"input"}),
        makeInstNode("vcvt", {"ival"}, {"fp"}),
        makeInstNode("vst", {"output"}, {"ival"}),
+       vpackNode,
+       vsstbNode,
        makeMembarNode("SMEM_BAR.VLD_VST")})};
 
   canonicalizeVfInfo(vfInfo);
@@ -378,7 +528,11 @@ void verifyNativeInputSymbolNormalization() {
   require(body[1].inst.op == "VCVT_F32_TO_S32", "native vcvt not specialized");
   require(body[1].inst.form == "f32_to_s32", "native vcvt form not normalized");
   require(body[2].inst.op == "VSTS", "native vst alias not normalized");
-  require(body[3].membar.barrier == "VLD_VST", "native membar alias not normalized");
+  require(body[3].inst.op == "VPACK", "native vpack alias not normalized");
+  require(body[3].inst.form == "b32", "native vpack form not preserved");
+  require(body[4].inst.op == "VSSTB", "native vsstb alias not normalized");
+  require(body[4].inst.form == "b16", "native vsstb form not preserved");
+  require(body[5].membar.barrier == "VLD_VST", "native membar alias not normalized");
 }
 
 void verifyNativeUnknownVcvtFallsBack(const ParamDB &db) {
@@ -431,6 +585,10 @@ int main() {
     const std::filesystem::path root = std::filesystem::path(VFSIM_SOURCE_ROOT);
     ParamDB db(root);
     verifyInstructionFallback(db);
+    verifyNativePartialCompatibleFormMerge();
+    verifyVpackVsstbConfig(db);
+    verifyCompatibleFormFallback(db);
+    verifyNativeVpackVsstbScheduling(db);
     verifyUnrollOrder(db);
     verifyMembarDisablesUnroll(db);
     verifyExplicitMembarTiming(db);

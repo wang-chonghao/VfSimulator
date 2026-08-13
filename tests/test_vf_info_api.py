@@ -26,6 +26,8 @@ class VfInfoApiTest(unittest.TestCase):
         self.assertEqual(normalize_form("fp32_to_s32"), "f32_to_s32")
         self.assertEqual(normalize_form("f16_to_s32"), "f16_to_s32")
         self.assertEqual(normalize_opcode("vld"), "VLDS")
+        self.assertEqual(normalize_opcode("vpack"), "VPACK")
+        self.assertEqual(normalize_opcode("vsstb"), "VSSTB")
         self.assertEqual(normalize_opcode("vunknown"), "VUNKNOWN")
         self.assertEqual(specialize_opcode("vcvt", "fp32_to_s32"), "VCVT_F32_TO_S32")
         self.assertEqual(specialize_opcode("vcvt", "f16_to_s32"), "VCVT")
@@ -164,6 +166,72 @@ class VfInfoApiTest(unittest.TestCase):
                 for value_id, value in vf_info.values.items()
                 if value.dtype == "fp16" and value.storage == "Register"
             )].dtype, "fp16")
+
+    def test_cce_adapter_parses_vpack_and_vsstb_cast_operands(self):
+        source = """
+        void softmax_vf(__ubuf__ half *nz_buffer_Ptr) {
+          __VEC_SCOPE__ {
+            vector_f16 vreg_x_exp_even_f16;
+            vpack((vector_u16 &)vreg_x_exp_even_f16, (vector_u32 &)vreg_x_exp_even_f16, LOWER);
+            vsstb(vreg_x_exp_even_f16, ((__ubuf__ half *&)nz_buffer_Ptr), VSSTB_CONFIG, preg_low_half, POST_UPDATE);
+          }
+        }
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "softmax.dsl"
+            path.write_text(source, encoding="utf-8")
+            vf_info = InputAPI.load_cce_file(path, kernel_name="softmax_vf")
+
+        insts = vf_info.context
+        self.assertEqual(insts[0].name, "VPACK")
+        self.assertEqual(insts[0].src, ["vreg_x_exp_even_f16"])
+        self.assertEqual(insts[0].dst, ["vreg_x_exp_even_f16"])
+        self.assertEqual(insts[0].form, "b32")
+        self.assertEqual(insts[1].name, "VSSTB")
+        self.assertEqual(insts[1].src, ["vreg_x_exp_even_f16"])
+        self.assertEqual(insts[1].dst, ["nz_buffer_Ptr"])
+        self.assertEqual(insts[1].form, "b16")
+        self.assertEqual(vf_info.values["vreg_x_exp_even_f16"].dtype, "fp16")
+        self.assertEqual(vf_info.values["nz_buffer_Ptr"].storage, "UB")
+
+    def test_cce_adapter_parses_mem_bar_call(self):
+        source = """
+        void barrier_vf(__ubuf__ float *a, __ubuf__ float *b) {
+          __VEC_SCOPE__ {
+            vector_f32 v0;
+            vsts(v0, a, 0, NORM_B32, pset_b32(PAT_ALL));
+            mem_bar(VST_VLD);
+            vlds(v0, b, 0, NORM);
+          }
+        }
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "barrier.dsl"
+            path.write_text(source, encoding="utf-8")
+            vf_info = InputAPI.load_cce_file(path, kernel_name="barrier_vf")
+
+        membars = [node for node in vf_info.context if isinstance(node, Membar)]
+        self.assertEqual(len(membars), 1)
+        self.assertEqual(membars[0].type, "VST_VLD")
+
+    def test_cce_adapter_keeps_scalar_function_params_as_scalar(self):
+        source = """
+        void scalar_param_vf(__ubuf__ float *a, float epsilon) {
+          __VEC_SCOPE__ {
+            vector_bool p = pset_b32(PAT_ALL);
+            vector_f32 v0;
+            vlds(v0, a, 0, NORM);
+            vadds(v0, v0, epsilon, p);
+          }
+        }
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "scalar_param.dsl"
+            path.write_text(source, encoding="utf-8")
+            vf_info = InputAPI.load_cce_file(path, kernel_name="scalar_param_vf")
+
+        self.assertEqual(vf_info.values["a"].storage, "UB")
+        self.assertEqual(vf_info.values["epsilon"].storage, "Scalar")
 
     def test_handwritten_vf_info_is_the_core_input(self):
         lhs_source = ValueInfo("lhs_input", "UB", "fp32", [16, 64])

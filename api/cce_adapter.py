@@ -29,10 +29,10 @@ _FUNC_RE = re.compile(
     re.DOTALL,
 )
 _PRAGMA_UNROLL_RE = re.compile(r"#\s*pragma\s+unroll\s*\(\s*(\d+)\s*\)")
-_VECTOR_DECL_RE = re.compile(r"\bvector_([A-Za-z0-9_]+)\s+([^;]+);")
+_VECTOR_DECL_STMT_RE = re.compile(r"^\s*vector_([A-Za-z0-9_]+)\s+([^;]+)\s*$")
 _CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\((.*)\)\s*;", re.DOTALL)
 _LOAD_OPS = {"VLD", "VLDS"}
-_STORE_OPS = {"VST", "VSTS", "VSTUS", "VSTAS"}
+_STORE_OPS = {"VST", "VSTS", "VSTUS", "VSTAS", "VSSTB"}
 
 
 @dataclass(frozen=True)
@@ -42,6 +42,7 @@ class CCEVFScope:
     end_line: int
     source: str
     params: Sequence[str]
+    param_storage: Dict[str, str]
 
 
 def list_cce_vf_kernels(path: str | Path) -> List[str]:
@@ -78,6 +79,7 @@ def extract_cce_vf_scopes(path: str | Path) -> List[CCEVFScope]:
                 end_line=_line_number(clean, vec_close),
                 source=vec_source,
                 params=_parse_param_names(match.group("params")),
+                param_storage=_parse_param_storage(match.group("params")),
             )
         )
 
@@ -112,7 +114,12 @@ class _VFScopeParser:
         self.loop_params = loop_params
         self.register_dtypes = _extract_vector_decls(scope.source)
         self.register_names = set(self.register_dtypes)
-        self.ub_names = set(_ub_param_names(scope.params))
+        self.ub_names = {
+            name for name, storage in scope.param_storage.items() if storage == "UB"
+        }
+        self.scalar_names = {
+            name for name, storage in scope.param_storage.items() if storage == "Scalar"
+        }
 
     def parse(self) -> List[VFNode]:
         return self._parse_block(self.scope.source)
@@ -183,12 +190,31 @@ class _VFScopeParser:
         callee = match.group(1)
         args = _split_args(match.group(2))
         low = callee.lower()
-        if "barrier" in low or "membar" in low:
-            return Membar()
+        if low in {"mem_bar", "membar"} or "barrier" in low:
+            barrier = args[0] if args else None
+            return Membar(normalize_membar_type(barrier))
         if not low.startswith("v"):
             return None
 
         op = normalize_opcode(callee)
+        if op == "VPACK":
+            if len(args) < 2:
+                raise ValueError(f"{callee} expects at least dst and source register")
+            return VFInst(
+                name=op,
+                form="b32",
+                dst=[self._register_operand(args[0])],
+                src=[self._register_operand(args[1])],
+            )
+        if op == "VSSTB":
+            if len(args) < 2:
+                raise ValueError(f"{callee} expects at least register source and UB dst")
+            return VFInst(
+                name=op,
+                form="b16",
+                src=[self._register_operand(args[0])],
+                dst=[self._ub_operand(args[1])],
+            )
         if op in _LOAD_OPS:
             if len(args) < 2:
                 raise ValueError(f"{callee} expects at least dst and UB source")
@@ -197,7 +223,7 @@ class _VFScopeParser:
                 name=op,
                 form=dst.dtype,
                 dst=[dst],
-                src=[MemInfo(args[1], "UB")],
+                src=[self._ub_operand(args[1])],
             )
         if op in _STORE_OPS:
             if len(args) < 2:
@@ -207,7 +233,7 @@ class _VFScopeParser:
                 name=op,
                 form=src.dtype,
                 src=[src],
-                dst=[MemInfo(args[1], "UB")],
+                dst=[self._ub_operand(args[1])],
             )
 
         if not args:
@@ -221,12 +247,17 @@ class _VFScopeParser:
         name = _base_identifier(arg)
         return MemInfo(name, "Register", self.register_dtypes.get(name))
 
+    def _ub_operand(self, arg: str) -> MemInfo:
+        return MemInfo(_base_identifier(arg), "UB")
+
     def _operand_for_arg(self, arg: str) -> MemInfo | None:
         name = _base_identifier(arg)
         if name in self.register_names:
             return MemInfo(name, "Register", self.register_dtypes.get(name))
         if name in self.ub_names:
             return MemInfo(name, "UB")
+        if name in self.scalar_names:
+            return MemInfo(name, "Scalar")
         return None
 
     def _loop_count_from_header(self, header: str) -> int:
@@ -276,19 +307,21 @@ def _select_scope(scopes: Sequence[CCEVFScope], kernel_name: str | None) -> CCEV
 
 
 def _parse_param_names(params: str) -> List[str]:
-    names: List[str] = []
+    return list(_parse_param_storage(params))
+
+
+def _parse_param_storage(params: str) -> Dict[str, str]:
+    storage: Dict[str, str] = {}
     for raw in _split_args(params):
         cleaned = raw.strip()
         if not cleaned:
             continue
         match = re.search(r"([A-Za-z_]\w*)\s*(?:=[^,]+)?$", cleaned)
-        if match:
-            names.append(match.group(1))
-    return names
-
-
-def _ub_param_names(params: Sequence[str]) -> List[str]:
-    return [param for param in params if param]
+        if not match:
+            continue
+        name = match.group(1)
+        storage[name] = "UB" if "__ubuf__" in cleaned else "Scalar"
+    return storage
 
 
 def _infer_call_argument_constants(source: str, scope: CCEVFScope) -> Dict[str, int]:
@@ -348,7 +381,13 @@ def _vector_dtype_to_form(dtype: str) -> str:
 
 def _extract_vector_decls(source: str) -> Dict[str, str]:
     register_dtypes: Dict[str, str] = {}
-    for dtype, names_text in _VECTOR_DECL_RE.findall(source):
+    for stmt in source.split(";"):
+        match = _VECTOR_DECL_STMT_RE.fullmatch(stmt)
+        if not match:
+            continue
+        dtype, names_text = match.groups()
+        if any(token in names_text for token in ("(", ")", "&", "*")):
+            continue
         form = _vector_dtype_to_form(dtype)
         for raw_name in names_text.split(","):
             name = _base_identifier(raw_name)
@@ -402,8 +441,40 @@ def _split_args(text: str) -> List[str]:
 
 
 def _base_identifier(arg: str) -> str:
-    match = re.search(r"[A-Za-z_]\w*", arg.strip())
-    return match.group(0) if match else arg.strip()
+    text = arg.strip()
+    identifiers = re.findall(r"[A-Za-z_]\w*", text)
+    type_tokens = {
+        "__ubuf__",
+        "bool",
+        "const",
+        "float",
+        "half",
+        "int",
+        "int16_t",
+        "int32_t",
+        "int64_t",
+        "int8_t",
+        "long",
+        "short",
+        "signed",
+        "uint16_t",
+        "uint32_t",
+        "uint64_t",
+        "uint8_t",
+        "unsigned",
+        "vector_bool",
+        "vector_f16",
+        "vector_f32",
+        "vector_s16",
+        "vector_s32",
+        "vector_u16",
+        "vector_u32",
+        "volatile",
+    }
+    for name in reversed(identifiers):
+        if name not in type_tokens:
+            return name
+    return identifiers[-1] if identifiers else text
 
 
 def _strip_comments(source: str) -> str:

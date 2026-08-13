@@ -21,6 +21,36 @@ load/store 指令时序口径必须先收敛：load/store 的执行完成延迟�
 中长期目标仍然是：core 后端直接消费 `VFInfo` 或类型化 `CoreIR` 中的显式信息，
 不再依赖 `V0`、`mem0` 这类历史命名约定判断 operand storage。
 
+## 当前已落地状态
+
+截至当前分支，下面几项已经进入 Python 和 C++ 主线实现，并有回归覆盖：
+
+- 未支持 op/form 会在 `ParamDB` 中使用默认参数继续运行，并写入
+  `model_warnings.json`。
+- Python API 路径和 CLI 路径都会输出 `model_warnings.json`，不再依赖 vreg warning
+  是否存在。
+- load/store 执行完成时间已统一使用该指令自身 form 的 `latency`。
+- 资源分类查询已统一传入 `ParamDB` 和指令 form；Python IDU 不再用全局 dtype
+  判断 `VSSTB.b16` 等 form-specific 指令。
+- 显式 `membar` 已支持 `VST_VLD` / `VLD_VST`，gate 位于 OoO/LSQ issue/start 阶段，
+  不在 IDU dispatch 前制造 head-of-line blocking。
+- 新增 `VPACK.b32` 和 `VSSTB.b16`：
+  - `VPACK.b32`：compute，`latency = 11`，`dispatch_exu = EXU0_ONLY`。
+  - `VSSTB.b16`：store，`latency = 9`。
+  - 已补 `VCVT_F32_TO_F16 -> VPACK`、`VPACK -> VADD(fp16)`、
+    `VPACK -> VSSTB` forwarding。
+- CCE adapter 已对 `vpack(...)` 和 `vsstb(...)` 做专门解析：
+  - `vpack(dst_cast_reg, src_cast_reg, LOWER/UPPER)` 映射为 `VPACK.b32`。
+  - `vsstb(src_reg, ub_ptr, config, pred, mode)` 映射为 `VSSTB.b16`。
+  - C cast 表达式会提取最后一个真实变量名，例如
+    `(vector_u16 &)vreg` 和 `((__ubuf__ half *&)ptr)`。
+  - vector 声明提取只匹配完整 declaration statement，不会把 `vpack` cast
+    误识别成 `vector_u16` 声明。
+- 新增临时参数兼容层，独立维护 `b16 -> fp16`、`b32 -> fp32`：
+  - Python: `core/param_compat.py`
+  - C++: `native/ParamCompat.h` / `native/ParamCompat.cpp`
+  - 该层只在模型参数缺失时提供兼容候选，不改变输入、日志和真实 form。
+
 ## 当前问题
 
 ### 未支持指令识别分散
@@ -30,18 +60,22 @@ load/store 指令时序口径必须先收敛：load/store 的执行完成延迟�
 - JSON adapter 直接接受 `op` 字段，不查 ISA 表。
 - CCE adapter 会解析 `__VEC_SCOPE__` 内的向量调用，并做一部分 op 规范化：
   - `VLD` / `VLDS` 识别为加载风格指令。
-  - `VST` / `VSTS` / `VSTUS` / `VSTAS` 识别为存储风格指令。
+  - `VST` / `VSTS` / `VSTUS` / `VSTAS` / `VSSTB` 识别为存储风格指令。
+  - `VPACK` 会按 CCE intrinsic 形态专门解析为 `VPACK.b32`。
+  - `VSSTB` 会按 store intrinsic 形态专门解析为 `VSSTB.b16`。
   - `VCVT` 会根据源/目的 dtype 推断 form，并在可识别时 specialize 成
     `VCVT_F32_TO_F16` 等 op。
   - 其它 `v*` callee 基本按大写 op 进入 `VFInst`。
-- `isa_traits.py` 在元数据缺失时会把多数未知 op 回退为计算类。
-- `ParamDB.get_inst_form()` 找不到 op/form 时抛 `KeyError`，通常在 core 时序查询阶段暴露。
+- `isa_traits.py` 和 `ParamDB` 在元数据缺失时会按统一 fallback 规则分类和补默认参数。
+- `ParamDB.get_inst_form()` 找不到 op/form 时默认不再直接抛错，而是记录 fallback
+  warning；配置 schema 错误仍然抛错。
 
 这会导致同一个未知 op：
 
 - 前端可能正常通过。
 - IDU 资源分类可能已经把它当 compute。
-- OoO / ISU 查询 latency、EXU 或 dispatch port 时才失败。
+- OoO / ISU 查询 latency、EXU 或 dispatch port 时会拿到 fallback 参数，但结果置信度
+  需要通过 warning 暴露。
 
 ### 资源分类调用不一致
 
@@ -329,10 +363,7 @@ forwarding(LOAD, STORE) = 6
 
 ### 缺失 Initiation Interval pair 的新默认策略
 
-当前实现中，`ParamDB.get_ii()` 缺 pair 时直接回退
-`InitiationInterval.json` 的 `defaults`，文件缺失时默认 `1`。
-
-下面规则是拟引入的新默认回退策略，不是当前行为：
+当前实现中，`ParamDB.get_ii()` 缺 pair 时使用以下默认回退策略：
 
 ```text
 if prev_latency - cur_latency == 1:
@@ -347,7 +378,7 @@ else:
   如果默认 II 为 1，可能出现同一个 cycle 完成并写回寄存器，存在写冲突风险。
 - 其它未知 pair 先保持 `II = 1`，避免过度悲观。
 
-这个规则必须通过回归和校准验证后再成为主线默认。实现时需要记录
+这个规则已有回归覆盖，但仍需要后续硬件或 camodel 校准验证。实现时需要记录
 `missing_ii_pair` 告警，标明：
 
 - prev op/form
@@ -356,6 +387,58 @@ else:
 - cur latency
 - latency 是否来自默认回退
 - 使用的 II 默认值
+
+### 临时参数兼容 form 策略
+
+由于当前 ISA / forwarding / II 参数表主要覆盖 `fp16` 和 `fp32`，而外部输入和部分
+真实指令会出现 `b16` / `b32` form，短期引入专门的参数兼容层：
+
+```text
+b16 -> fp16
+b32 -> fp32
+```
+
+这只是“参数缺失时借用”的临时策略，不是输入规范化规则。原则如下：
+
+- API / CCE / JSON 输入仍保留真实 form，例如 `VADD.b16`、`VPACK.b32`。
+- 日志和 warning 中也保留 requested form，不能把 `b16` 静默改写成 `fp16`。
+- 兼容 fallback 只在同一个 opcode 内发生，不跨 opcode。
+- 如果 `isa.json` 中存在显式 `OP.b16` 或 `OP.b32`，必须优先使用显式参数。
+- 如果显式 form 完全缺失但兼容 form 存在，借用兼容 form 参数，并记录
+  `compatible_isa_form_fallback`。
+- 如果显式 form 存在但参数字段覆盖不完整，则按以下顺序合并：
+
+```text
+global defaults
+-> op defaults
+-> compatible form params
+-> requested form params
+```
+
+例如 `VADD.b16` 只写了 `latency`，而 `VADD.fp16` 写了 `throughput`、
+`data_load_cost`、`dispatch_exu` 等字段，则 `VADD.b16` 使用自己的 `latency`，
+其它缺失字段继承 `VADD.fp16`。
+- forwarding / II 精确 pair 缺失时，按 producer/consumer form 独立尝试兼容 key。
+  例如请求 `VADD.b16 -> VMUL.b16` 时，查询顺序为：
+
+```text
+VADD.b16  -> VMUL.b16
+VADD.b16  -> VMUL.fp16
+VADD.fp16 -> VMUL.b16
+VADD.fp16 -> VMUL.fp16
+```
+
+命中兼容 pair 时分别记录：
+
+- `compatible_forwarding_pair_fallback`
+- `compatible_ii_pair_fallback`
+
+实现位置保持独立，方便后续删除或扩展：
+
+- Python: `core/param_compat.py`
+- C++: `native/ParamCompat.h` / `native/ParamCompat.cpp`
+
+`ParamDB` 只调用该 helper，不直接内嵌 `b16/b32` 特例。
 
 ## 告警设计
 
@@ -367,6 +450,11 @@ else:
 - `unsupported_isa_form`：op 存在但 form 不存在，使用默认 form 参数。
 - `missing_forwarding_pair`：forwarding pair 不在表中，使用默认 forwarding。
 - `missing_ii_pair`：II pair 不在表中，使用默认 II。
+- `compatible_isa_form_fallback`：requested form 缺 ISA 参数，但同 op 的兼容 form
+  存在，借用兼容 form 参数。
+- `compatible_forwarding_pair_fallback`：requested forwarding pair 缺失，但兼容 form
+  pair 命中。
+- `compatible_ii_pair_fallback`：requested II pair 缺失，但兼容 form pair 命中。
 - `unknown_lsu_op`：op 看起来像加载/存储，但没有明确 ISA 配置或分类。
 - `unsupported_membar_type`：显式 membar 类型暂未支持。
 - `membar_unroll_disabled`：innermost loop 请求 `unroll > 1`，但 loop body 内包含
@@ -403,6 +491,31 @@ else:
   "used_default": 2,
   "rule": "prev_latency_minus_cur_latency_eq_1",
   "count": 7
+}
+```
+
+对兼容 form 参数借用：
+
+```json
+{
+  "kind": "compatible_isa_form_fallback",
+  "op": "VADD",
+  "requested_form": "b16",
+  "used_form": "fp16",
+  "count": 1
+}
+```
+
+对兼容 forwarding pair：
+
+```json
+{
+  "kind": "compatible_forwarding_pair_fallback",
+  "producer": "VADD.b16",
+  "consumer": "VMUL.b16",
+  "used_producer": "VADD.fp16",
+  "used_consumer": "VMUL.fp16",
+  "count": 1
 }
 ```
 
@@ -552,6 +665,67 @@ if vreg_capacity_warnings or instruction_fallback_warnings:
 - 记录 count。
 - 记录少量 sample op/form/inst_id。
 
+### 步骤五点五：新增具体指令覆盖和 CCE intrinsic 解析
+
+已新增 `VPACK` / `VSSTB` 的最小覆盖：
+
+- `VPACK.b32`
+  - `op_class = COMPUTE`
+  - `latency = 11`
+  - `dispatch_exu = EXU0_ONLY`
+  - 当前 dtype 记为 `bf16`，参数按 `b32` form 查询。
+- `VSSTB.b16`
+  - `op_class = STORE`
+  - `latency = 9`
+  - 当前 dtype 记为 `bf16`，参数按 `b16` form 查询。
+
+已知 forwarding：
+
+```text
+VCVT_F32_TO_F16.f32_to_f16 -> VPACK.b32 = 4
+VPACK.b32 -> VADD.fp16 = 8
+VPACK.b32 -> VSSTB.b16 = 9
+```
+
+CCE adapter 要求：
+
+- `_STORE_OPS` 包含 `VSSTB`。
+- `vpack((vector_u16 &)dst, (vector_u32 &)src, LOWER/UPPER)` 解析为
+  `VFInst("VPACK", form="b32", dst=[dst], src=[src])`。
+- `vsstb(src_reg, ((__ubuf__ half *&)ub_ptr), config, pred, mode)` 解析为
+  `VFInst("VSSTB", form="b16", src=[src_reg], dst=[ub_ptr])`。
+- `_base_identifier()` 对 cast 表达式取最后一个真实变量名。
+- vector 声明提取只匹配完整 declaration statement，不能从函数调用 cast 中抽取
+  `vector_u16` / `vector_u32` 作为变量声明。
+
+验收：
+
+- 真实 CCE 写法中 `vpack` / `vsstb` 解析后能命中新配置。
+- `vpack` cast 不会覆盖原始 `vector_f16` 声明 dtype。
+- Python 和 C++ 都有 `VLDS -> VPACK -> VSSTB` 调度回归。
+
+### 步骤五点六：临时兼容 form helper
+
+新增独立 helper 维护 `b16 -> fp16`、`b32 -> fp32`：
+
+- Python: `core/param_compat.py`
+- C++: `native/ParamCompat.h` / `native/ParamCompat.cpp`
+
+`ParamDB` 通过 helper 获取：
+
+- 单条 form 的兼容候选。
+- producer/consumer pair 的兼容 key 候选。
+
+验收：
+
+- `VADD.b16` 在 `VADD.b16` 未覆盖时借用 `VADD.fp16` 参数。
+- `VADD.b16` 如果只覆盖部分参数，缺失字段从 `VADD.fp16` 继承。
+- `hasInst("VADD", "b16")` 为 true。
+- `VADD.b16 -> VMUL.b16` forwarding 可借用 `VADD.fp16 -> VMUL.fp16`。
+- `VADD.b16 -> VMUL.b16` II 可借用 `VADD.fp16 -> VMUL.fp16`。
+- 兼容借用会记录 `compatible_*_fallback` warning。
+- 显式存在的 `VPACK.b32` / `VSSTB.b16` 不应走兼容 form fallback。
+
 ### 步骤六：在最终 program 上做预扫描
 
 预扫描位置应放在 program 预处理之后，而不是刚 `VFInfoLowerer` 后。
@@ -593,6 +767,18 @@ VFInfoLowerer
 - `VST_VLD` 阻塞后续 load，直到前序 store done。
 - `VLD_VST` 阻塞后续 store，直到前序 load done。
 - 被 barrier 阻塞的 load/store 不阻塞后续无关 compute 进入 SHQ 或执行。
+- `VPACK.b32` 参数为 `latency = 11` 且 `dispatch_exu = EXU0_ONLY`。
+- `VSSTB.b16` 参数为 store 且 `latency = 9`。
+- `VCVT_F32_TO_F16 -> VPACK`、`VPACK -> VADD(fp16)`、`VPACK -> VSSTB`
+  forwarding 命中显式表。
+- CCE `vpack((vector_u16 &)dst, (vector_u32 &)src, LOWER)` 正确解析为
+  `VPACK.b32`，且忽略第三个 selector 参数的数据依赖。
+- CCE `vsstb(src, ((__ubuf__ half *&)ptr), ...)` 正确解析为 `VSSTB.b16` store。
+- CCE cast 不会让 vector 声明提取把寄存器 dtype 从 `fp16` 覆盖成 `u16`。
+- Python IDU 使用当前 instruction form 做资源分类，不会把 `VSSTB.b16` 查成
+  `VSSTB.fp32`。
+- `b16` / `b32` form 缺参数时可通过独立兼容 helper 借用 `fp16` / `fp32` 参数。
+- 兼容 ISA / forwarding / II fallback 均有 warning。
 
 建议增加一个最小 trace：
 
@@ -872,6 +1058,8 @@ InputAPI -> VFInfo -> canonicalize/resolve -> CoreIR -> simulation
 6. 在最终 program 上做未支持指令预扫描。
 7. 输出 `model_warnings.json` 中的 instruction fallback warnings，且不依赖 vreg warning 是否存在。
 8. 增加 load/store latency、membar、未支持指令、缺失 forwarding、load/store forwarding 默认值、缺失 II 测试。
-9. 启动废弃 OoO 和冲突配置清理：先告警、再迁移 helper、最后物理删字段。
-10. 后续单独启动其它 `SMEM_BAR` 类型建模。
-11. 后续单独启动 VFInfo-core typed input 迁移。
+9. 增加 `VPACK.b32` / `VSSTB.b16` 配置和 CCE intrinsic 解析回归。
+10. 增加独立参数兼容 helper，支持 `b16 -> fp16`、`b32 -> fp32` 临时借参。
+11. 启动废弃 OoO 和冲突配置清理：先告警、再迁移 helper、最后物理删字段。
+12. 后续单独启动其它 `SMEM_BAR` 类型建模。
+13. 后续单独启动 VFInfo-core typed input 迁移。

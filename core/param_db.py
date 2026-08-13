@@ -34,6 +34,8 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+from core.param_compat import compatible_form, form_candidates, pair_key_candidates
+
 
 def _read_json(path: str) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
@@ -362,10 +364,9 @@ class ParamDB:
 
         candidates = []
         normalized = self._normalize_form_key(opu, form)
-        if normalized:
-            candidates.append(normalized)
+        candidates.extend(form_candidates(normalized))
         if dtype is not None:
-            candidates.append(self._dtype_to_form(dtype))
+            candidates.extend(form_candidates(self._dtype_to_form(dtype)))
         legacy = self._legacy_vcvt_form(opu)
         if legacy:
             candidates.append(legacy)
@@ -378,7 +379,14 @@ class ParamDB:
             return candidates[0] if candidates else self._dtype_to_form(dtype)
         raise KeyError(f"Instruction form not found: op={opu}, form={form}, dtype={dtype}")
 
-    def _v2_inst_form_params(self, op: str, form: str, dtype: Optional[str]) -> Dict[str, Any]:
+    def _v2_inst_form_params(
+        self,
+        op: str,
+        form: str,
+        dtype: Optional[str],
+        *,
+        requested_form: Optional[str] = None,
+    ) -> Dict[str, Any]:
         opu = op.upper()
         node = self._insts.get(opu, {})
         if not isinstance(node, dict):
@@ -388,12 +396,29 @@ class ParamDB:
         if not isinstance(inst_params, dict):
             raise TypeError(f"Bad schema for {opu}.{form}: expected dict, got {type(inst_params)}")
 
+        normalized_requested = self._normalize_form_key(opu, requested_form) or form
         op_defaults = {k: v for k, v in node.items() if k != "forms"}
         merged = _deep_merge(self._defaults, op_defaults)
+        compatible = compatible_form(normalized_requested)
+        if compatible and compatible != normalized_requested and compatible in forms:
+            compatible_params = forms.get(compatible, {}) if isinstance(forms, dict) else {}
+            if not isinstance(compatible_params, dict):
+                raise TypeError(
+                    f"Bad schema for {opu}.{compatible}: expected dict, got {type(compatible_params)}"
+                )
+            merged = _deep_merge(merged, compatible_params)
         merged = _deep_merge(merged, inst_params)
         merged["op"] = opu
-        merged["form"] = form
-        merged["dtype"] = str(dtype or merged.get("dtype") or form)
+        merged["form"] = normalized_requested
+        merged["resolved_form"] = form
+        merged["dtype"] = str(dtype or merged.get("dtype") or normalized_requested)
+        if form != normalized_requested:
+            self._record_warning(
+                "compatible_isa_form_fallback",
+                op=opu,
+                requested_form=normalized_requested,
+                used_form=form,
+            )
         return merged
 
     def get_inst_form(
@@ -446,7 +471,12 @@ class ParamDB:
                     dtype=dtype,
                     kind="unsupported_isa_form",
                 )
-            return self._v2_inst_form_params(opu, selected, dtype=dtype)
+            return self._v2_inst_form_params(
+                opu,
+                selected,
+                dtype=dtype,
+                requested_form=form,
+            )
 
         legacy_dtype = str(dtype or form or "fp32")
         return self.get_inst(opu, legacy_dtype)
@@ -462,7 +492,7 @@ class ParamDB:
                 forms = node.get("forms", {}) or {}
                 if not isinstance(forms, dict):
                     return False
-                selected = self._select_v2_form(opu, dtype=dtype, allow_fallback=False)
+                selected = self._select_v2_form(opu, form=dtype, dtype=dtype, allow_fallback=False)
                 return selected in forms
             except Exception:
                 return False
@@ -530,11 +560,23 @@ class ParamDB:
 
         if self._is_v2_isa():
             try:
-                p_key = self._form_key_for_lookup(p, producer_form, dtype)
-                c_key = self._form_key_for_lookup(c, consumer_form, dtype)
-                prod_map = (self._fwd_table or {}).get(p_key, None)
-                if isinstance(prod_map, dict) and c_key in prod_map:
-                    return max(0, int(prod_map[c_key]))
+                p_form = self._normalize_form_key(p, producer_form) or self._dtype_to_form(dtype)
+                c_form = self._normalize_form_key(c, consumer_form) or self._dtype_to_form(dtype)
+                p_key = self._join_form_key(p, p_form)
+                c_key = self._join_form_key(c, c_form)
+                for lookup_p, lookup_c, used_compatible in pair_key_candidates(p, p_form, c, c_form):
+                    prod_map = (self._fwd_table or {}).get(lookup_p, None)
+                    if isinstance(prod_map, dict) and lookup_c in prod_map:
+                        value = max(0, int(prod_map[lookup_c]))
+                        if used_compatible:
+                            self._record_warning(
+                                "compatible_forwarding_pair_fallback",
+                                producer=p_key,
+                                consumer=c_key,
+                                used_producer=lookup_p,
+                                used_consumer=lookup_c,
+                            )
+                        return value
             except Exception:
                 pass
         else:
@@ -609,11 +651,23 @@ class ParamDB:
 
         if self._is_v2_isa():
             try:
-                p_key = self._form_key_for_lookup(p, prev_form, dtype)
-                c_key = self._form_key_for_lookup(c, cur_form, dtype)
-                prev_map = (self._ii_table or {}).get(p_key, None)
-                if isinstance(prev_map, dict) and c_key in prev_map:
-                    return max(1, int(prev_map[c_key]))
+                p_form = self._normalize_form_key(p, prev_form) or self._dtype_to_form(dtype)
+                c_form = self._normalize_form_key(c, cur_form) or self._dtype_to_form(dtype)
+                p_key = self._join_form_key(p, p_form)
+                c_key = self._join_form_key(c, c_form)
+                for lookup_p, lookup_c, used_compatible in pair_key_candidates(p, p_form, c, c_form):
+                    prev_map = (self._ii_table or {}).get(lookup_p, None)
+                    if isinstance(prev_map, dict) and lookup_c in prev_map:
+                        value = max(1, int(prev_map[lookup_c]))
+                        if used_compatible:
+                            self._record_warning(
+                                "compatible_ii_pair_fallback",
+                                prev=p_key,
+                                cur=c_key,
+                                used_prev=lookup_p,
+                                used_cur=lookup_c,
+                            )
+                        return value
             except Exception:
                 pass
         else:

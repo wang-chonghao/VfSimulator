@@ -406,6 +406,7 @@ class IDU:
                 break
 
             op = inst.get("op", "")
+            form = inst.get("form") or self.dtype
             iter_stack = inst.get("iter_stack", [])
             top_block_id = int(inst.get("top_block_id", 0))
 
@@ -450,8 +451,8 @@ class IDU:
             # -------------------------------------------------
             # 2) SHQ / LSQ space gate
             # -------------------------------------------------
-            is_load = is_load_op(op, self.db, self.dtype)
-            is_store = is_store_op(op, self.db, self.dtype)
+            is_load = is_load_op(op, self.db, form)
+            is_store = is_store_op(op, self.db, form)
             if is_load:
                 if lsq_free <= 0:
                     break
@@ -483,11 +484,11 @@ class IDU:
             dispatched.append(inst)
 
             credits -= dst_count
-            if uses_lsq(op, self.db, self.dtype):
+            if uses_lsq(op, self.db, form):
                 lsq_free -= 1
-                if uses_shared_shq_credit(op, self.db, self.dtype):
+                if uses_shared_shq_credit(op, self.db, form):
                     shq_free -= 1
-            elif uses_shq_queue(op, self.db, self.dtype):
+            elif uses_shq_queue(op, self.db, form):
                 shq_queue_free -= 1
                 shq_free -= 1
 

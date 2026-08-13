@@ -78,6 +78,8 @@ std::string normalizeOpcode(const std::string &op) {
       {"vcvt_f16_to_f32", "VCVT_F16_TO_F32"},
       {"vcvt_f32_to_s32", "VCVT_F32_TO_S32"},
       {"vcvt_s32_to_f32", "VCVT_S32_TO_F32"},
+      {"vpack", "VPACK"},
+      {"vsstb", "VSSTB"},
   };
   const auto it = aliases.find(text);
   return it == aliases.end() ? upper(op) : it->second;

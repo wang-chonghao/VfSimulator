@@ -125,6 +125,165 @@ class InstructionFallbackTest(unittest.TestCase):
         self.assertEqual(done_by_op["VLDS"] - start_by_op["VLDS"], 9)
         self.assertEqual(done_by_op["VSTS"] - start_by_op["VSTS"], 9)
 
+    def test_vpack_and_vsstb_have_explicit_model_params(self):
+        db = ParamDB(base_dir=str(ROOT))
+
+        vpack = db.get_inst_form("VPACK", form="b32", dtype="bf16")
+        vsstb = db.get_inst_form("VSSTB", form="b16", dtype="bf16")
+
+        self.assertEqual(vpack["op_class"], "COMPUTE")
+        self.assertEqual(vpack["latency"], 11)
+        self.assertEqual(vpack["dispatch_exu"], "EXU0_ONLY")
+        self.assertEqual(vsstb["op_class"], "STORE")
+        self.assertEqual(vsstb["latency"], 9)
+        self.assertEqual(vsstb["data_store_cost"], 9)
+        self.assertEqual(
+            db.get_forwarding_cycles(
+                "VCVT_F32_TO_F16",
+                "VPACK",
+                dtype="bf16",
+                producer_form="f32_to_f16",
+                consumer_form="b32",
+            ),
+            4,
+        )
+        self.assertEqual(
+            db.get_forwarding_cycles(
+                "VPACK",
+                "VADD",
+                dtype="bf16",
+                producer_form="b32",
+                consumer_form="fp16",
+            ),
+            8,
+        )
+        self.assertEqual(
+            db.get_forwarding_cycles(
+                "VPACK",
+                "VSSTB",
+                dtype="bf16",
+                producer_form="b32",
+                consumer_form="b16",
+            ),
+            9,
+        )
+
+    def test_vpack_vsstb_forms_do_not_fallback_through_python_idu(self):
+        payload = {
+            "dtype": "fp32",
+            "params": {},
+            "values": {
+                "memA": {"value_id": "memA", "storage": "UB", "dtype": "fp16", "shape": [64]},
+                "memB": {"value_id": "memB", "storage": "UB", "dtype": "bf16", "shape": [64]},
+                "v0": {"value_id": "v0", "storage": "Register", "dtype": "fp16", "shape": [64]},
+                "v1": {"value_id": "v1", "storage": "Register", "dtype": "bf16", "shape": [64]},
+            },
+            "program": [
+                {
+                    "type": "loop",
+                    "iters": 1,
+                    "body": [
+                        {"type": "inst", "op": "VLDS", "form": "fp16", "src": ["memA"], "dst": ["v0"]},
+                        {"type": "inst", "op": "VPACK", "form": "b32", "src": ["v0"], "dst": ["v1"]},
+                        {"type": "inst", "op": "VSSTB", "form": "b16", "src": ["v1"], "dst": ["memB"]},
+                    ],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_dir = Path(tmpdir)
+            CoreVfCostModel(base_dir=ROOT, out_dir=out_dir)._run_lowered_payload(payload)
+            warnings = json.loads((out_dir / "model_warnings.json").read_text(encoding="utf-8"))
+            starts = [
+                json.loads(line)
+                for line in (out_dir / "start_by_cycle.json").read_text().splitlines()
+                if line.strip()
+            ]
+
+        fallback_warnings = warnings["instruction_fallback_warnings"]
+        self.assertFalse(
+            any(
+                item["kind"] == "unsupported_isa_form"
+                and item.get("op") in {"VPACK", "VSSTB"}
+                for item in fallback_warnings
+            )
+        )
+        self.assertEqual([item["op"] for item in starts], ["VLDS", "VPACK", "VSSTB"])
+
+    def test_compatible_form_fallback_uses_fp_params_for_b_forms(self):
+        db = ParamDB(base_dir=str(ROOT))
+
+        vadd = db.get_inst_form("VADD", form="b16", dtype="bf16")
+
+        self.assertEqual(vadd["form"], "b16")
+        self.assertEqual(vadd["resolved_form"], "fp16")
+        self.assertEqual(vadd["latency"], db.get_inst_form("VADD", form="fp16")["latency"])
+        self.assertTrue(db.has_inst("VADD", "b16"))
+        self.assertEqual(
+            db.get_forwarding_cycles(
+                "VADD",
+                "VMUL",
+                dtype="bf16",
+                producer_form="b16",
+                consumer_form="b16",
+            ),
+            db.get_forwarding_cycles(
+                "VADD",
+                "VMUL",
+                dtype="fp16",
+                producer_form="fp16",
+                consumer_form="fp16",
+            ),
+        )
+        self.assertEqual(
+            db.get_ii(
+                "VADD",
+                "VMUL",
+                dtype="bf16",
+                prev_form="b16",
+                cur_form="b16",
+            ),
+            db.get_ii(
+                "VADD",
+                "VMUL",
+                dtype="fp16",
+                prev_form="fp16",
+                cur_form="fp16",
+            ),
+        )
+
+        kinds = {warning["kind"] for warning in db.get_warnings()}
+        self.assertIn("compatible_isa_form_fallback", kinds)
+        self.assertIn("compatible_forwarding_pair_fallback", kinds)
+        self.assertIn("compatible_ii_pair_fallback", kinds)
+
+    def test_partial_compatible_form_params_inherit_missing_fields(self):
+        db = ParamDB(base_dir=str(ROOT))
+        db._insts["VPARTIAL"] = {
+            "op_class": "COMPUTE",
+            "forms": {
+                "fp16": {
+                    "latency": 7,
+                    "throughput": 2,
+                    "data_load_cost": 9,
+                    "data_store_cost": 9,
+                    "EXU": "ALU",
+                    "dispatch_exu": "EXU01",
+                },
+                "b16": {"latency": 123},
+            },
+        }
+
+        params = db.get_inst_form("VPARTIAL", form="b16", dtype="bf16")
+
+        self.assertEqual(params["form"], "b16")
+        self.assertEqual(params["resolved_form"], "b16")
+        self.assertEqual(params["latency"], 123)
+        self.assertEqual(params["throughput"], 2)
+        self.assertEqual(params["data_load_cost"], 9)
+        self.assertEqual(params["data_store_cost"], 9)
+        self.assertEqual(params["dispatch_exu"], "EXU01")
+
     def test_cli_writes_instruction_fallback_warnings_without_vreg_warning(self):
         trace = {
             "dtype": "fp32",

@@ -24,6 +24,7 @@ set(VFSIM_NATIVE_CORE_SOURCES
   ../api/native/JsonVfInfoAdapter.cpp
   Json.cpp
   ControlUnit.cpp
+  ParamCompat.cpp
   ParamDB.cpp
   ISATraits.cpp
   ProgramAnalysis.cpp

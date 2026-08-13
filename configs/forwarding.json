@@ -905,7 +905,8 @@
       "VMINS.fp16": 3,
       "VMUL.fp16": 3,
       "VMULS.fp16": 3,
-      "VSUB.fp16": 3
+      "VSUB.fp16": 3,
+      "VPACK.b32": 4
     },
     "VBR.fp32": {
       "VABS.fp32": 3,
@@ -937,6 +938,10 @@
       "VMUL.fp16": 2,
       "VMULS.fp16": 2,
       "VSUB.fp16": 2
+    },
+    "VPACK.b32": {
+      "VADD.fp16": 8,
+      "VSSTB.b16": 9
     }
   }
 }

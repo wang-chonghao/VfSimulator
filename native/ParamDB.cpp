@@ -9,6 +9,7 @@
 #include "native/ParamDB.h"
 
 #include "native/Json.h"
+#include "native/ParamCompat.h"
 
 #include <algorithm>
 #include <cctype>
@@ -120,6 +121,13 @@ std::unordered_map<std::string, JsonValue> loadObjectFile(const std::filesystem:
   return value.asObject();
 }
 
+JsonValue::Object mergeObjects(JsonValue::Object base,
+                               const JsonValue::Object &overlay) {
+  for (const auto &[key, value] : overlay)
+    base[key] = value;
+  return base;
+}
+
 std::filesystem::path pickPath(std::filesystem::path baseDir, const char *envKey,
                                std::initializer_list<std::filesystem::path> candidates) {
   if (const char *envPath = std::getenv(envKey); envPath && *envPath) {
@@ -205,12 +213,26 @@ ParamDB::ParamDB(std::filesystem::path baseDir)
         if (!forms->isObject())
           throw std::runtime_error("isa.json.instructions." + opName +
                                    ".forms must be an object");
-        for (const auto &[formName, formValue] : forms->asObject()) {
+        const auto &formObjects = forms->asObject();
+        for (const auto &[formName, formValue] : formObjects) {
           if (!formValue.isObject())
             throw std::runtime_error("isa.json.instructions." + opName +
                                      ".forms." + formName +
                                      " must be an object");
-          InstConfig config = readInstConfig(formValue.asObject());
+          JsonValue::Object effectiveForm = formValue.asObject();
+          const std::string compatible = param_compat::compatibleForm(formName);
+          if (!compatible.empty()) {
+            const auto compatibleIt = formObjects.find(compatible);
+            if (compatibleIt != formObjects.end()) {
+              if (!compatibleIt->second.isObject())
+                throw std::runtime_error("isa.json.instructions." + opName +
+                                         ".forms." + compatible +
+                                         " must be an object");
+              effectiveForm =
+                  mergeObjects(compatibleIt->second.asObject(), formValue.asObject());
+            }
+          }
+          InstConfig config = readInstConfig(effectiveForm);
           if (config.opClass.empty())
             config.opClass = inheritedOpClass;
           dtypeMap.emplace(formName, std::move(config));
@@ -349,7 +371,11 @@ bool ParamDB::hasInst(const std::string &op, const std::string &dtype) const {
   const auto opIt = bundle_.isa.find(op);
   if (opIt == bundle_.isa.end())
     return false;
-  return opIt->second.find(dtype) != opIt->second.end();
+  for (const std::string &candidate : param_compat::formCandidates(dtype)) {
+    if (opIt->second.find(candidate) != opIt->second.end())
+      return true;
+  }
+  return false;
 }
 
 const InstConfig &ParamDB::inst(const std::string &op, const std::string &dtype) const {
@@ -357,9 +383,18 @@ const InstConfig &ParamDB::inst(const std::string &op, const std::string &dtype)
   if (opIt == bundle_.isa.end())
     return fallbackInst(op, dtype, false);
   const auto dtypeIt = opIt->second.find(dtype);
-  if (dtypeIt == opIt->second.end())
-    return fallbackInst(op, dtype, true);
-  return dtypeIt->second;
+  if (dtypeIt != opIt->second.end())
+    return dtypeIt->second;
+  const std::string compatible = param_compat::compatibleForm(dtype);
+  if (!compatible.empty()) {
+    const auto compatibleIt = opIt->second.find(compatible);
+    if (compatibleIt != opIt->second.end()) {
+      recordWarning("compatible_isa_form_fallback",
+                    {{"op", op}, {"requested_form", dtype}, {"used_form", compatible}});
+      return compatibleIt->second;
+    }
+  }
+  return fallbackInst(op, dtype, true);
 }
 
 void ParamDB::recordWarning(const std::string &kind,
@@ -450,11 +485,24 @@ int64_t ParamDB::forwardingCycles(const std::string &prod,
                                   const std::string &prodForm,
                                   const std::string &cons,
                                   const std::string &consForm) const {
-  const auto prodIt = bundle_.forwardingByForm.find(qualifyOp(prod, prodForm));
-  if (prodIt != bundle_.forwardingByForm.end()) {
-    const auto consIt = prodIt->second.find(qualifyOp(cons, consForm));
-    if (consIt != prodIt->second.end())
-      return std::max<int64_t>(0, consIt->second);
+  const std::string requestedProd = qualifyOp(prod, prodForm);
+  const std::string requestedCons = qualifyOp(cons, consForm);
+  for (const auto &candidate :
+       param_compat::pairKeyCandidates(prod, prodForm, cons, consForm)) {
+    const auto prodIt = bundle_.forwardingByForm.find(candidate.producer);
+    if (prodIt != bundle_.forwardingByForm.end()) {
+      const auto consIt = prodIt->second.find(candidate.consumer);
+      if (consIt != prodIt->second.end()) {
+        if (candidate.usedCompatible) {
+          recordWarning("compatible_forwarding_pair_fallback",
+                        {{"producer", requestedProd},
+                         {"consumer", requestedCons},
+                         {"used_producer", candidate.producer},
+                         {"used_consumer", candidate.consumer}});
+        }
+        return std::max<int64_t>(0, consIt->second);
+      }
+    }
   }
   if (prodForm == consForm)
     return forwardingCycles(prodForm, prod, cons);
@@ -501,12 +549,24 @@ int64_t ParamDB::initiationInterval(const std::string &prev,
                                     const std::string &prevForm,
                                     const std::string &cur,
                                     const std::string &curForm) const {
-  const auto prevIt =
-      bundle_.initiationIntervalByForm.find(qualifyOp(prev, prevForm));
-  if (prevIt != bundle_.initiationIntervalByForm.end()) {
-    const auto curIt = prevIt->second.find(qualifyOp(cur, curForm));
-    if (curIt != prevIt->second.end())
-      return std::max<int64_t>(1, curIt->second);
+  const std::string requestedPrev = qualifyOp(prev, prevForm);
+  const std::string requestedCur = qualifyOp(cur, curForm);
+  for (const auto &candidate :
+       param_compat::pairKeyCandidates(prev, prevForm, cur, curForm)) {
+    const auto prevIt = bundle_.initiationIntervalByForm.find(candidate.producer);
+    if (prevIt != bundle_.initiationIntervalByForm.end()) {
+      const auto curIt = prevIt->second.find(candidate.consumer);
+      if (curIt != prevIt->second.end()) {
+        if (candidate.usedCompatible) {
+          recordWarning("compatible_ii_pair_fallback",
+                        {{"prev", requestedPrev},
+                         {"cur", requestedCur},
+                         {"used_prev", candidate.producer},
+                         {"used_cur", candidate.consumer}});
+        }
+        return std::max<int64_t>(1, curIt->second);
+      }
+    }
   }
   if (prevForm == curForm)
     return initiationInterval(prevForm, prev, cur);

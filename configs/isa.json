@@ -1063,6 +1063,49 @@
           "dtype": "fp16"
         }
       }
+    },
+    "VPACK": {
+      "op_class": "COMPUTE",
+      "forms": {
+        "b32": {
+          "pipeline_startup_cost": 6,
+          "latency": 11,
+          "throughput": 1,
+          "pipeline_drain_cost": 5,
+          "data_load_cost": 9,
+          "data_store_cost": 9,
+          "EXU": "ALU",
+          "dispatch_exu": "EXU0_ONLY",
+          "src_dtypes": [
+            "bf16"
+          ],
+          "dst_dtypes": [
+            "bf16"
+          ],
+          "dtype": "bf16"
+        }
+      }
+    },
+    "VSSTB": {
+      "op_class": "STORE",
+      "forms": {
+        "b16": {
+          "op_class": "STORE",
+          "pipeline_startup_cost": 0,
+          "latency": 9,
+          "throughput": 1,
+          "pipeline_drain_cost": 0,
+          "data_load_cost": 0,
+          "data_store_cost": 9,
+          "src_dtypes": [
+            "bf16"
+          ],
+          "dst_dtypes": [
+            "ub"
+          ],
+          "dtype": "bf16"
+        }
+      }
     }
   }
 }

@@ -43,6 +43,8 @@ class OpCode(_StrEnum):
     VCVT_F16_TO_F32 = "VCVT_F16_TO_F32"
     VCVT_F32_TO_S32 = "VCVT_F32_TO_S32"
     VCVT_S32_TO_F32 = "VCVT_S32_TO_F32"
+    VPACK = "VPACK"
+    VSSTB = "VSSTB"
 
 
 DTYPE_ALIASES = {
@@ -98,6 +100,8 @@ OPCODE_ALIASES = {
     "vcvt_f16_to_f32": OpCode.VCVT_F16_TO_F32,
     "vcvt_f32_to_s32": OpCode.VCVT_F32_TO_S32,
     "vcvt_s32_to_f32": OpCode.VCVT_S32_TO_F32,
+    "vpack": OpCode.VPACK,
+    "vsstb": OpCode.VSSTB,
 }
 
 VCVT_SPECIALIZATIONS = {
