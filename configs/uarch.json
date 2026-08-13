@@ -34,7 +34,6 @@
   "compute_inflight_cap": 0,
   "exq_issue_inflight_cap_per_port": 7,
   "exq_capacity_counts_inflight": false,
-  "mem_bar_mode": "strong",
   "enforce_same_cycle_src_hazard": false,
   "enable_cross_fu_ii": false
 }

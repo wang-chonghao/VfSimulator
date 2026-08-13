@@ -258,10 +258,9 @@ IFU 的职责是把线性 IR 变成**动态指令流**。它不是简单顺序�
 
 如果一条动态指令是某个顶层 block 的最后一条静态指令实例，它会被标成 `is_last_in_top_block=true`。
 
-这个标记在 OoO 里主要用于：
-
-- block 完成状态跟踪
-- strong 内存屏障模式下中间内存的跨 block 约束
+这个标记目前主要作为日志和后续 block-level 分析的元信息保留。历史版本曾用它配合
+`mem_inter_*` 名字实现隐式 strong barrier；该时序路径已经删除，memory ordering
+现在由显式 `Membar` 建模。
 
 ---
 
@@ -433,8 +432,8 @@ VSTS.fp16
 - `shq_to_exq_port_per_cycle = 1`
   - 每个 EXQ 每拍最多接收 1 条来自 SHQ 的计算指令
 
-- `mem_bar_mode = strong`
-  - 对中间内存的跨 block 内存可见性限制更严格
+- 显式 `Membar`
+  - 对可见的 memory barrier 指令建模 load/store ordering；`mem_inter_*` 名字不再触发隐式 strong barrier
 
 - `enforce_same_cycle_src_hazard = true`
   - 限制同拍内某些共享源操作数的发射冲突
@@ -779,7 +778,7 @@ OoO 在 `accept(inst)` 时做寄存器重命名。
 类 load 指令的就绪主要看内存依赖：
 
 - 如果读的内存地址有前序 store，必须等前序 store 完成
-- 在 `mem_bar_mode = strong` 时，对某些中间内存还会额外等前一个顶层 block 释放
+- 如果前面有显式 `Membar(VST_VLD)`，还需要满足控制单元给出的 store/load ordering gate
 
 ### 10.3 类 store 指令就绪
 

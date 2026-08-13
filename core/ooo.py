@@ -20,10 +20,6 @@ def is_mem(name: Any) -> bool:
     return ValueStorageLookup().is_ub(name)
 
 
-def is_intermediate_mem(name: Any) -> bool:
-    return isinstance(name, str) and name.lower().startswith("mem_inter")
-
-
 def make_mem_key(name: str, iter_stack: List[Any]) -> Tuple[str, Tuple[int, ...]]:
     norm_iter = tuple(int(x) for x in (iter_stack or []))
     return (name, norm_iter)
@@ -122,7 +118,6 @@ class OoOCore:
         self.ooo_to_shq_delay = int(uarch.get("ooo_to_shq_delay", 1))
         self.ooo_to_lsq_delay = int(uarch.get("ooo_to_lsq_delay", 1))
         self.mem_last_store_uop: Dict[Tuple[str, Tuple[int, ...]], Uop] = {}
-        self.mem_bar_mode = str(uarch.get("mem_bar_mode", "weak")).strip().lower()
         self.enforce_same_cycle_src_hazard = bool(uarch.get("enforce_same_cycle_src_hazard", True))
         # Optional EXQ-aware port selection policy (disabled by default to preserve old behavior)
         self.enable_exq_greedy_balance = bool(uarch.get("enable_exq_greedy_balance", False))
@@ -133,9 +128,6 @@ class OoOCore:
         self.shq_to_exq_port_per_cycle = int(uarch.get("shq_to_exq_port_per_cycle", 1))
         self.exq_capacity_counts_inflight = bool(uarch.get("exq_capacity_counts_inflight", False))
         self.exq_rr_ptr = 0
-        self.block_outstanding_stores: Dict[int, int] = {}
-        self.block_last_inst_done: Dict[int, bool] = {}
-        self.block_release_cycle: Dict[int, int] = {}
         self.theoretical_limit_legacy_forwarding = bool(
             uarch.get("theoretical_limit_legacy_forwarding", False)
         )
@@ -354,17 +346,6 @@ class OoOCore:
             if pred_u.done_cycle is None:
                 return 10 ** 9
             t = max(t, pred_u.done_cycle)
-        if self.mem_bar_mode == "strong":
-            for s in u.src:
-                if not is_intermediate_mem(s):
-                    continue
-                if u.top_block_id <= 0:
-                    continue
-                prev_block_id = u.top_block_id - 1
-                release_cycle = self.block_release_cycle.get(prev_block_id)
-                if release_cycle is None:
-                    return 10 ** 9
-                t = max(t, release_cycle)
         return t
 
     def _blocked_by_control_unit(self, u: Uop) -> bool:

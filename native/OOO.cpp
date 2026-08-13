@@ -12,7 +12,6 @@
 #include "native/ISATraits.h"
 
 #include <algorithm>
-#include <cctype>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -20,13 +19,6 @@
 
 namespace vfsim {
 namespace {
-
-bool isIntermediateMemName(const std::string &name) {
-  std::string lower = name;
-  std::transform(lower.begin(), lower.end(), lower.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return lower.rfind("mem_inter", 0) == 0;
-}
 
 std::string makeMemKey(const std::string &name, const std::vector<int64_t> &iterStack) {
   std::string key = name;
@@ -141,7 +133,6 @@ OoOCore::OoOCore(const UarchConfig &uarch, const ParamDB &db, std::string dtype,
   oooToShqDelay_ = static_cast<int>(uarch.oooToShqDelay ? uarch.oooToShqDelay : 1);
   oooToLsqDelay_ = static_cast<int>(uarch.oooToLsqDelay ? uarch.oooToLsqDelay : 1);
   exqRecvDelay_ = static_cast<int>(uarch.exqRecvDelay ? uarch.exqRecvDelay : 1);
-  memBarStrong_ = uarch.memBarMode == "strong";
   enforceSameCycleSrcHazard_ = uarch.enforceSameCycleSrcHazard;
   enableExqGreedyBalance_ = false;
   enableShqCreditModel_ = uarch.enableShqCreditModel;
@@ -275,18 +266,6 @@ int64_t OoOCore::computeLoadReadyCycle(const Uop &u) const {
     }
     if (pred == nullptr || pred->state != "done" || !pred->doneCycle.has_value())
       return 1000000000;
-  }
-  if (memBarStrong_) {
-    for (const auto &s : u.src) {
-      if (!isIntermediateMemName(s))
-        continue;
-      if (u.topBlockId <= 0)
-        continue;
-      const auto it = blockReleaseCycle_.find(u.topBlockId - 1);
-      if (it == blockReleaseCycle_.end())
-        return 1000000000;
-      t = std::max<int64_t>(t, it->second);
-    }
   }
   return t;
 }
@@ -709,7 +688,6 @@ void OoOCoreMainline::accept(const DynamicInst &inst) {
   rob_.push_back(u);
 
   if (isStoreOp(db_, u.op, u.form)) {
-    blockOutstandingStores_[u.topBlockId] += 1;
     for (const auto &d : u.dst) {
       if (isUBValue(d))
         memLastStoreInstId_[makeMemKey(d, u.iterStack)] = u.instId;
@@ -742,21 +720,6 @@ void OoOCoreMainline::step() {
       completedDoneCycleByInstId_[u.instId] = *u.doneCycle;
       if (u.exuPort >= 0 && u.exuPort < static_cast<int>(exqInflight_.size()))
         exqInflight_[static_cast<size_t>(u.exuPort)] = std::max(0, exqInflight_[static_cast<size_t>(u.exuPort)] - 1);
-      if (u.isLastInTopBlock)
-        blockLastInstDone_[u.topBlockId] = true;
-      if (isStoreOp(db_, u.op, u.form)) {
-        auto it = blockOutstandingStores_.find(u.topBlockId);
-        if (it != blockOutstandingStores_.end())
-          it->second = std::max(0, it->second - 1);
-      }
-      if (blockLastInstDone_[u.topBlockId] &&
-          blockOutstandingStores_[u.topBlockId] == 0) {
-        auto prev = blockReleaseCycle_.find(u.topBlockId);
-        if (prev == blockReleaseCycle_.end())
-          blockReleaseCycle_[u.topBlockId] = *u.doneCycle;
-        else
-          prev->second = std::max<int64_t>(prev->second, *u.doneCycle);
-      }
       log("done", u);
       logDoneSimple(u);
       lastDoneCycle_ = std::max(lastDoneCycle_, *u.doneCycle);

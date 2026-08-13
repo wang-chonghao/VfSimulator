@@ -292,7 +292,6 @@ ParamDB::ParamDB(std::filesystem::path baseDir)
         readIntField(obj, "exq_issue_inflight_cap_per_port");
     bundle_.uarch.exqCapacityCountsInflight =
         readBoolField(obj, "exq_capacity_counts_inflight");
-    bundle_.uarch.memBarMode = readStringField(obj, "mem_bar_mode");
     bundle_.uarch.enforceSameCycleSrcHazard =
         readBoolField(obj, "enforce_same_cycle_src_hazard");
     bundle_.uarch.enableCrossFuIi = readBoolField(obj, "enable_cross_fu_ii");

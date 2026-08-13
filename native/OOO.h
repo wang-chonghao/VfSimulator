@@ -162,7 +162,6 @@ protected:
   int oooToShqDelay_ = 1;
   int oooToLsqDelay_ = 1;
   int exqRecvDelay_ = 1;
-  bool memBarStrong_ = false;
   bool enforceSameCycleSrcHazard_ = true;
   bool enableExqGreedyBalance_ = false;
   bool enableShqCreditModel_ = false;
@@ -182,11 +181,8 @@ protected:
   std::unordered_map<int64_t, int> visiblePregFreeEvents_;
   std::unordered_map<int64_t, int> visibleShqReleaseEvents_;
   std::unordered_map<int64_t, int> shqReleaseEvents_;
-  std::unordered_map<int64_t, int> blockOutstandingStores_;
   std::unordered_map<std::string, int64_t> memLastStoreInstId_;
   std::unordered_map<int64_t, int64_t> completedDoneCycleByInstId_;
-  std::unordered_map<int64_t, bool> blockLastInstDone_;
-  std::unordered_map<int64_t, int64_t> blockReleaseCycle_;
   int iduMailboxPregReleaseDelta_ = 0;
   int iduMailboxShqReleaseDelta_ = 0;
   int consumerReleaseStartOffset_ = 0;

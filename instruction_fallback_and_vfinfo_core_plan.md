@@ -156,9 +156,9 @@ consumer_ready = producer_start + forwarding[producer_OP.form][consumer_OP.form]
 
 ### 显式 Membar 需要控制类建模
 
-输入层可以产生 `Membar` / `membar` 节点，但当前主线主要依赖 `mem_bar_mode=strong`
-和 `mem_inter_*` 形式建模跨 block memory ordering。现在需要把显式 membar
-升级成独立控制类指令：
+输入层可以产生 `Membar` / `membar` 节点。历史实现曾依赖 `mem_bar_mode=strong`
+和 `mem_inter_*` 形式建模跨 block memory ordering；该隐式 strong 路径已经删除。
+当前 memory barrier 只通过显式 membar 建模：
 
 - `membar` 不属于 `LOAD` / `STORE` / `COMPUTE`。
 - `membar` 不进入 IDU window，不占 SHQ / LSQ / EXQ / EXU。
@@ -303,8 +303,8 @@ uses_shared_shq_credit(op, pdb, form_or_dtype)
 - `ControlUnit` 释放 barrier 后应清理内部记录；仿真完成条件需要包含
   `ControlUnit.empty()`，避免末尾 barrier 在释放前提前结束。
 
-完整支持其它 `SMEM_BAR` 类型放到后续阶段。旧的 `mem_bar_mode=strong` 可先保留为
-legacy 行为，但显式 `membar` 应优先生效。
+完整支持其它 `SMEM_BAR` 类型放到后续阶段。旧的 `mem_bar_mode=strong` 已从
+Python/C++ 活跃路径和默认配置中删除。
 
 ## 默认参数策略
 
@@ -894,8 +894,8 @@ main.py / CoreVfCostModel
 
 - 删除 `_data_store_cost()`。
 - 删除 `load_done_latency` 读取。
-- 删除未被调用的 `mem_bar_mode=strong` 历史路径，或明确移动到
-  `legacy_memory_barrier.py` 作为参考实现。
+- `mem_bar_mode=strong` 历史路径已经删除，后续清理只需要确认没有外部 trace 仍依赖
+  `mem_inter_*` 的隐式 barrier 语义。
 - 将 `core/ooo.py` 缩小为纯兼容 re-export，或直接删除。
 
 这一步需要先用 `rg` 和回归确认没有外部 API 仍 import 旧符号。

@@ -367,9 +367,6 @@ class RenameController:
             for d in dsts:
                 if self.core.is_mem(d):
                     self.core.mem_last_store_uop[make_mem_key(d, iter_stack)] = u
-                    self.core.block_outstanding_stores[top_block_id] = (
-                        self.core.block_outstanding_stores.get(top_block_id, 0) + 1
-                    )
                     iter_key = self.core._top_iter_key_from_stack(top_block_id, iter_stack)
                     self.core.iter_outstanding_stores[iter_key] = (
                         self.core.iter_outstanding_stores.get(iter_key, 0) + 1
@@ -635,18 +632,12 @@ class OoOCoreMainline(OoOCore):
                     self.exq_inflight[u.exu_port] = max(0, self.exq_inflight[u.exu_port] - 1)
                     u.exu_port = None
                 if is_store_op(u.op, self.db, u.form):
-                    remain = self.block_outstanding_stores.get(u.top_block_id, 0) - 1
-                    self.block_outstanding_stores[u.top_block_id] = max(0, remain)
                     iter_key = self._top_iter_key_from_stack(u.top_block_id, list(u.iter_stack))
                     iter_remain = self.iter_outstanding_stores.get(iter_key, 0) - 1
                     self.iter_outstanding_stores[iter_key] = max(0, iter_remain)
                 if u.is_last_in_top_block:
-                    self.block_last_inst_done[u.top_block_id] = True
                     iter_key = self._top_iter_key_from_stack(u.top_block_id, list(u.iter_stack))
                     self.iter_last_inst_done[iter_key] = True
-                if self.block_last_inst_done.get(u.top_block_id, False) and self.block_outstanding_stores.get(u.top_block_id, 0) == 0:
-                    prev = self.block_release_cycle.get(u.top_block_id, -1)
-                    self.block_release_cycle[u.top_block_id] = max(prev, u.done_cycle)
                 iter_key = self._top_iter_key_from_stack(u.top_block_id, list(u.iter_stack))
                 if self.iter_last_inst_done.get(iter_key, False) and self.iter_outstanding_stores.get(iter_key, 0) == 0:
                     prev = self.iter_release_cycle.get(iter_key, -1)

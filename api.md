@@ -115,18 +115,13 @@ JSON trace 推荐命名：
 
 - 向量寄存器：`V0`、`V1`、`V2` 等。
 - 输入/输出 UB 内存：`memA`、`memB`、`memOut` 等。
-- 跨 block 中间内存：`mem_inter_*`。
+- 中间 UB 内存：`mem_inter_*`。该名字只作为普通 UB operand 兼容，不再触发特殊屏障语义。
 
 ## 显式内存屏障
 
-CCE 解析可以在源代码可见时表示显式内存屏障语义。对于旧 JSON trace，跨 block 依赖通常通过下面形式建模：
-
-```text
-VSTS mem_inter_* in one block
-VLDS mem_inter_* in a later block
-```
-
-在 `mem_bar_mode = strong` 时，这会形成目标 block 间顺序约束。当前 ISA 级 load/store 示例使用 `VLDS` 和 `VSTS`。
+CCE 解析可以在源代码可见时表示显式内存屏障语义。当前后端只通过显式 `Membar`
+节点建模 memory ordering；`mem_inter_*` 等名字不再触发隐式跨 block strong barrier。
+旧 JSON trace 若需要表达 store/load 或 load/store ordering，应显式插入 `Membar`。
 
 ## 理论上界选项
 

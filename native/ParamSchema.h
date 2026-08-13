@@ -70,7 +70,6 @@ struct UarchConfig {
   int64_t computeInflightCap = 0;
   int64_t exqIssueInflightCapPerPort = 0;
   bool exqCapacityCountsInflight = false;
-  std::string memBarMode;
   bool enforceSameCycleSrcHazard = false;
   bool enableCrossFuIi = false;
 };

@@ -361,7 +361,8 @@ vf_info = parse_cce_vf_info(
 - `membar` 不进入 IDU window，不占 SHQ / LSQ / EXQ / EXU。
 - 控制单元在 OoO/LSQ issue/start 阶段约束对应 load/store，不在 IDU dispatch 前产生 head-of-line blocking，也不把受阻塞指令提前标记为 not-ready。
 - barrier 释放后会从控制单元清理；仿真完成条件包含控制单元为空。
-- 旧的 `mem_bar_mode=strong` 仍作为 legacy memory-order 行为保留。
+- 旧的 `mem_bar_mode=strong` 隐式 memory-order 路径已经删除；需要 memory ordering
+  时应使用显式 `Membar`。
 
 ## 开放问题
 
