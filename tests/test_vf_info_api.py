@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 from api.input_api import InputAPI
+from api.cce_adapter import parse_cce_vf_info
 from api.input_symbols import (
     normalize_dtype,
     normalize_form,
@@ -193,6 +194,47 @@ class VfInfoApiTest(unittest.TestCase):
         self.assertEqual(insts[1].form, "b16")
         self.assertEqual(vf_info.values["vreg_x_exp_even_f16"].dtype, "fp16")
         self.assertEqual(vf_info.values["nz_buffer_Ptr"].storage, "UB")
+
+    def test_cce_adapter_parses_symbolic_division_loop_bound(self):
+        source = """
+        void loop_bound_vf(__ubuf__ float *a) {
+          constexpr uint16_t kRows = 128;
+          __VEC_SCOPE__ {
+            for (uint16_t i = 0; i < kRows / 4; ++i) {
+              vector_f32 v0;
+              vlds(v0, a, 0, NORM);
+            }
+          }
+        }
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "loop_bound.dsl"
+            path.write_text(source, encoding="utf-8")
+            vf_info = parse_cce_vf_info(
+                path,
+                kernel_name="loop_bound_vf",
+                loop_params={"kRows": 128},
+            )
+
+        self.assertEqual(vf_info.context[0].count, 32)
+
+    def test_cce_adapter_parses_vmulscvt_conversion_form(self):
+        source = """
+        void vmulscvt_vf() {
+          __VEC_SCOPE__ {
+            vector_f32 expv;
+            vector_f16 cvt;
+            vmulscvt(cvt, expv, 1.0f, pset_b32(PAT_ALL), PART_EVEN);
+          }
+        }
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "vmulscvt.dsl"
+            path.write_text(source, encoding="utf-8")
+            vf_info = InputAPI.load_cce_file(path, kernel_name="vmulscvt_vf")
+
+        self.assertEqual(vf_info.context[0].name, "VMULSCVT")
+        self.assertEqual(vf_info.context[0].form, "f32_to_f16")
 
     def test_cce_adapter_parses_mem_bar_call(self):
         source = """

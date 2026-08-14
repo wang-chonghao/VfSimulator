@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -176,9 +177,6 @@ class _VFScopeParser:
             return None
         if stmt.startswith("vector_"):
             return None
-        if "pset_" in stmt:
-            return None
-
         smem_bar = re.match(r"SMEM_BAR\s*\.\s*([A-Za-z_]\w*)\s*;", stmt, re.IGNORECASE)
         if smem_bar:
             return Membar(normalize_membar_type(smem_bar.group(1)))
@@ -190,6 +188,8 @@ class _VFScopeParser:
         callee = match.group(1)
         args = _split_args(match.group(2))
         low = callee.lower()
+        if low.startswith("pset_"):
+            return None
         if low in {"mem_bar", "membar"} or "barrier" in low:
             barrier = args[0] if args else None
             return Membar(normalize_membar_type(barrier))
@@ -351,13 +351,64 @@ def _resolve_count_expr(expr: str, loop_params: Dict[str, int]) -> int:
         expr = cast_match.group(1).strip()
     if expr.isdigit():
         return int(expr)
+    resolved = _eval_int_expr(expr, loop_params)
+    if resolved is not None:
+        return resolved
     name = _base_identifier(expr)
-    if name in loop_params:
-        return int(loop_params[name])
     raise ValueError(
         f"Cannot resolve loop bound '{expr}'. Pass loop_params={{'{name}': ...}} "
         "or use a constant loop bound."
     )
+
+
+def _eval_int_expr(expr: str, names: Dict[str, int]) -> int | None:
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except SyntaxError:
+        return None
+
+    def visit(node: ast.AST) -> int | None:
+        if isinstance(node, ast.Expression):
+            return visit(node.body)
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, bool):
+                return None
+            if isinstance(node.value, int):
+                return int(node.value)
+            return None
+        if isinstance(node, ast.Name):
+            return int(names[node.id]) if node.id in names else None
+        if isinstance(node, ast.UnaryOp):
+            value = visit(node.operand)
+            if value is None:
+                return None
+            if isinstance(node.op, ast.UAdd):
+                return value
+            if isinstance(node.op, ast.USub):
+                return -value
+            return None
+        if isinstance(node, ast.BinOp):
+            lhs = visit(node.left)
+            rhs = visit(node.right)
+            if lhs is None or rhs is None:
+                return None
+            if isinstance(node.op, ast.Add):
+                return lhs + rhs
+            if isinstance(node.op, ast.Sub):
+                return lhs - rhs
+            if isinstance(node.op, ast.Mult):
+                return lhs * rhs
+            if isinstance(node.op, ast.Div):
+                if rhs == 0 or lhs % rhs != 0:
+                    return None
+                return lhs // rhs
+            if isinstance(node.op, ast.FloorDiv):
+                if rhs == 0:
+                    return None
+                return lhs // rhs
+        return None
+
+    return visit(tree)
 
 
 def _resolve_loop_step(step_expr: str, var: str, loop_params: Dict[str, int]) -> int:
@@ -409,6 +460,11 @@ def _infer_inst_form(op: str, dst: Sequence[MemInfo], src: Sequence[MemInfo]) ->
         }
         return explicit[op]
     if op == "VCVT" and src_dtype and dst_dtype:
+        src_key = compact_dtype(src_dtype)
+        dst_key = compact_dtype(dst_dtype)
+        if src_key and dst_key:
+            return f"{src_key}_to_{dst_key}"
+    if op == "VMULSCVT" and src_dtype and dst_dtype:
         src_key = compact_dtype(src_dtype)
         dst_key = compact_dtype(dst_dtype)
         if src_key and dst_key:

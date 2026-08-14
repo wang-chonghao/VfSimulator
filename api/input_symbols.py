@@ -45,6 +45,8 @@ class OpCode(_StrEnum):
     VCVT_S32_TO_F32 = "VCVT_S32_TO_F32"
     VPACK = "VPACK"
     VSSTB = "VSSTB"
+    VEXPDIF = "VEXPDIF"
+    VMULSCVT = "VMULSCVT"
 
 
 DTYPE_ALIASES = {

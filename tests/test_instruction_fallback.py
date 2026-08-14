@@ -168,6 +168,57 @@ class InstructionFallbackTest(unittest.TestCase):
             9,
         )
 
+    def test_vexpdif_and_vmulscvt_have_explicit_model_params(self):
+        db = ParamDB(base_dir=str(ROOT))
+
+        vexpdif = db.get_inst_form("VEXPDIF", form="fp32", dtype="fp32")
+        vmulscvt = db.get_inst_form("VMULSCVT", form="f32_to_f16", dtype="fp32")
+
+        self.assertEqual(vexpdif["op_class"], "COMPUTE")
+        self.assertEqual(vexpdif["pipeline_startup_cost"], 7)
+        self.assertEqual(vexpdif["latency"], 18)
+        self.assertEqual(vexpdif["pipeline_drain_cost"], 16)
+        self.assertEqual(vexpdif["data_load_cost"], 9)
+        self.assertEqual(vexpdif["data_store_cost"], 9)
+        self.assertEqual(vexpdif["dispatch_exu"], "EXU01")
+        self.assertEqual(vmulscvt["op_class"], "COMPUTE")
+        self.assertEqual(vmulscvt["pipeline_startup_cost"], 6)
+        self.assertEqual(vmulscvt["latency"], 8)
+        self.assertEqual(vmulscvt["pipeline_drain_cost"], 6)
+        self.assertEqual(vmulscvt["data_load_cost"], 9)
+        self.assertEqual(vmulscvt["data_store_cost"], 9)
+        self.assertEqual(vmulscvt["dispatch_exu"], "EXU01")
+        self.assertEqual(
+            db.get_forwarding_cycles(
+                "VMULS",
+                "VEXPDIF",
+                dtype="fp32",
+                producer_form="fp32",
+                consumer_form="fp32",
+            ),
+            5,
+        )
+        self.assertEqual(
+            db.get_forwarding_cycles(
+                "VEXPDIF",
+                "VMULSCVT",
+                dtype="fp32",
+                producer_form="fp32",
+                consumer_form="f32_to_f16",
+            ),
+            15,
+        )
+        self.assertEqual(
+            db.get_forwarding_cycles(
+                "VMULSCVT",
+                "VPACK",
+                dtype="fp32",
+                producer_form="f32_to_f16",
+                consumer_form="b32",
+            ),
+            5,
+        )
+
     def test_vpack_vsstb_forms_do_not_fallback_through_python_idu(self):
         payload = {
             "dtype": "fp32",

@@ -39,6 +39,14 @@ load/store 指令时序口径必须先收敛：load/store 的执行完成延迟�
   - `VSSTB.b16`：store，`latency = 9`。
   - 已补 `VCVT_F32_TO_F16 -> VPACK`、`VPACK -> VADD(fp16)`、
     `VPACK -> VSSTB` forwarding。
+- 新增 `VEXPDIF.fp32` 和 `VMULSCVT.f32_to_f16`：
+  - `VEXPDIF.fp32`：compute，`latency = 18`，`dispatch_exu = EXU01`。
+  - `VMULSCVT.f32_to_f16`：compute，`latency = 8`，`dispatch_exu = EXU01`。
+  - 旧测量表中的 startup/drain/load/store 分别记录到
+    `pipeline_startup_cost`、`pipeline_drain_cost`、`data_load_cost`、
+    `data_store_cost`，不重新接入主线 timing。
+  - 已补 `VMULS -> VEXPDIF`、`VEXPDIF -> VMULSCVT`、
+    `VMULSCVT -> VPACK` forwarding。
 - CCE adapter 已对 `vpack(...)` 和 `vsstb(...)` 做专门解析：
   - `vpack(dst_cast_reg, src_cast_reg, LOWER/UPPER)` 映射为 `VPACK.b32`。
   - `vsstb(src_reg, ub_ptr, config, pred, mode)` 映射为 `VSSTB.b16`。
@@ -703,6 +711,36 @@ CCE adapter 要求：
 - 真实 CCE 写法中 `vpack` / `vsstb` 解析后能命中新配置。
 - `vpack` cast 不会覆盖原始 `vector_f16` 声明 dtype。
 - Python 和 C++ 都有 `VLDS -> VPACK -> VSSTB` 调度回归。
+
+已新增 `VEXPDIF` / `VMULSCVT` 的最小覆盖：
+
+- `VEXPDIF.fp32`
+  - `op_class = COMPUTE`
+  - `pipeline_startup_cost = 7`
+  - `latency = 18`
+  - `pipeline_drain_cost = 16`
+  - `data_load_cost = 9`
+  - `data_store_cost = 9`
+  - `dispatch_exu = EXU01`
+- `VMULSCVT.f32_to_f16`
+  - `op_class = COMPUTE`
+  - `pipeline_startup_cost = 6`
+  - `latency = 8`
+  - `pipeline_drain_cost = 6`
+  - `data_load_cost = 9`
+  - `data_store_cost = 9`
+  - `dispatch_exu = EXU01`
+
+已知 forwarding：
+
+```text
+VMULS.fp32 -> VEXPDIF.fp32 = 5
+VEXPDIF.fp32 -> VMULSCVT.f32_to_f16 = 15
+VMULSCVT.f32_to_f16 -> VPACK.b32 = 5
+```
+
+旧 microbenchmark 表里的 startup/drain/load/store 仍按当前 schema 记录在历史字段中，
+其中 load/store 字段不参与主线 load/store 执行时长计算。
 
 ### 步骤五点六：临时兼容 form helper
 

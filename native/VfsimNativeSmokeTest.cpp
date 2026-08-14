@@ -276,6 +276,31 @@ void verifyVpackVsstbConfig(const ParamDB &db) {
           "VPACK -> VSSTB forwarding mismatch");
 }
 
+void verifyVexpdifVmulscvtConfig(const ParamDB &db) {
+  const InstConfig &vexpdif = db.inst("VEXPDIF", "fp32");
+  const InstConfig &vmulscvt = db.inst("VMULSCVT", "f32_to_f16");
+  require(vexpdif.opClass == "COMPUTE", "VEXPDIF must be modeled as compute");
+  require(vexpdif.pipelineStartupCost == 7, "VEXPDIF startup mismatch");
+  require(vexpdif.latency == 18, "VEXPDIF latency mismatch");
+  require(vexpdif.pipelineDrainCost == 16, "VEXPDIF drain mismatch");
+  require(vexpdif.dataLoadCost == 9, "VEXPDIF load cost mismatch");
+  require(vexpdif.dataStoreCost == 9, "VEXPDIF store cost mismatch");
+  require(vexpdif.dispatchExu == "EXU01", "VEXPDIF dispatch mismatch");
+  require(vmulscvt.opClass == "COMPUTE", "VMULSCVT must be modeled as compute");
+  require(vmulscvt.pipelineStartupCost == 6, "VMULSCVT startup mismatch");
+  require(vmulscvt.latency == 8, "VMULSCVT latency mismatch");
+  require(vmulscvt.pipelineDrainCost == 6, "VMULSCVT drain mismatch");
+  require(vmulscvt.dataLoadCost == 9, "VMULSCVT load cost mismatch");
+  require(vmulscvt.dataStoreCost == 9, "VMULSCVT store cost mismatch");
+  require(vmulscvt.dispatchExu == "EXU01", "VMULSCVT dispatch mismatch");
+  require(db.forwardingCycles("VMULS", "fp32", "VEXPDIF", "fp32") == 5,
+          "VMULS -> VEXPDIF forwarding mismatch");
+  require(db.forwardingCycles("VEXPDIF", "fp32", "VMULSCVT", "f32_to_f16") == 15,
+          "VEXPDIF -> VMULSCVT forwarding mismatch");
+  require(db.forwardingCycles("VMULSCVT", "f32_to_f16", "VPACK", "b32") == 5,
+          "VMULSCVT -> VPACK forwarding mismatch");
+}
+
 void verifyCompatibleFormFallback(ParamDB &db) {
   const InstConfig &vaddB16 = db.inst("VADD", "b16");
   const InstConfig &vaddFp16 = db.inst("VADD", "fp16");
@@ -587,6 +612,7 @@ int main() {
     verifyInstructionFallback(db);
     verifyNativePartialCompatibleFormMerge();
     verifyVpackVsstbConfig(db);
+    verifyVexpdifVmulscvtConfig(db);
     verifyCompatibleFormFallback(db);
     verifyNativeVpackVsstbScheduling(db);
     verifyUnrollOrder(db);

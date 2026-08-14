@@ -33,6 +33,7 @@
       "VMULS.fp32": 4,
       "VADD.fp32": 4,
       "VEXP.fp32": 5,
+      "VEXPDIF.fp32": 5,
       "VDIV.fp32": 5,
       "VABS.fp32": 5,
       "VSUB.fp32": 4,
@@ -942,6 +943,12 @@
     "VPACK.b32": {
       "VADD.fp16": 8,
       "VSSTB.b16": 9
+    },
+    "VEXPDIF.fp32": {
+      "VMULSCVT.f32_to_f16": 15
+    },
+    "VMULSCVT.f32_to_f16": {
+      "VPACK.b32": 5
     }
   }
 }

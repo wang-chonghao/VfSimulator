@@ -1106,6 +1106,50 @@
           "dtype": "bf16"
         }
       }
+    },
+    "VEXPDIF": {
+      "op_class": "COMPUTE",
+      "forms": {
+        "fp32": {
+          "pipeline_startup_cost": 7,
+          "latency": 18,
+          "throughput": 1,
+          "pipeline_drain_cost": 16,
+          "data_load_cost": 9,
+          "data_store_cost": 9,
+          "EXU": "SFU",
+          "dispatch_exu": "EXU01",
+          "src_dtypes": [
+            "fp32"
+          ],
+          "dst_dtypes": [
+            "fp32"
+          ],
+          "dtype": "fp32"
+        }
+      }
+    },
+    "VMULSCVT": {
+      "op_class": "COMPUTE",
+      "forms": {
+        "f32_to_f16": {
+          "pipeline_startup_cost": 6,
+          "latency": 8,
+          "throughput": 1,
+          "pipeline_drain_cost": 6,
+          "data_load_cost": 9,
+          "data_store_cost": 9,
+          "EXU": "ALU",
+          "dispatch_exu": "EXU01",
+          "src_dtypes": [
+            "fp32"
+          ],
+          "dst_dtypes": [
+            "fp16"
+          ],
+          "dtype": "fp16"
+        }
+      }
     }
   }
 }
