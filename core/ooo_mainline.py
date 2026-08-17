@@ -266,6 +266,15 @@ class RenameController:
         top_block_id = int(inst.get("top_block_id", 0))
         is_last_in_top_block = bool(inst.get("is_last_in_top_block", False))
         stream_seq = int(inst.get("stream_seq", -1))
+        static_instruction_id = inst.get("static_instruction_id")
+        if static_instruction_id is not None:
+            static_instruction_id = str(static_instruction_id)
+        raw_iteration_path = inst.get("iteration_path", [])
+        iteration_path = (
+            [dict(item) for item in raw_iteration_path if isinstance(item, dict)]
+            if isinstance(raw_iteration_path, list)
+            else []
+        )
 
         srcs = inst.get("src", [])
         dsts = inst.get("dst", [])
@@ -333,6 +342,8 @@ class RenameController:
             iter_stack=list(iter_stack),
             is_last_in_top_block=is_last_in_top_block,
             stream_seq=stream_seq,
+            static_instruction_id=static_instruction_id,
+            iteration_path=iteration_path,
         )
         setattr(u, "preg_src_gen", preg_src_gen)
 

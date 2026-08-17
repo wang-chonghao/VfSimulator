@@ -499,6 +499,9 @@ class IDU:
             self.dispatch_log.append({
                 "cy": cycle,
                 "inst_id": inst.get("inst_id", inst.get("id")),
+                "static_instruction_id": inst.get("static_instruction_id"),
+                "iteration_path": inst.get("iteration_path", []),
+                "stream_seq": int(inst.get("stream_seq", -1)),
                 "op": inst.get("op"),
                 "dst": inst.get("dst", []),
                 "src": inst.get("src", []),

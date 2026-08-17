@@ -40,6 +40,8 @@ class Uop:
     iter_stack: List[Any] = field(default_factory=list)
     is_last_in_top_block: bool = False
     stream_seq: int = -1
+    static_instruction_id: Optional[str] = None
+    iteration_path: List[Dict[str, Any]] = field(default_factory=list)
     exu_port: Optional[int] = None
     shq_ready_cycle: int = 0
     lsq_ready_cycle: int = 0
@@ -136,6 +138,9 @@ class OoOCore:
             "cy": self.cycle,
             "event": event,
             "id": u.inst_id,
+            "static_instruction_id": u.static_instruction_id,
+            "iteration_path": u.iteration_path,
+            "stream_seq": u.stream_seq,
             "op": u.op,
             "form": u.form,
             "state": u.state,
@@ -157,6 +162,9 @@ class OoOCore:
         self.cyc_start_log.append({
             "cy": self.cycle,
             "inst_id": u.inst_id,
+            "static_instruction_id": u.static_instruction_id,
+            "iteration_path": u.iteration_path,
+            "stream_seq": u.stream_seq,
             "op": u.op,
             "form": u.form,
             "dst": u.dst,
@@ -167,6 +175,9 @@ class OoOCore:
         self.cyc_done_log.append({
             "cy": u.done_cycle if u.done_cycle is not None else self.cycle,
             "inst_id": u.inst_id,
+            "static_instruction_id": u.static_instruction_id,
+            "iteration_path": u.iteration_path,
+            "stream_seq": u.stream_seq,
             "op": u.op,
             "form": u.form,
             "dst": u.dst,

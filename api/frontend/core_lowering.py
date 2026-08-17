@@ -150,8 +150,6 @@ class CoreLoweringPass:
                             f"Membar {node.instruction_id} has explicit dependencies"
                         )
                     continue
-                if node.carried_values:
-                    issues.append(f"loop {node.loop_id} has loop-carried values")
                 unroll = resolve(node.unroll)
                 if unroll != 1:
                     issues.append(

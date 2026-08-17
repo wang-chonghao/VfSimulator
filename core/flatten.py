@@ -164,6 +164,10 @@ class Flattener:
             "name": name,
             "is_innermost": is_innermost,
             "loop_stack": list(loop_stack),
+            "induction": dict(loop_node.get("induction", {})),
+            "carried_values": [
+                dict(item) for item in loop_node.get("carried_values", [])
+            ],
         }
         self.linear.append(begin)
         self._pc += 1

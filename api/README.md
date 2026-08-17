@@ -26,7 +26,7 @@ Timing form 兼容只由 `core/param_compat.py` 与 `native/ParamCompat.cpp` 维
 - `parse_cce_vf_info(path, kernel_name=None, loop_params=None)`：直接 CCE parser 入口。
 - `VFInfoLowerer().lower(vf_info)`：把公共 `VFInfo` lower 成当前 core simulator payload。
 - `CoreVfCostModel().predict_vf_cycles(vf_info)`：用当前 queue-level 主线模拟器运行 `VFInfo`。
-- `CoreVfCostModel().predict_canonical_vf_cycles(vf_info)`：通过 `CoreLoweringPass` 运行 canonical 输入；当前纵向链路先支持无显式 dependency、无 loop-carried、`unroll=1`、默认 induction 的程序，并明确拒绝尚不能无损执行的结构。
+- `CoreVfCostModel().predict_canonical_vf_cycles(vf_info)`：通过 `CoreLoweringPass` 运行 canonical 输入；当前纵向链路支持无显式 dependency、`unroll=1`、默认 induction 的程序，包括 loop-carried entry/back-edge/exit 与零次循环，并明确拒绝尚不能无损执行的结构。
 - `InputAPI.validate_canonical_vf_info(vf_info)`：只校验 `CanonicalVfInfo`，不修复、不查询 timing 参数，也不产生文件系统副作用。
 - `VfInfoBuilder` / `InputAPI.new_vf_info_builder()`：显式注册 storage object、value definition、instruction、loop 和 Membar，`build()` 校验后返回 `CanonicalVfInfo`；校验失败抛出携带结构化 diagnostics 的 `VfInfoValidationError`。
 
@@ -81,6 +81,6 @@ C++ opcode Catalog 位于 `api/native/InstructionCatalog.*`，只读数据由 `t
 
 `core/` 后端仍消费历史 JSON-like payload。当前不会把新的 canonical 对象隐式转换成旧 `VFInfo`，因为那会丢失结构化 memory access 和 source location。后续 adapter 迁移完成后，再由单一 `CoreLoweringPass` 接入 Core。
 
-`CoreLoweringPass` 已建立第一条 canonical 到 Python Core 的显式链路。它保留静态 instruction ID、definition ID、稳定 UB object、source location 和 affine memory metadata，并在 canonical 路径跳过旧 vreg normalization 与 single-super-iteration 字符串改写。当前 Core 尚未实现动态 loop-carried/iteration identity，因此相关输入会抛出 `CanonicalCoreCompatibilityError`，不会静默退回旧语义。
+`CoreLoweringPass` 已建立第一条 canonical 到 Python Core 的显式链路。它保留静态 instruction ID、definition ID、稳定 UB object、source location 和 affine memory metadata，并在 canonical 路径跳过旧 vreg normalization 与 single-super-iteration 字符串改写。IFU 为 `unroll=1` 指令生成结构化 `iteration_path`：每个动态 loop frame 独立维护 carried binding，第一轮读取 entry，后续轮读取上一轮 back-edge，loop exit 绑定最后一轮 back-edge，零次循环绑定 entry；该作用域规则同时覆盖串行 sibling loop 和 nested loop。`static_instruction_id`、`iteration_path`、`stream_seq` 会继续传入 Uop、IDU dispatch 和执行日志。`unroll>1` 在动态 lane identity 完成前仍明确拒绝。
 
 Core 只自动建立寄存器 producer-consumer 依赖，不根据 UB 名称、迭代或地址表达式推导 load/store 依赖。UB 顺序当前统一由显式 `Membar(VST_VLD/VLD_VST)` 控制；canonical memory/control `DependencyRef` 在动态 Uop edge lowering 完成前会明确拒绝。

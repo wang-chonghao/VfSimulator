@@ -60,6 +60,14 @@ def _resolve_unroll(unroll: Any, params: Dict[str, Any]) -> int:
 
 
 @dataclass
+class LoopCarriedBinding:
+    entry_value_id: str
+    back_edge_value_id: str
+    exit_value_id: str
+    current_value_id: str
+
+
+@dataclass
 class LoopFrame:
     begin_idx: int
     end_idx: int
@@ -69,6 +77,8 @@ class LoopFrame:
     is_innermost: bool
     unroll: int
     top_block_id: int
+    static_loop_id: str
+    carried_bindings: List[LoopCarriedBinding]
 
 
 class IFUUnroll:
@@ -172,6 +182,7 @@ class IFUUnroll:
         self.frames: List[LoopFrame] = []
         self.inst_id = 0
         self.stream_seq = 0
+        self.value_aliases: Dict[str, str] = {}
 
         self._pending: List[Dict[str, Any]] = []
         self._unroll_group = 0
@@ -207,6 +218,97 @@ class IFUUnroll:
 
     def _snapshot(self) -> Tuple[List[int], List[int]]:
         return ([fr.loop_id for fr in self.frames], [fr.iter_now for fr in self.frames])
+
+    def _iteration_path(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "loop_id": frame.static_loop_id,
+                "iteration": frame.iter_now,
+            }
+            for frame in self.frames
+        ]
+
+    def _resolve_dynamic_value(self, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        seen: set[str] = set()
+        current = value
+        while current not in seen:
+            seen.add(current)
+            frame_value = None
+            for frame in reversed(self.frames):
+                binding = next(
+                    (
+                        item
+                        for item in frame.carried_bindings
+                        if item.entry_value_id == current
+                    ),
+                    None,
+                )
+                if binding is not None:
+                    frame_value = binding.current_value_id
+                    break
+            if frame_value is not None:
+                if frame_value == current:
+                    return current
+                current = frame_value
+                continue
+            alias = self.value_aliases.get(current)
+            if alias is None or alias == current:
+                return current
+            current = alias
+        return current
+
+    def _rewrite_dynamic_sources(self, values: Any) -> List[Any]:
+        if not isinstance(values, list):
+            values = [] if values is None else [values]
+        rewritten: List[Any] = []
+        for raw_value in values:
+            rewritten.append(self._resolve_dynamic_value(raw_value))
+        return rewritten
+
+    def _create_loop_carried_bindings(
+        self,
+        carried_values: List[Dict[str, Any]],
+        *,
+        zero_iterations: bool,
+    ) -> List[LoopCarriedBinding]:
+        bindings: List[LoopCarriedBinding] = []
+        for carried in carried_values:
+            exit_value = carried.get("exit_value_id")
+            entry_value = carried.get("entry_value_id")
+            back_edge_value = carried.get("back_edge_value_id")
+            if not all(
+                isinstance(item, str)
+                for item in (entry_value, back_edge_value, exit_value)
+            ):
+                continue
+            self.value_aliases.pop(exit_value, None)
+            resolved_entry = self._resolve_dynamic_value(entry_value)
+            if zero_iterations:
+                self.value_aliases[exit_value] = resolved_entry
+                continue
+            bindings.append(
+                LoopCarriedBinding(
+                    entry_value_id=entry_value,
+                    back_edge_value_id=back_edge_value,
+                    exit_value_id=exit_value,
+                    current_value_id=resolved_entry,
+                )
+            )
+        return bindings
+
+    def _advance_loop_carried_bindings(self, frame: LoopFrame) -> None:
+        next_values = [
+            self._resolve_dynamic_value(binding.back_edge_value_id)
+            for binding in frame.carried_bindings
+        ]
+        for binding, next_value in zip(frame.carried_bindings, next_values):
+            binding.current_value_id = next_value
+
+    def _complete_loop_value_aliases(self, frame: LoopFrame) -> None:
+        for binding in frame.carried_bindings:
+            self.value_aliases[binding.exit_value_id] = binding.current_value_id
 
     def _current_top_block_id(self) -> int:
         """
@@ -287,12 +389,15 @@ class IFUUnroll:
         out = dict(n)
         loop_stack, iter_stack = self._snapshot()
 
+        out["src"] = self._rewrite_dynamic_sources(out.get("src", []))
+
         out["inst_id"] = self.inst_id
         self.inst_id += 1
         out["stream_seq"] = self.stream_seq
         self.stream_seq += 1
         out["loop_stack"] = list(loop_stack)
         out["iter_stack"] = list(iter_stack)
+        out["iteration_path"] = self._iteration_path()
         out["loop_depth"] = len(loop_stack)
         out["in_loop"] = bool(loop_stack)
         out["unroll_factor"] = 1
@@ -317,6 +422,7 @@ class IFUUnroll:
         self.stream_seq += 1
         out["loop_stack"] = list(loop_stack)
         out["iter_stack"] = list(iter_stack)
+        out["iteration_path"] = self._iteration_path()
         out["loop_depth"] = len(loop_stack)
         out["in_loop"] = bool(loop_stack)
         out["unroll_factor"] = 1
@@ -457,6 +563,13 @@ class IFUUnroll:
                 loop_id = self.begin_loop_id[self.pc]
                 is_innermost = bool(self.is_innermost_begin.get(self.pc, False))
                 unroll = _resolve_unroll(n.get("unroll", 1), self.params)
+                carried_values = [
+                    dict(item) for item in n.get("carried_values", [])
+                ]
+                carried_bindings = self._create_loop_carried_bindings(
+                    carried_values,
+                    zero_iterations=iters <= 0,
+                )
 
                 if iters <= 0:
                     self.pc = end + 1
@@ -486,6 +599,8 @@ class IFUUnroll:
                     is_innermost=is_innermost,
                     unroll=(unroll if (is_innermost and unroll > 1) else 1),
                     top_block_id=int(top_block_id),
+                    static_loop_id=str(n.get("name", f"loop_{loop_id}")),
+                    carried_bindings=carried_bindings,
                 )
                 self.frames.append(frame)
 
@@ -507,15 +622,20 @@ class IFUUnroll:
                         self._build_pending_unrolled(top)
                         return self._pending.pop(0) if self._pending else None
                     else:
+                        self._advance_loop_carried_bindings(top)
+                        self._complete_loop_value_aliases(top)
                         self.frames.pop()
                         self.pc += 1
                         continue
                 else:
                     if top.iter_now + 1 < top.iters_total:
+                        self._advance_loop_carried_bindings(top)
                         top.iter_now += 1
                         self.pc = top.begin_idx + 1
                         continue
                     else:
+                        self._advance_loop_carried_bindings(top)
+                        self._complete_loop_value_aliases(top)
                         self.frames.pop()
                         self.pc += 1
                         continue
