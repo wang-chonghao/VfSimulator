@@ -37,7 +37,6 @@ class AccessKind(str, Enum):
 
 
 class DependencyKind(str, Enum):
-    DATA = "data"
     MEMORY = "memory"
     CONTROL = "control"
 
@@ -64,11 +63,19 @@ class AffineExpression:
 
 @dataclass(frozen=True)
 class MemoryAccess:
-    base_value_id: str
+    base_object_id: str
     offset: AffineExpression
     access_kind: AccessKind
     span: int | None = None
     alias_group: str | None = None
+
+
+@dataclass(frozen=True)
+class CanonicalStorageObject:
+    object_id: str
+    storage: StorageKind
+    shape: tuple[int, ...] = ()
+    source_location: SourceLocation | None = None
 
 
 @dataclass(frozen=True)
@@ -78,7 +85,8 @@ class CanonicalValue:
     storage: StorageKind
     dtype: str
     shape: tuple[int, ...] = ()
-    producer_instruction_id: str | None = None
+    producer_node_id: str | None = None
+    storage_object_id: str | None = None
     source_location: SourceLocation | None = None
 
 
@@ -92,7 +100,7 @@ class CanonicalOperand:
 
 @dataclass(frozen=True)
 class DependencyRef:
-    producer_instruction_id: str
+    producer_node_id: str
     kind: DependencyKind
     operand_index: int | None = None
 
@@ -151,6 +159,7 @@ CanonicalNode: TypeAlias = CanonicalInstruction | CanonicalLoop | CanonicalMemba
 class CanonicalVfInfo:
     context: tuple[CanonicalNode, ...]
     values: Mapping[str, CanonicalValue]
+    storage_objects: Mapping[str, CanonicalStorageObject] = field(default_factory=dict)
     params: Mapping[str, int] = field(default_factory=dict)
     uarch: Mapping[str, ScalarValue] = field(default_factory=dict)
     source: Mapping[str, ScalarValue] = field(default_factory=dict)

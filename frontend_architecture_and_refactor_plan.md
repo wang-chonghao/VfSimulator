@@ -257,7 +257,7 @@ schema_version = 1
 3. 显式 `instruction_class`，包括 load、store、compute、control；未知 opcode 也必须提供该字段。
 4. canonical `form`。
 5. 明确区分的 `inputs`、`outputs` 和 scalar `attributes`。
-6. 编译器可选提供 data、memory、control 显式 dependency。
+6. 编译器可选提供额外 memory、control 显式 dependency。DATA dependency 只能由 input definition 的 `producer_node_id` 推导，禁止在 instruction dependencies 中重复表达。
 7. 可选 `source_location`。
 
 操作数顺序和角色由 `InstructionCatalog` 定义，不应由各 adapter 自行解释。
@@ -275,13 +275,13 @@ schema_version = 1
 推荐表示方式：
 
 1. `logical_id` 表示源码级逻辑对象。
-2. `definition_id` 表示一次静态定义。
+2. `definition_id` 表示一次静态定义，`producer_node_id` 表示产生该 definition 的 instruction 或 loop。
 3. 动态展开时使用结构化的 `iteration_path` 和 `stream_seq` 区分实例。
 4. 物理寄存器编号仅存在于 Core rename/allocate 阶段。
 
 `loop_id`、普通 `instruction_id` 和 Membar `instruction_id` 共用一个全局 node ID 命名空间；`definition_id` 使用独立的 value definition 命名空间。每个输出必须引用由当前 instruction 产生的新 definition，输入不得引用当前 instruction 自己产生的 definition。
 
-loop accumulator 必须通过通用的数据流规则表达 loop entry、back-edge 和 loop exit。不得在 normalizer 中按某种指令排列增加特殊 alias。
+loop accumulator 必须通过通用的数据流规则表达 loop entry、back-edge 和 loop exit。entry 必须在 loop 前可见，back-edge 必须来自 loop body 或明确沿用 entry，exit 必须由 loop node 产生，且三者 storage、dtype、shape 和 storage object 必须一致。不得在 normalizer 中按某种指令排列增加特殊 alias。
 
 ### 6.5 存储类型
 
@@ -313,7 +313,7 @@ dtype 和 form 必须由指令及其操作数共同确定，不能由全局 `val
 
 内存操作必须使用结构化表示，至少包含：
 
-1. `base`：内存对象或 UB 基址。
+1. `base_object_id`：稳定内存对象或 UB 基址，不是一次 value definition ID。
 2. `offset`：结构化 affine expression，由常量项和 `(variable_id, coefficient)` 项组成。
 3. `access_kind`：read 或 write。
 4. `span` 或可推导的访问范围。
@@ -325,7 +325,7 @@ dtype 和 form 必须由指令及其操作数共同确定，不能由全局 `val
 vlds(v0, a + off, 0, NORM);
 ```
 
-不能只保留最后一个 identifier 并把 `off` 当作 UB。必须解析为 `base=a` 和结构化 offset。offset 中的变量只能引用所在结构化 loop 的 induction variable 或顶层整型参数；表达式不受支持时必须明确报错。
+UB 的 memory state/value definition 通过 `storage_object_id` 引用稳定对象；alias 和 range overlap 使用 `base_object_id + offset/span`。不能只保留最后一个 identifier 并把 `off` 当作 UB，也不能用 store 产生的 definition ID 代替稳定基址。offset 中的变量只能引用所在结构化 loop 的 induction variable 或顶层整型参数；表达式不受支持时必须明确报错。
 
 ### 6.8 Loop 和 unroll
 
@@ -863,10 +863,12 @@ Cycle 回归用于验证性能模型没有意外变化，但不能替代语义�
 2. 新增 Python 无副作用 validator 和结构化 diagnostic；validator 不读取 timing config，不拒绝语义明确但 timing 未覆盖的 opcode。`frozen dataclass` 只限制字段重新赋值，其中的 mapping 不承诺深度不可变。
 3. 新增 C++ `api/native/CanonicalVfInfo.h` 和等价 validator；C++ canonical 节点使用 variant 表示 payload，非法输入返回 diagnostic，不因整数解析失败抛异常。
 4. `InputAPI.validate_canonical_vf_info()` 提供显式校验入口。
-5. 定义语言无关的 `api/frontend/canonical_vf_info_v1.schema.json`，并建立 Python/C++ 共用的 conformance fixture。Python 和 C++ 字段统一为 JSON scalar attributes、结构化 affine offset、完整 source location/context diagnostic。
-6. Canonical value 明确表示一次 definition，同时保留 logical ID；loop 显式描述 induction variable 和 entry/back-edge/exit，instruction 显式描述 class 和编译器依赖。
-7. 新增 Python/C++ 合法与非法契约测试，覆盖 value 引用、operand role/dtype、memory base、affine variable scope、loop 参数、非法 payload 和 Membar。
-8. 在前端重构前同步 Python/C++ 后端：native 已采用 ALU/SFU 独立 RR、EXU0 reserve 配置，并对齐 loop back-edge、loop exit alias、重定义 kill、零次 loop 和 `three_ports_mode` 语义。native SHQ 到 EXQ 只生成一次候选端口，再按 policy 选择 greedy 或 RR。
+5. 定义语言无关的 `api/frontend/canonical_vf_info_v1.schema.json`，并建立 Python/C++ 共用的 conformance fixture。测试侧 C++ decoder 会完整转换 fixture，再与 Python validator 对齐合法结果和非法 diagnostic code。
+6. Canonical value 明确表示一次 definition，同时保留 logical ID 和 producer node；DATA dependency 只从 input definition 推导，显式 dependency 仅允许 memory/control。
+7. UB storage object 与 memory value definition 已拆分；alias 身份使用稳定 `storage_object_id`，definition ID 只描述一次 memory state。
+8. loop 显式描述 induction variable 和 entry/back-edge/exit，并校验 definition scope 与类型；Python 直接输入同时检查 int64 边界和有限 scalar。
+9. 新增 Python/C++ 合法与非法契约测试，覆盖 value 引用、operand role/dtype、memory object、affine variable scope、loop-carried scope、非法 payload 和 Membar。
+10. 在前端重构前同步 Python/C++ 后端：native 已采用 ALU/SFU 独立 RR、EXU0 reserve 配置，并对齐 loop back-edge、loop exit alias、重定义 kill、零次 loop 和 `three_ports_mode` 语义。native SHQ 到 EXQ 只生成一次候选端口，再按 policy 选择 greedy 或 RR。
 
 ### 19.2 当前迁移边界
 

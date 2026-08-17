@@ -3,13 +3,21 @@
   "params": {"ROWS": 4},
   "uarch": {},
   "source": {"format": "shared-conformance-fixture"},
+  "storage_objects": {
+    "ub.input": {
+      "object_id": "ub.input",
+      "storage": "UB",
+      "shape": [256]
+    }
+  },
   "values": {
     "input.0": {
       "definition_id": "input.0",
       "logical_id": "input",
       "storage": "UB",
       "dtype": "fp32",
-      "shape": [64]
+      "shape": [64],
+      "storage_object_id": "ub.input"
     },
     "acc.0": {
       "definition_id": "acc.0",
@@ -17,7 +25,7 @@
       "storage": "Register",
       "dtype": "fp32",
       "shape": [64],
-      "producer_instruction_id": "inst.load"
+      "producer_node_id": "inst.load"
     }
   },
   "context": [
@@ -41,7 +49,7 @@
               "role": "memory",
               "dtype": "fp32",
               "memory_access": {
-                "base_value_id": "input.0",
+                "base_object_id": "ub.input",
                 "offset": {
                   "constant": 0,
                   "terms": [{"variable_id": "i", "coefficient": 64}]

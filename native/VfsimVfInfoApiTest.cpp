@@ -5,11 +5,14 @@
 #include "api/native/VfInfo.h"
 #include "native/ParamDB.h"
 #include "native/Json.h"
+#include "native/CanonicalVfInfoFixtureDecoder.h"
 #include "native/SimulatorRunner.h"
 
 #include <filesystem>
+#include <limits>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -37,74 +40,49 @@ ValueInfo value(std::string id, ValueStorageKind storage, std::string dtype) {
 } // namespace
 
 int main() {
-  const auto sharedFixture = json::parseFile(
+  const auto sharedFixtureJson = json::parseFile(
       std::filesystem::path(VFSIM_SOURCE_ROOT) /
       "tests/fixtures/canonical_vf_info/v1_valid_loop.json");
-  const auto &fixtureRoot = sharedFixture.asObject();
-  if (fixtureRoot.at("schema_version").asInt() !=
-          kCanonicalVfInfoSchemaVersion ||
-      fixtureRoot.at("context").asArray().front().asObject().at("kind").asString() !=
-          "loop" ||
-      fixtureRoot.at("values").asObject().at("acc.0").asObject().at(
-          "definition_id").asString() != "acc.0")
-    throw std::runtime_error("shared CanonicalVfInfo v1 fixture changed shape");
-
-  CanonicalVfInfo canonicalContract;
-  CanonicalValue inputValue;
-  inputValue.definitionId = "input.0";
-  inputValue.logicalId = "input";
-  inputValue.storage = CanonicalStorageKind::UB;
-  inputValue.dtype = "fp32";
-  canonicalContract.values.emplace(inputValue.definitionId, inputValue);
-  CanonicalValue resultValue;
-  resultValue.definitionId = "result.0";
-  resultValue.logicalId = "result";
-  resultValue.storage = CanonicalStorageKind::Register;
-  resultValue.dtype = "fp32";
-  resultValue.producerInstructionId = "inst.load";
-  canonicalContract.values.emplace(resultValue.definitionId, resultValue);
-  CanonicalInstruction canonicalLoad;
-  canonicalLoad.instructionId = "inst.load";
-  canonicalLoad.opcode = "VLDS";
-  canonicalLoad.instructionClass = CanonicalInstructionClass::Load;
-  canonicalLoad.form = "fp32";
-  CanonicalOperand memoryInput;
-  memoryInput.valueId = "input.0";
-  memoryInput.role = CanonicalOperandRole::Memory;
-  memoryInput.dtype = "fp32";
-  CanonicalAffineExpression offset;
-  offset.terms.push_back(CanonicalAffineTerm{"i", 1});
-  memoryInput.memoryAccess = CanonicalMemoryAccess{
-      "input.0", std::move(offset), CanonicalAccessKind::Read, 64, ""};
-  canonicalLoad.inputs.push_back(memoryInput);
-  canonicalLoad.outputs.push_back(
-      CanonicalOperand{"result.0", CanonicalOperandRole::Destination,
-                       "fp32", std::nullopt});
-  CanonicalLoop canonicalLoop;
-  canonicalLoop.loopId = "loop.0";
-  canonicalLoop.induction.variableId = "i";
-  canonicalLoop.count = int64_t{1};
-  canonicalLoop.body.push_back(
-      CanonicalNode::makeInstruction(std::move(canonicalLoad)));
-  canonicalContract.context.push_back(CanonicalNode::makeLoop(std::move(canonicalLoop)));
-  CanonicalMembar canonicalMembar;
-  canonicalMembar.instructionId = "membar.0";
-  canonicalMembar.barrier = "VST_VLD";
-  canonicalContract.context.push_back(
-      CanonicalNode::makeMembar(std::move(canonicalMembar)));
+  CanonicalVfInfo canonicalContract =
+      decodeCanonicalVfInfoFixture(sharedFixtureJson);
   if (!validateCanonicalVfInfo(canonicalContract).ok())
-    throw std::runtime_error("valid native CanonicalVfInfo was rejected");
+    throw std::runtime_error("shared valid CanonicalVfInfo fixture was rejected");
+  const auto sharedCarriedJson = json::parseFile(
+      std::filesystem::path(VFSIM_SOURCE_ROOT) /
+      "tests/fixtures/canonical_vf_info/v1_valid_loop_carried.json");
+  if (!validateCanonicalVfInfo(
+           decodeCanonicalVfInfoFixture(sharedCarriedJson)).ok())
+    throw std::runtime_error("shared valid loop-carried fixture was rejected");
+
+  using LoopPtr = std::variant_alternative_t<1, CanonicalNode::Payload>;
+  static_assert(std::is_const_v<typename LoopPtr::element_type>,
+                "canonical loop payload must be immutable when shared");
 
   CanonicalVfInfo invalidContract = canonicalContract;
-  std::get<CanonicalMembar>(invalidContract.context.back().payload).barrier = "ALL";
+  CanonicalMembar unsupportedMembar;
+  unsupportedMembar.instructionId = "membar.invalid";
+  unsupportedMembar.barrier = "ALL";
+  invalidContract.context.push_back(
+      CanonicalNode::makeMembar(std::move(unsupportedMembar)));
   const auto invalidResult = validateCanonicalVfInfo(invalidContract);
   if (invalidResult.ok() || invalidResult.diagnostics.back().code !=
                                 "unsupported_membar_type")
     throw std::runtime_error("invalid native Membar was not diagnosed");
 
+  const auto sharedInvalidJson = json::parseFile(
+      std::filesystem::path(VFSIM_SOURCE_ROOT) /
+      "tests/fixtures/canonical_vf_info/v1_invalid_loop_scope.json");
+  const auto sharedInvalidResult = validateCanonicalVfInfo(
+      decodeCanonicalVfInfoFixture(sharedInvalidJson));
+  if (sharedInvalidResult.ok() || sharedInvalidResult.diagnostics.size() != 1 ||
+      sharedInvalidResult.diagnostics.front().code !=
+          "loop_back_edge_out_of_scope")
+    throw std::runtime_error(
+        "shared invalid fixture did not match Python diagnostic");
+
   CanonicalVfInfo nullLoopContract;
   nullLoopContract.context.push_back(
-      CanonicalNode{std::shared_ptr<CanonicalLoop>{}});
+      CanonicalNode{std::shared_ptr<const CanonicalLoop>{}});
   const auto nullLoopResult = validateCanonicalVfInfo(nullLoopContract);
   if (nullLoopResult.ok() || nullLoopResult.diagnostics.front().code !=
                                  "invalid_loop_payload")
@@ -121,6 +99,14 @@ int main() {
   if (hugeCountResult.ok() || hugeCountResult.diagnostics.front().code !=
                                   "unresolved_parameter")
     throw std::runtime_error("oversized loop count was not diagnosed");
+
+  CanonicalVfInfo nonFiniteContract;
+  nonFiniteContract.uarch.emplace(
+      "invalid", std::numeric_limits<double>::infinity());
+  const auto nonFiniteResult = validateCanonicalVfInfo(nonFiniteContract);
+  if (nonFiniteResult.ok() || nonFiniteResult.diagnostics.front().code !=
+                                 "invalid_scalar_attribute")
+    throw std::runtime_error("non-finite native scalar was not diagnosed");
 
   VfInfo vfInfo;
   vfInfo.params = {{"I", 16}, {"U", 1}};

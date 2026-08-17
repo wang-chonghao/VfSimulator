@@ -24,7 +24,7 @@ enum class CanonicalStorageKind { Register, UB, Scalar };
 enum class CanonicalInstructionClass { Load, Store, Compute, Control };
 enum class CanonicalOperandRole { Source, Destination, Memory, Scalar, Predicate, Config };
 enum class CanonicalAccessKind { Read, Write };
-enum class CanonicalDependencyKind { Data, Memory, Control };
+enum class CanonicalDependencyKind { Memory, Control };
 
 struct CanonicalSourceLocation {
   std::optional<std::string> source;
@@ -44,11 +44,18 @@ struct CanonicalAffineExpression {
 };
 
 struct CanonicalMemoryAccess {
-  std::string baseValueId;
+  std::string baseObjectId;
   CanonicalAffineExpression offset;
   CanonicalAccessKind accessKind = CanonicalAccessKind::Read;
   std::optional<int64_t> span;
   std::optional<std::string> aliasGroup;
+};
+
+struct CanonicalStorageObject {
+  std::string objectId;
+  CanonicalStorageKind storage = CanonicalStorageKind::UB;
+  std::vector<int64_t> shape;
+  std::optional<CanonicalSourceLocation> sourceLocation;
 };
 
 struct CanonicalValue {
@@ -57,7 +64,8 @@ struct CanonicalValue {
   CanonicalStorageKind storage = CanonicalStorageKind::Register;
   std::string dtype;
   std::vector<int64_t> shape;
-  std::optional<std::string> producerInstructionId;
+  std::optional<std::string> producerNodeId;
+  std::optional<std::string> storageObjectId;
   std::optional<CanonicalSourceLocation> sourceLocation;
 };
 
@@ -69,8 +77,8 @@ struct CanonicalOperand {
 };
 
 struct CanonicalDependencyRef {
-  std::string producerInstructionId;
-  CanonicalDependencyKind kind = CanonicalDependencyKind::Data;
+  std::string producerNodeId;
+  CanonicalDependencyKind kind = CanonicalDependencyKind::Memory;
   std::optional<int64_t> operandIndex;
 };
 
@@ -110,7 +118,7 @@ struct CanonicalLoop;
 
 struct CanonicalNode {
   using Payload = std::variant<CanonicalInstruction,
-                               std::shared_ptr<CanonicalLoop>,
+                               std::shared_ptr<const CanonicalLoop>,
                                CanonicalMembar>;
   Payload payload;
 
@@ -133,6 +141,7 @@ struct CanonicalVfInfo {
   int64_t schemaVersion = kCanonicalVfInfoSchemaVersion;
   std::vector<CanonicalNode> context;
   std::unordered_map<std::string, CanonicalValue> values;
+  std::unordered_map<std::string, CanonicalStorageObject> storageObjects;
   std::unordered_map<std::string, int64_t> params;
   std::map<std::string, CanonicalScalar> uarch;
   std::map<std::string, CanonicalScalar> source;

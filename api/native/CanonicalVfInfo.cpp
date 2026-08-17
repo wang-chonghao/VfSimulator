@@ -5,12 +5,19 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <functional>
 #include <unordered_set>
 #include <utility>
 
 namespace vfsim {
 namespace {
+
+struct NodeInfo {
+  std::vector<std::string> scope;
+  int64_t order = 0;
+  std::string kind;
+};
 
 std::optional<int64_t> parseInt64(const std::string &text) {
   if (text.empty())
@@ -62,10 +69,16 @@ bool validStorageKind(CanonicalStorageKind value) {
          value == CanonicalStorageKind::Scalar;
 }
 
-bool validDependencyKind(CanonicalDependencyKind value) {
-  return value == CanonicalDependencyKind::Data ||
-         value == CanonicalDependencyKind::Memory ||
-         value == CanonicalDependencyKind::Control;
+bool scopePrefix(const std::vector<std::string> &prefix,
+                 const std::vector<std::string> &scope) {
+  return prefix.size() <= scope.size() &&
+         std::equal(prefix.begin(), prefix.end(), scope.begin());
+}
+
+bool finiteScalar(const CanonicalScalar &value) {
+  if (const auto *number = std::get_if<double>(&value))
+    return std::isfinite(*number);
+  return true;
 }
 
 } // namespace
@@ -75,7 +88,9 @@ CanonicalNode CanonicalNode::makeInstruction(CanonicalInstruction value) {
 }
 
 CanonicalNode CanonicalNode::makeLoop(CanonicalLoop value) {
-  return CanonicalNode{std::make_shared<CanonicalLoop>(std::move(value))};
+  return CanonicalNode{
+      std::shared_ptr<const CanonicalLoop>(
+          std::make_shared<CanonicalLoop>(std::move(value)))};
 }
 
 CanonicalNode CanonicalNode::makeMembar(CanonicalMembar value) {
@@ -99,9 +114,80 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
         std::move(location), std::move(context)});
   };
 
+  auto validateLocation = [&](const std::optional<CanonicalSourceLocation> &location,
+                              const std::string &path) {
+    if (!location)
+      return;
+    if (location->line && *location->line <= 0)
+      error("invalid_int64", "Source line must be positive", path + ".line");
+    if (location->column && *location->column <= 0)
+      error("invalid_int64", "Source column must be positive", path + ".column");
+  };
+
+  auto validateScalarMap = [&](const std::map<std::string, CanonicalScalar> &values,
+                               const std::string &path) {
+    for (const auto &[key, value] : values) {
+      if (!finiteScalar(value))
+        error("invalid_scalar_attribute", "Scalar must be finite",
+              path + "." + key);
+    }
+  };
+
   if (vfInfo.schemaVersion != kCanonicalVfInfoSchemaVersion)
-    error("unsupported_schema_version", "Unsupported CanonicalVfInfo schema version",
+    error("unsupported_schema_version", "Unsupported schema version",
           "schema_version");
+  validateScalarMap(vfInfo.uarch, "uarch");
+  validateScalarMap(vfInfo.source, "source");
+
+  std::unordered_map<std::string, NodeInfo> nodeInfo;
+  int64_t nextOrder = 0;
+  std::function<void(const std::vector<CanonicalNode> &,
+                     const std::vector<std::string> &)>
+      indexNodes;
+  indexNodes = [&](const std::vector<CanonicalNode> &nodes,
+                   const std::vector<std::string> &scope) {
+    for (const auto &node : nodes) {
+      if (const auto *inst = std::get_if<CanonicalInstruction>(&node.payload)) {
+        nodeInfo.emplace(inst->instructionId,
+                         NodeInfo{scope, nextOrder++, "instruction"});
+        continue;
+      }
+      if (const auto *loopPtr =
+              std::get_if<std::shared_ptr<const CanonicalLoop>>(&node.payload)) {
+        if (!*loopPtr) {
+          ++nextOrder;
+          continue;
+        }
+        const CanonicalLoop &loop = **loopPtr;
+        nodeInfo.emplace(loop.loopId, NodeInfo{scope, nextOrder++, "loop"});
+        auto childScope = scope;
+        childScope.push_back(loop.loopId);
+        indexNodes(loop.body, childScope);
+        continue;
+      }
+      const auto &membar = std::get<CanonicalMembar>(node.payload);
+      nodeInfo.emplace(membar.instructionId,
+                       NodeInfo{scope, nextOrder++, "membar"});
+    }
+  };
+  indexNodes(vfInfo.context, {});
+
+  for (const auto &[objectId, storageObject] : vfInfo.storageObjects) {
+    const std::string path = "storage_objects." + objectId;
+    if (objectId.empty() || storageObject.objectId != objectId)
+      error("invalid_storage_object_identity",
+            "Storage object key must match object_id", path,
+            storageObject.sourceLocation);
+    if (storageObject.storage != CanonicalStorageKind::UB)
+      error("unsupported_storage_object_kind",
+            "Canonical v1 storage objects must use UB", path,
+            storageObject.sourceLocation);
+    if (std::any_of(storageObject.shape.begin(), storageObject.shape.end(),
+                    [](int64_t dim) { return dim < 0; }))
+      error("invalid_int64", "Storage object shape must be non-negative", path,
+            storageObject.sourceLocation);
+    validateLocation(storageObject.sourceLocation, path + ".source_location");
+  }
 
   for (const auto &[definitionId, value] : vfInfo.values) {
     const std::string path = "values." + definitionId;
@@ -109,22 +195,33 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
       error("invalid_value_identity", "Value key must match definition_id", path,
             value.sourceLocation);
     if (value.logicalId.empty())
-      error("missing_logical_id", "Value definition must declare logical_id", path,
+      error("missing_logical_id", "Value must declare logical_id", path,
             value.sourceLocation);
     if (!validStorageKind(value.storage))
-      error("unsupported_storage", "Value definition has unsupported storage",
-            path, value.sourceLocation);
+      error("unsupported_storage", "Value has unsupported storage", path,
+            value.sourceLocation);
     if (value.dtype.empty())
-      error("missing_value_dtype", "Value definition must declare dtype", path,
+      error("missing_value_dtype", "Value must declare dtype", path,
             value.sourceLocation);
     if (std::any_of(value.shape.begin(), value.shape.end(),
                     [](int64_t dim) { return dim < 0; }))
-      error("invalid_value_shape", "Value shape must be non-negative", path,
+      error("invalid_int64", "Value shape must be non-negative", path,
             value.sourceLocation);
+    validateLocation(value.sourceLocation, path + ".source_location");
+    if (value.storage == CanonicalStorageKind::UB) {
+      if (!value.storageObjectId ||
+          !vfInfo.storageObjects.count(*value.storageObjectId))
+        error("unknown_storage_object",
+              "UB value must reference a declared storage object", path,
+              value.sourceLocation);
+    } else if (value.storageObjectId) {
+      error("storage_object_on_non_ub_value",
+            "Only UB values may reference a storage object", path,
+            value.sourceLocation);
+    }
   }
 
-  std::unordered_set<std::string> nodeIds;
-  std::unordered_set<std::string> instructionIds;
+  std::unordered_set<std::string> registeredNodeIds;
   struct PendingDependency {
     std::string producer;
     std::string consumer;
@@ -134,29 +231,52 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
 
   auto registerNodeId = [&](const std::string &nodeId, const std::string &path,
                             const std::optional<CanonicalSourceLocation> &location) {
-    if (nodeId.empty() || !nodeIds.insert(nodeId).second)
-      error("duplicate_node_id", "Node ID must be non-empty and globally unique",
-            path, location);
+    if (nodeId.empty() || !registeredNodeIds.insert(nodeId).second)
+      error("duplicate_node_id", "Node ID must be globally unique", path,
+            location);
   };
 
-  auto validateDependencies = [&](const std::vector<CanonicalDependencyRef> &dependencies,
-                                  const std::string &consumer,
-                                  const std::string &path) {
-    for (size_t index = 0; index < dependencies.size(); ++index) {
-      const auto &dependency = dependencies[index];
-      const std::string itemPath = path + "[" + std::to_string(index) + "]";
-      if (dependency.producerInstructionId == consumer)
-        error("self_dependency", "Instruction cannot depend on itself", itemPath);
-      if (!validDependencyKind(dependency.kind))
-        error("unsupported_dependency_kind",
-              "Dependency kind must be data, memory, or control", itemPath);
-      if (dependency.operandIndex && *dependency.operandIndex < 0)
-        error("invalid_dependency_operand_index",
-              "Dependency operand_index must be non-negative", itemPath);
-      pendingDependencies.push_back(
-          {dependency.producerInstructionId, consumer, itemPath});
-    }
+  auto producerVisibleTo = [&](const std::string &producerId,
+                               const std::string &consumerId) {
+    auto producer = nodeInfo.find(producerId);
+    auto consumer = nodeInfo.find(consumerId);
+    if (producer == nodeInfo.end() || consumer == nodeInfo.end() ||
+        producer->second.order >= consumer->second.order ||
+        !scopePrefix(producer->second.scope, consumer->second.scope))
+      return false;
+    const auto &producerInfo = producer->second;
+    const auto &consumerScope = consumer->second.scope;
+    if (producerInfo.kind == "loop" &&
+        consumerScope.size() > producerInfo.scope.size() &&
+        consumerScope[producerInfo.scope.size()] == producerId)
+      return false;
+    return true;
   };
+
+  auto validateDependencies =
+      [&](const std::vector<CanonicalDependencyRef> &dependencies,
+          const std::string &consumer, const std::string &path) {
+        for (size_t index = 0; index < dependencies.size(); ++index) {
+          const auto &dependency = dependencies[index];
+          const std::string itemPath = path + "[" + std::to_string(index) + "]";
+          if (dependency.producerNodeId == consumer)
+            error("self_dependency", "Node cannot depend on itself", itemPath);
+          if (dependency.kind != CanonicalDependencyKind::Memory &&
+                   dependency.kind != CanonicalDependencyKind::Control)
+            error("unsupported_dependency_kind",
+                  "Explicit dependency must be memory or control", itemPath);
+          if (dependency.operandIndex && *dependency.operandIndex < 0)
+            error("invalid_dependency_operand_index",
+                  "Dependency operand_index must be non-negative", itemPath);
+          auto producer = nodeInfo.find(dependency.producerNodeId);
+          if (producer != nodeInfo.end() &&
+              !producerVisibleTo(dependency.producerNodeId, consumer))
+            error("dependency_producer_not_visible",
+                  "Dependency producer is not visible before consumer", itemPath);
+          pendingDependencies.push_back(
+              {dependency.producerNodeId, consumer, itemPath});
+        }
+      };
 
   std::function<void(const std::vector<CanonicalNode> &, const std::string &,
                      std::unordered_set<std::string>)>
@@ -169,17 +289,18 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
       const std::string nodePath = path + "[" + std::to_string(index) + "]";
       if (const auto *inst = std::get_if<CanonicalInstruction>(&node.payload)) {
         registerNodeId(inst->instructionId, nodePath, inst->sourceLocation);
-        instructionIds.insert(inst->instructionId);
+        validateLocation(inst->sourceLocation, nodePath + ".source_location");
         if (inst->opcode.empty())
-          error("missing_opcode", "Canonical instruction must declare opcode",
-                nodePath, inst->sourceLocation);
+          error("missing_opcode", "Instruction must declare opcode", nodePath,
+                inst->sourceLocation);
         if (!validInstructionClass(inst->instructionClass))
-          error("missing_instruction_class",
-                "Canonical instruction must declare a valid instruction class",
+          error("missing_instruction_class", "Instruction class is invalid",
                 nodePath, inst->sourceLocation);
         if (inst->form.empty())
-          error("missing_instruction_form", "Canonical instruction must declare form",
+          error("missing_instruction_form", "Instruction form is required",
                 nodePath, inst->sourceLocation);
+        validateScalarMap(inst->attributes, nodePath + ".attributes");
+
         auto validateOperands = [&](const std::vector<CanonicalOperand> &operands,
                                     bool input) {
           bool hasMemory = false;
@@ -190,20 +311,20 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
                 std::to_string(operandIndex) + "]";
             auto valueIt = vfInfo.values.find(operand.valueId);
             if (valueIt == vfInfo.values.end()) {
-              error("unknown_value_reference", "Operand references unknown value definition",
+              error("unknown_value_reference", "Operand references unknown value",
                     operandPath, inst->sourceLocation);
               continue;
             }
-            const bool validRole = input ? validInputRole(operand.role)
-                                         : validOutputRole(operand.role);
-            if (!validRole)
+            const CanonicalValue &value = valueIt->second;
+            if (!(input ? validInputRole(operand.role)
+                        : validOutputRole(operand.role)))
               error("operand_role_direction_mismatch",
-                    "Operand role is invalid for its input/output direction",
+                    "Operand role is invalid for direction", operandPath,
+                    inst->sourceLocation);
+            if (operand.dtype && *operand.dtype != value.dtype)
+              error("operand_dtype_mismatch", "Operand dtype differs from value",
                     operandPath, inst->sourceLocation);
-            if (operand.dtype && *operand.dtype != valueIt->second.dtype)
-              error("operand_dtype_mismatch", "Operand dtype differs from value definition",
-                    operandPath, inst->sourceLocation);
-            const bool isUb = valueIt->second.storage == CanonicalStorageKind::UB;
+            const bool isUb = value.storage == CanonicalStorageKind::UB;
             if (isUb && !operand.memoryAccess)
               error("missing_memory_access", "UB operand requires memory metadata",
                     operandPath, inst->sourceLocation);
@@ -216,81 +337,97 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
             hasMemory = true;
             const auto &memory = *operand.memoryAccess;
             if (operand.role != CanonicalOperandRole::Memory)
-              error("memory_operand_role_mismatch", "Memory operand must use memory role",
-                    operandPath, inst->sourceLocation);
-            if (memory.baseValueId != operand.valueId)
-              error("memory_base_operand_mismatch", "Memory base must match operand value",
-                    operandPath, inst->sourceLocation);
+              error("memory_operand_role_mismatch",
+                    "Memory operand must use memory role", operandPath,
+                    inst->sourceLocation);
+            if (!value.storageObjectId ||
+                memory.baseObjectId != *value.storageObjectId)
+              error("memory_base_object_mismatch",
+                    "Memory base must match stable storage object", operandPath,
+                    inst->sourceLocation);
+            if (!vfInfo.storageObjects.count(memory.baseObjectId))
+              error("unknown_memory_base_object",
+                    "Memory base object is not declared", operandPath,
+                    inst->sourceLocation);
             const CanonicalAccessKind expected =
                 input ? CanonicalAccessKind::Read : CanonicalAccessKind::Write;
             if (memory.accessKind != expected)
               error("memory_access_direction_mismatch", "Memory direction mismatch",
                     operandPath, inst->sourceLocation);
             if (memory.span && *memory.span <= 0)
-              error("invalid_memory_span", "Memory span must be positive", operandPath,
-                    inst->sourceLocation);
+              error("invalid_memory_span", "Memory span must be positive",
+                    operandPath, inst->sourceLocation);
             std::unordered_set<std::string> affineVariables;
             for (const auto &term : memory.offset.terms) {
-              if (term.variableId.empty() || !affineVariables.insert(term.variableId).second)
-                error("invalid_affine_term", "Affine variables must be non-empty and unique",
+              if (term.variableId.empty() ||
+                  !affineVariables.insert(term.variableId).second)
+                error("invalid_affine_term", "Affine variables must be unique",
                       operandPath, inst->sourceLocation);
               if (!inductionVariables.count(term.variableId) &&
                   !vfInfo.params.count(term.variableId))
-                error("undeclared_affine_variable", "Affine variable is not in scope",
-                      operandPath, inst->sourceLocation);
+                error("undeclared_affine_variable",
+                      "Affine variable is not in scope", operandPath,
+                      inst->sourceLocation);
             }
           }
           return hasMemory;
         };
+
         const bool hasReadMemory = validateOperands(inst->inputs, true);
         const bool hasWriteMemory = validateOperands(inst->outputs, false);
         for (size_t inputIndex = 0; inputIndex < inst->inputs.size(); ++inputIndex) {
-          const auto &input = inst->inputs[inputIndex];
-          auto valueIt = vfInfo.values.find(input.valueId);
-          if (valueIt != vfInfo.values.end() &&
-              valueIt->second.producerInstructionId == inst->instructionId)
-            error("self_produced_input",
-                  "Instruction input cannot reference its own output definition",
-                  nodePath + ".inputs[" + std::to_string(inputIndex) + "]",
-                  inst->sourceLocation);
+          auto valueIt = vfInfo.values.find(inst->inputs[inputIndex].valueId);
+          if (valueIt == vfInfo.values.end() || !valueIt->second.producerNodeId)
+            continue;
+          const std::string &producer = *valueIt->second.producerNodeId;
+          if (producer == inst->instructionId)
+            error("self_produced_input", "Input references own output",
+                  nodePath + ".inputs[" + std::to_string(inputIndex) + "]");
+          else if (!producerVisibleTo(producer, inst->instructionId))
+            error("input_definition_not_visible",
+                  "Input definition producer is not visible",
+                  nodePath + ".inputs[" + std::to_string(inputIndex) + "]");
         }
         for (size_t outputIndex = 0; outputIndex < inst->outputs.size(); ++outputIndex) {
-          const auto &output = inst->outputs[outputIndex];
-          auto valueIt = vfInfo.values.find(output.valueId);
+          auto valueIt = vfInfo.values.find(inst->outputs[outputIndex].valueId);
           if (valueIt != vfInfo.values.end() &&
-              valueIt->second.producerInstructionId != inst->instructionId)
+              valueIt->second.producerNodeId != inst->instructionId)
             error("output_producer_mismatch",
-                  "Output value definition must name its producing instruction",
-                  nodePath + ".outputs[" + std::to_string(outputIndex) + "]",
-                  inst->sourceLocation);
+                  "Output definition must name producing instruction",
+                  nodePath + ".outputs[" + std::to_string(outputIndex) + "]");
         }
         if (inst->instructionClass == CanonicalInstructionClass::Load && !hasReadMemory)
-          error("load_without_memory_read", "Load class requires memory read", nodePath);
+          error("load_without_memory_read", "Load requires memory read", nodePath);
         if (inst->instructionClass == CanonicalInstructionClass::Store && !hasWriteMemory)
-          error("store_without_memory_write", "Store class requires memory write", nodePath);
+          error("store_without_memory_write", "Store requires memory write", nodePath);
         validateDependencies(inst->dependencies, inst->instructionId,
                              nodePath + ".dependencies");
         continue;
       }
-      if (const auto *loopPtr = std::get_if<std::shared_ptr<CanonicalLoop>>(&node.payload)) {
+
+      if (const auto *loopPtr =
+              std::get_if<std::shared_ptr<const CanonicalLoop>>(&node.payload)) {
         if (!*loopPtr) {
           error("invalid_loop_payload", "Loop payload cannot be null", nodePath);
           continue;
         }
         const CanonicalLoop &loop = **loopPtr;
         registerNodeId(loop.loopId, nodePath, loop.sourceLocation);
+        validateLocation(loop.sourceLocation, nodePath + ".source_location");
         const auto count = resolveIntegerExpression(loop.count, vfInfo.params);
         const auto unroll = resolveIntegerExpression(loop.unroll, vfInfo.params);
         const auto start = resolveIntegerExpression(loop.induction.start, vfInfo.params);
         const auto step = resolveIntegerExpression(loop.induction.step, vfInfo.params);
         if (!count)
-          error("unresolved_parameter", "Loop count cannot be resolved", nodePath + ".count");
+          error("unresolved_parameter", "Loop count cannot be resolved",
+                nodePath + ".count");
         else if (*count < 0)
-          error("invalid_loop_count", "Loop count must be non-negative", nodePath + ".count");
+          error("invalid_loop_count", "Loop count must be non-negative", nodePath);
         if (!unroll)
-          error("unresolved_parameter", "Loop unroll cannot be resolved", nodePath + ".unroll");
+          error("unresolved_parameter", "Loop unroll cannot be resolved",
+                nodePath + ".unroll");
         else if (*unroll <= 0)
-          error("invalid_loop_unroll", "Loop unroll must be positive", nodePath + ".unroll");
+          error("invalid_loop_unroll", "Loop unroll must be positive", nodePath);
         if (!start)
           error("unresolved_parameter", "Induction start cannot be resolved", nodePath);
         if (!step)
@@ -300,35 +437,83 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
         const std::string &variableId = loop.induction.variableId;
         if (variableId.empty() || inductionVariables.count(variableId) ||
             vfInfo.params.count(variableId))
-          error("invalid_induction_variable", "Induction variable must be unique in scope",
-                nodePath);
+          error("invalid_induction_variable", "Induction variable is invalid", nodePath);
+
+        auto loopInfoIt = nodeInfo.find(loop.loopId);
+        std::vector<std::string> loopScope;
+        if (loopInfoIt != nodeInfo.end()) {
+          loopScope = loopInfoIt->second.scope;
+          loopScope.push_back(loop.loopId);
+        }
         std::unordered_set<std::string> carriedLogicalIds;
-        for (size_t carriedIndex = 0; carriedIndex < loop.carriedValues.size(); ++carriedIndex) {
+        for (size_t carriedIndex = 0; carriedIndex < loop.carriedValues.size();
+             ++carriedIndex) {
           const auto &carried = loop.carriedValues[carriedIndex];
           const std::string carriedPath = nodePath + ".carried_values[" +
                                           std::to_string(carriedIndex) + "]";
           if (carried.logicalId.empty() ||
               !carriedLogicalIds.insert(carried.logicalId).second)
-            error("duplicate_loop_carried_value", "Loop-carried logical_id must be unique",
-                  carriedPath);
-          for (const std::string *definitionId :
-               {&carried.entryValueId, &carried.backEdgeValueId, &carried.exitValueId}) {
-            auto valueIt = vfInfo.values.find(*definitionId);
-            if (valueIt == vfInfo.values.end())
-              error("unknown_loop_carried_value", "Unknown loop-carried definition",
-                    carriedPath);
-            else if (valueIt->second.logicalId != carried.logicalId)
-              error("loop_carried_logical_id_mismatch",
-                    "Loop-carried definitions must share logical_id", carriedPath);
+            error("duplicate_loop_carried_value",
+                  "Loop-carried logical_id must be unique", carriedPath);
+          auto entryIt = vfInfo.values.find(carried.entryValueId);
+          auto backIt = vfInfo.values.find(carried.backEdgeValueId);
+          auto exitIt = vfInfo.values.find(carried.exitValueId);
+          if (entryIt == vfInfo.values.end() || backIt == vfInfo.values.end() ||
+              exitIt == vfInfo.values.end()) {
+            error("unknown_loop_carried_value",
+                  "Unknown loop-carried definition", carriedPath);
+            continue;
           }
+          const CanonicalValue &entry = entryIt->second;
+          const CanonicalValue &back = backIt->second;
+          const CanonicalValue &exit = exitIt->second;
+          if (entry.logicalId != carried.logicalId ||
+              back.logicalId != carried.logicalId ||
+              exit.logicalId != carried.logicalId)
+            error("loop_carried_logical_id_mismatch",
+                  "Loop-carried logical IDs must match", carriedPath);
+          if (entry.storage != back.storage || entry.storage != exit.storage ||
+              entry.dtype != back.dtype || entry.dtype != exit.dtype ||
+              entry.shape != back.shape || entry.shape != exit.shape ||
+              entry.storageObjectId != back.storageObjectId ||
+              entry.storageObjectId != exit.storageObjectId)
+            error("loop_carried_type_mismatch",
+                  "Loop-carried value metadata must match", carriedPath);
+          if (entry.producerNodeId) {
+            auto producer = nodeInfo.find(*entry.producerNodeId);
+            const bool visible = producer != nodeInfo.end() &&
+                loopInfoIt != nodeInfo.end() &&
+                producer->second.order < loopInfoIt->second.order &&
+                scopePrefix(producer->second.scope, loopInfoIt->second.scope) &&
+                !(producer->second.kind == "loop" &&
+                  loopInfoIt->second.scope.size() > producer->second.scope.size() &&
+                  loopInfoIt->second.scope[producer->second.scope.size()] ==
+                      *entry.producerNodeId);
+            if (!visible)
+              error("loop_entry_not_visible",
+                    "Loop entry is not visible before loop", carriedPath);
+          }
+          if (carried.backEdgeValueId != carried.entryValueId) {
+            auto producer = back.producerNodeId
+                ? nodeInfo.find(*back.producerNodeId)
+                : nodeInfo.end();
+            if (producer == nodeInfo.end() ||
+                !scopePrefix(loopScope, producer->second.scope))
+              error("loop_back_edge_out_of_scope",
+                    "Back-edge must be produced in loop body", carriedPath);
+          }
+          if (exit.producerNodeId != loop.loopId)
+            error("loop_exit_producer_mismatch",
+                  "Loop exit must be produced by loop node", carriedPath);
         }
         inductionVariables.insert(variableId);
         validateNodes(loop.body, nodePath + ".body", std::move(inductionVariables));
         continue;
       }
+
       const auto &membar = std::get<CanonicalMembar>(node.payload);
       registerNodeId(membar.instructionId, nodePath, membar.sourceLocation);
-      instructionIds.insert(membar.instructionId);
+      validateLocation(membar.sourceLocation, nodePath + ".source_location");
       if (membar.barrier != "VST_VLD" && membar.barrier != "VLD_VST")
         error("unsupported_membar_type", "Unsupported Membar type", nodePath,
               membar.sourceLocation);
@@ -339,16 +524,14 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
   validateNodes(vfInfo.context, "context", {});
 
   for (const auto &[definitionId, value] : vfInfo.values) {
-    if (value.producerInstructionId &&
-        !instructionIds.count(*value.producerInstructionId))
-      error("unknown_value_producer", "Value references unknown producer",
-            "values." + definitionId + ".producer_instruction_id",
-            value.sourceLocation);
+    if (value.producerNodeId && !nodeInfo.count(*value.producerNodeId))
+      error("unknown_value_producer", "Value references unknown producer node",
+            "values." + definitionId + ".producer_node_id", value.sourceLocation);
   }
   for (const auto &dependency : pendingDependencies) {
-    if (!instructionIds.count(dependency.producer))
-      error("unknown_dependency_producer", "Dependency references unknown producer",
-            dependency.path);
+    if (!nodeInfo.count(dependency.producer))
+      error("unknown_dependency_producer",
+            "Dependency references unknown producer node", dependency.path);
   }
   return result;
 }

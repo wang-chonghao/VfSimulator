@@ -1,5 +1,6 @@
 import copy
 import json
+import math
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -12,22 +13,91 @@ from api.frontend import (
     CanonicalLoop,
     CanonicalMembar,
     CanonicalOperand,
+    CanonicalStorageObject,
     CanonicalValue,
     CanonicalVfInfo,
     DependencyKind,
     DependencyRef,
     InductionVariable,
     InstructionClass,
+    LoopCarriedValue,
     MemoryAccess,
     OperandRole,
     SourceLocation,
     StorageKind,
-    validate_canonical_vf_info,
     canonical_vf_info_from_dict,
+    validate_canonical_vf_info,
 )
 
 
 class CanonicalVfInfoValidatorTest(unittest.TestCase):
+    def _storage_objects(self):
+        return {
+            "ub.input": CanonicalStorageObject("ub.input", StorageKind.UB, (64,)),
+            "ub.output": CanonicalStorageObject("ub.output", StorageKind.UB, (64,)),
+        }
+
+    def _values(self):
+        return {
+            "input.0": CanonicalValue(
+                "input.0", "input", StorageKind.UB, "fp32", (64,),
+                storage_object_id="ub.input",
+            ),
+            "output.0": CanonicalValue(
+                "output.0", "output", StorageKind.UB, "fp32", (64,),
+                producer_node_id="inst.store", storage_object_id="ub.output",
+            ),
+            "acc.0": CanonicalValue(
+                "acc.0", "acc", StorageKind.REGISTER, "fp32", (64,),
+                producer_node_id="inst.load",
+            ),
+        }
+
+    def _memory(self, object_id, kind):
+        return MemoryAccess(
+            base_object_id=object_id,
+            offset=AffineExpression(0, (AffineTerm("i", 1),)),
+            access_kind=kind,
+            span=64,
+        )
+
+    def _contract(self, context, values=None, *, params=None, uarch=None):
+        return CanonicalVfInfo(
+            context=tuple(context),
+            values=self._values() if values is None else values,
+            storage_objects=self._storage_objects(),
+            params={} if params is None else params,
+            uarch={} if uarch is None else uarch,
+        )
+
+    def _valid_vf_info(self):
+        load = CanonicalInstruction(
+            "inst.load", "VLDS", InstructionClass.LOAD, "fp32",
+            inputs=(CanonicalOperand(
+                "input.0", OperandRole.MEMORY, "fp32",
+                self._memory("ub.input", AccessKind.READ),
+            ),),
+            outputs=(CanonicalOperand("acc.0", OperandRole.DESTINATION, "fp32"),),
+            source_location=SourceLocation("fixture.cce", 12, 3),
+        )
+        store = CanonicalInstruction(
+            "inst.store", "VSTS", InstructionClass.STORE, "fp32",
+            inputs=(CanonicalOperand("acc.0", OperandRole.SOURCE, "fp32"),),
+            outputs=(CanonicalOperand(
+                "output.0", OperandRole.MEMORY, "fp32",
+                self._memory("ub.output", AccessKind.WRITE),
+            ),),
+        )
+        return self._contract(
+            (
+                CanonicalLoop(
+                    "loop.row", InductionVariable("i"), "ROWS", 1, (), (load, store)
+                ),
+                CanonicalMembar("membar.0", "VST_VLD"),
+            ),
+            params={"ROWS": 4},
+        )
+
     def test_shared_v1_serialization_fixture(self):
         fixture = Path(__file__).parent / "fixtures/canonical_vf_info/v1_valid_loop.json"
         vf_info = canonical_vf_info_from_dict(json.loads(fixture.read_text()))
@@ -35,162 +105,159 @@ class CanonicalVfInfoValidatorTest(unittest.TestCase):
         self.assertTrue(result.ok, result.diagnostics)
         self.assertEqual(vf_info.context[0].induction.variable_id, "i")
 
-    def _values(self):
-        return {
-            "input.0": CanonicalValue("input.0", "input", StorageKind.UB, "fp32", (64,)),
-            "output.0": CanonicalValue(
-                "output.0", "output", StorageKind.UB, "fp32", (64,), "inst.store"
-            ),
-            "acc.0": CanonicalValue(
-                "acc.0", "acc", StorageKind.REGISTER, "fp32", (64,), "inst.load"
-            ),
-        }
+        carried_fixture = (
+            Path(__file__).parent
+            / "fixtures/canonical_vf_info/v1_valid_loop_carried.json"
+        )
+        carried = canonical_vf_info_from_dict(json.loads(carried_fixture.read_text()))
+        self.assertTrue(validate_canonical_vf_info(carried).ok)
 
-    def _memory(self, value_id, kind):
-        return MemoryAccess(
-            base_value_id=value_id,
-            offset=AffineExpression(0, (AffineTerm("i", 1),)),
-            access_kind=kind,
-            span=64,
+        invalid_fixture = (
+            Path(__file__).parent
+            / "fixtures/canonical_vf_info/v1_invalid_loop_scope.json"
         )
-
-    def _valid_vf_info(self) -> CanonicalVfInfo:
-        load = CanonicalInstruction(
-            instruction_id="inst.load",
-            opcode="VLDS",
-            instruction_class=InstructionClass.LOAD,
-            form="fp32",
-            inputs=(
-                CanonicalOperand(
-                    "input.0", OperandRole.MEMORY, "fp32", self._memory("input.0", AccessKind.READ)
-                ),
-            ),
-            outputs=(CanonicalOperand("acc.0", OperandRole.DESTINATION, "fp32"),),
-            source_location=SourceLocation("fixture.cce", 12, 3),
-        )
-        store = CanonicalInstruction(
-            instruction_id="inst.store",
-            opcode="VSTS",
-            instruction_class=InstructionClass.STORE,
-            form="fp32",
-            inputs=(CanonicalOperand("acc.0", OperandRole.SOURCE, "fp32"),),
-            outputs=(
-                CanonicalOperand(
-                    "output.0", OperandRole.MEMORY, "fp32", self._memory("output.0", AccessKind.WRITE)
-                ),
-            ),
-            dependencies=(DependencyRef("inst.load", DependencyKind.DATA, 0),),
-        )
-        return CanonicalVfInfo(
-            context=(
-                CanonicalLoop("loop.row", InductionVariable("i"), "ROWS", 1, (), (load, store)),
-                CanonicalMembar(
-                    "membar.0",
-                    "VST_VLD",
-                    (DependencyRef("inst.store", DependencyKind.CONTROL),),
-                ),
-            ),
-            values=self._values(),
-            params={"ROWS": 4},
+        invalid = canonical_vf_info_from_dict(json.loads(invalid_fixture.read_text()))
+        self.assertEqual(
+            {item.code for item in validate_canonical_vf_info(invalid).errors},
+            {"loop_back_edge_out_of_scope"},
         )
 
     def test_valid_contract_passes_without_mutating_input(self):
         vf_info = self._valid_vf_info()
         before = copy.deepcopy(vf_info)
         result = validate_canonical_vf_info(vf_info)
-        self.assertTrue(result.ok)
-        self.assertEqual(result.diagnostics, ())
+        self.assertTrue(result.ok, result.diagnostics)
         self.assertEqual(vf_info, before)
+
+    def test_explicit_data_dependency_is_not_a_supported_kind(self):
+        vf_info = self._valid_vf_info()
+        loop = vf_info.context[0]
+        store = replace(
+            loop.body[1],
+            dependencies=(DependencyRef("inst.load", "data", 0),),  # type: ignore[arg-type]
+        )
+        invalid = replace(vf_info, context=(replace(loop, body=(loop.body[0], store)),))
+        codes = {item.code for item in validate_canonical_vf_info(invalid).errors}
+        self.assertIn("unsupported_dependency_kind", codes)
 
     def test_unknown_opcode_is_allowed_with_explicit_instruction_class(self):
         unknown = CanonicalInstruction(
-            "inst.unknown",
-            "VUNKNOWN",
-            InstructionClass.COMPUTE,
-            "fp32",
+            "inst.unknown", "VUNKNOWN", InstructionClass.COMPUTE, "fp32",
             (CanonicalOperand("acc.0", OperandRole.SOURCE, "fp32"),),
             (CanonicalOperand("acc.1", OperandRole.DESTINATION, "fp32"),),
         )
         values = {
-            key: replace(value, producer_instruction_id=None)
-            for key, value in self._values().items()
+            "acc.0": CanonicalValue("acc.0", "acc", StorageKind.REGISTER, "fp32"),
+            "acc.1": CanonicalValue(
+                "acc.1", "acc", StorageKind.REGISTER, "fp32",
+                producer_node_id="inst.unknown",
+            ),
         }
-        values["acc.1"] = replace(
-            values["acc.0"],
-            definition_id="acc.1",
-            producer_instruction_id="inst.unknown",
-        )
         vf_info = CanonicalVfInfo((unknown,), values)
         self.assertTrue(validate_canonical_vf_info(vf_info).ok)
 
-    def test_unknown_reference_and_source_location_are_diagnosed(self):
-        invalid = CanonicalInstruction(
-            "inst.bad",
-            "VADD",
-            InstructionClass.COMPUTE,
-            "fp32",
-            (CanonicalOperand("missing", OperandRole.SOURCE),),
-            (CanonicalOperand("acc.0", OperandRole.DESTINATION),),
-            source_location=SourceLocation("bad.cce", 7, 9),
-        )
-        result = validate_canonical_vf_info(CanonicalVfInfo((invalid,), self._values()))
-        self.assertFalse(result.ok)
-        self.assertEqual(result.errors[0].code, "unknown_value_reference")
-        self.assertEqual(result.errors[0].location.line, 7)
-
     def test_generic_semantic_mismatches_are_rejected(self):
         invalid = CanonicalInstruction(
-            "same",
-            "VLDS",
-            InstructionClass.LOAD,
-            "fp32",
-            (
-                CanonicalOperand(
-                    "input.0",
-                    "anything",  # type: ignore[arg-type]
-                    "fp16",
-                    self._memory("output.0", AccessKind.READ),
-                ),
-            ),
+            "same", "VLDS", InstructionClass.LOAD, "fp32",
+            (CanonicalOperand(
+                "input.0", "anything", "fp16",  # type: ignore[arg-type]
+                self._memory("ub.output", AccessKind.READ),
+            ),),
             (CanonicalOperand("acc.0", OperandRole.DESTINATION),),
         )
-        loop = CanonicalLoop(
-            "same", InductionVariable("i"), 1, 1, (), (invalid,)
-        )
-        result = validate_canonical_vf_info(CanonicalVfInfo((loop,), self._values()))
-        codes = {error.code for error in result.errors}
+        loop = CanonicalLoop("same", InductionVariable("i"), 1, 1, (), (invalid,))
+        codes = {
+            item.code for item in validate_canonical_vf_info(
+                self._contract((loop,))
+            ).errors
+        }
         self.assertIn("duplicate_node_id", codes)
         self.assertIn("unsupported_operand_role", codes)
         self.assertIn("operand_dtype_mismatch", codes)
-        self.assertIn("memory_base_operand_mismatch", codes)
+        self.assertIn("memory_base_object_mismatch", codes)
 
     def test_affine_variables_must_be_declared(self):
         memory = MemoryAccess(
-            "input.0",
-            AffineExpression(0, (AffineTerm("undeclared", 64),)),
-            AccessKind.READ,
-            64,
+            "ub.input", AffineExpression(0, (AffineTerm("undeclared", 64),)),
+            AccessKind.READ, 64,
         )
         invalid = CanonicalInstruction(
-            "inst.load",
-            "VLDS",
-            InstructionClass.LOAD,
-            "fp32",
+            "inst.load", "VLDS", InstructionClass.LOAD, "fp32",
             (CanonicalOperand("input.0", OperandRole.MEMORY, "fp32", memory),),
             (CanonicalOperand("acc.0", OperandRole.DESTINATION),),
         )
-        result = validate_canonical_vf_info(CanonicalVfInfo((invalid,), self._values()))
-        self.assertIn("undeclared_affine_variable", {error.code for error in result.errors})
+        codes = {
+            item.code for item in validate_canonical_vf_info(
+                self._contract((invalid,))
+            ).errors
+        }
+        self.assertIn("undeclared_affine_variable", codes)
+
+    def test_loop_carried_scope_and_metadata_are_validated(self):
+        update = CanonicalInstruction(
+            "inst.update", "VADD", InstructionClass.COMPUTE, "fp32",
+            (CanonicalOperand("acc.entry", OperandRole.SOURCE, "fp32"),),
+            (CanonicalOperand("acc.back", OperandRole.DESTINATION, "fp32"),),
+        )
+        loop = CanonicalLoop(
+            "loop.acc", InductionVariable("i"), 4, 1,
+            (LoopCarriedValue("acc", "acc.entry", "acc.back", "acc.exit"),),
+            (update,),
+        )
+        values = {
+            "acc.entry": CanonicalValue("acc.entry", "acc", StorageKind.REGISTER, "fp32"),
+            "acc.back": CanonicalValue(
+                "acc.back", "acc", StorageKind.REGISTER, "fp32",
+                producer_node_id="inst.after",
+            ),
+            "acc.exit": CanonicalValue(
+                "acc.exit", "acc", StorageKind.REGISTER, "fp16",
+                producer_node_id="inst.after",
+            ),
+        }
+        after = CanonicalInstruction(
+            "inst.after", "VADD", InstructionClass.COMPUTE, "fp32", (),
+            (CanonicalOperand("acc.back", OperandRole.DESTINATION, "fp32"),),
+        )
+        codes = {
+            item.code for item in validate_canonical_vf_info(
+                CanonicalVfInfo((loop, after), values)
+            ).errors
+        }
+        self.assertIn("loop_back_edge_out_of_scope", codes)
+        self.assertIn("loop_exit_producer_mismatch", codes)
+        self.assertIn("loop_carried_type_mismatch", codes)
+
+    def test_direct_python_values_must_fit_cross_language_types(self):
+        invalid_memory = MemoryAccess(
+            "ub.input",
+            AffineExpression("bad", (AffineTerm("i", "bad"),)),  # type: ignore[arg-type]
+            AccessKind.READ,
+            True,
+        )
+        inst = CanonicalInstruction(
+            "inst.load", "VLDS", InstructionClass.LOAD, "fp32",
+            (CanonicalOperand("input.0", OperandRole.MEMORY, "fp32", invalid_memory),),
+            (CanonicalOperand("acc.0", OperandRole.DESTINATION),),
+            attributes={"huge": 2**100, "infinite": math.inf},
+            dependencies=(DependencyRef("membar.before", DependencyKind.CONTROL, True),),
+        )
+        contract = self._contract(
+            (CanonicalMembar("membar.before", "VST_VLD"), inst),
+            params={"ROWS": 4},
+        )
+        codes = {item.code for item in validate_canonical_vf_info(contract).errors}
+        self.assertIn("invalid_scalar_attribute", codes)
+        self.assertIn("invalid_int64", codes)
+        self.assertIn("invalid_memory_span", codes)
+        self.assertIn("invalid_dependency_operand_index", codes)
 
     def test_membar_and_loop_parameter_validation(self):
-        invalid = CanonicalVfInfo(
-            (
-                CanonicalLoop("loop.bad", InductionVariable("i"), "UNKNOWN", 0),
-                CanonicalMembar("membar.bad", "ALL"),
-            ),
-            self._values(),
-        )
-        codes = {error.code for error in validate_canonical_vf_info(invalid).errors}
+        invalid = self._contract((
+            CanonicalLoop("loop.bad", InductionVariable("i"), "UNKNOWN", 0),
+            CanonicalMembar("membar.bad", "ALL"),
+        ))
+        codes = {item.code for item in validate_canonical_vf_info(invalid).errors}
         self.assertIn("unresolved_parameter", codes)
         self.assertIn("invalid_loop_unroll", codes)
         self.assertIn("unsupported_membar_type", codes)

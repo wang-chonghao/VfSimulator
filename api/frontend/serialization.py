@@ -11,6 +11,7 @@ from api.frontend.schema import (
     CanonicalLoop,
     CanonicalMembar,
     CanonicalOperand,
+    CanonicalStorageObject,
     CanonicalValue,
     CanonicalVfInfo,
     DependencyKind,
@@ -38,7 +39,7 @@ def _source_location(value: Any) -> SourceLocation | None:
 
 def _dependency(value: Mapping[str, Any]) -> DependencyRef:
     return DependencyRef(
-        producer_instruction_id=value["producer_instruction_id"],
+        producer_node_id=value["producer_node_id"],
         kind=DependencyKind(value["kind"]),
         operand_index=value.get("operand_index"),
     )
@@ -50,7 +51,7 @@ def _operand(value: Mapping[str, Any]) -> CanonicalOperand:
     if memory_value is not None:
         offset = memory_value["offset"]
         memory = MemoryAccess(
-            base_value_id=memory_value["base_value_id"],
+            base_object_id=memory_value["base_object_id"],
             offset=AffineExpression(
                 constant=offset["constant"],
                 terms=tuple(
@@ -129,14 +130,25 @@ def canonical_vf_info_from_dict(payload: Mapping[str, Any]) -> CanonicalVfInfo:
             storage=StorageKind(value["storage"]),
             dtype=value["dtype"],
             shape=tuple(value.get("shape", ())),
-            producer_instruction_id=value.get("producer_instruction_id"),
+            producer_node_id=value.get("producer_node_id"),
+            storage_object_id=value.get("storage_object_id"),
             source_location=_source_location(value.get("source_location")),
         )
         for definition_id, value in payload["values"].items()
     }
+    storage_objects = {
+        object_id: CanonicalStorageObject(
+            object_id=value["object_id"],
+            storage=StorageKind(value["storage"]),
+            shape=tuple(value.get("shape", ())),
+            source_location=_source_location(value.get("source_location")),
+        )
+        for object_id, value in payload.get("storage_objects", {}).items()
+    }
     return CanonicalVfInfo(
         context=tuple(_node(node) for node in payload["context"]),
         values=values,
+        storage_objects=storage_objects,
         params=dict(payload.get("params", {})),
         uarch=dict(payload.get("uarch", {})),
         source=dict(payload.get("source", {})),

@@ -142,6 +142,7 @@ add_test(NAME vfsim_program_vreg_live_range_normalization_test
 )
 
 add_executable(vfsim_vf_info_api_test
+  CanonicalVfInfoFixtureDecoder.cpp
   VfsimVfInfoApiTest.cpp
 )
 
