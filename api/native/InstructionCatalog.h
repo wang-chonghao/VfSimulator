@@ -32,6 +32,11 @@ struct NativeOperandSpec {
   std::unordered_set<std::string> allowedValues;
 };
 
+struct NativeCallVariant {
+  int argumentCount = 0;
+  std::unordered_map<int, std::unordered_set<std::string>> argumentValues;
+};
+
 struct NativeInstructionSpec {
   std::string opcode;
   CatalogInstructionClass instructionClass = CatalogInstructionClass::Compute;
@@ -42,6 +47,7 @@ struct NativeInstructionSpec {
   std::unordered_set<std::string> forms;
   std::unordered_map<std::string, std::string> specializations;
   std::vector<NativeOperandSpec> operands;
+  std::vector<NativeCallVariant> callVariants;
 };
 
 class InstructionCatalog {

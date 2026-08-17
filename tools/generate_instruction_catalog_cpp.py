@@ -60,6 +60,32 @@ def render_catalog_cpp(payload: Mapping[str, Any]) -> str:
                     )
                 )
     lines.append("};")
+    lines.append("static constexpr GeneratedCallVariant kGeneratedCallVariants[] = {")
+    for opcode, spec in instructions.items():
+        for variant_index, variant in enumerate(spec.get("call_variants", [])):
+            lines.append(
+                "  {%s, %d, %d},"
+                % (_quote(opcode), variant_index, variant["argument_count"])
+            )
+    lines.append("};")
+    lines.append(
+        "static constexpr GeneratedCallVariantValue "
+        "kGeneratedCallVariantValues[] = {"
+    )
+    for opcode, spec in instructions.items():
+        for variant_index, variant in enumerate(spec.get("call_variants", [])):
+            for argument_index, values in variant.get("argument_values", {}).items():
+                for value in values:
+                    lines.append(
+                        "  {%s, %d, %d, %s},"
+                        % (
+                            _quote(opcode),
+                            variant_index,
+                            int(argument_index),
+                            _quote(value),
+                        )
+                    )
+    lines.append("};")
     lines.append("static constexpr GeneratedAlias kGeneratedAliases[] = {")
     for opcode, spec in instructions.items():
         for alias in spec.get("aliases", []):

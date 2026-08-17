@@ -83,7 +83,7 @@ def extract_cce_vf_scopes(path: str | Path) -> List[CCEVFScope]:
                 start_line=_line_number(clean, vec_open),
                 end_line=_line_number(clean, vec_close),
                 source=vec_source,
-                declaration_source=body,
+                declaration_source=body[: vec_match.start()],
                 params=_parse_param_names(match.group("params")),
                 param_storage=_parse_param_storage(match.group("params")),
             )
@@ -131,6 +131,19 @@ class _VFScopeParser:
         return self._parse_block(self.scope.source, frozenset())
 
     def _parse_block(
+        self,
+        text: str,
+        induction_variables: frozenset[str],
+    ) -> List[VFNode]:
+        saved_dtypes = dict(self.register_dtypes)
+        saved_names = set(self.register_names)
+        try:
+            return self._parse_block_contents(text, induction_variables)
+        finally:
+            self.register_dtypes = saved_dtypes
+            self.register_names = saved_names
+
+    def _parse_block_contents(
         self,
         text: str,
         induction_variables: frozenset[str],
@@ -245,6 +258,20 @@ class _VFScopeParser:
         expected_count = max(
             (operand.argument_index for operand in spec.operands), default=-1
         ) + 1
+        if spec.call_variants:
+            matching_variants = [
+                variant
+                for variant in spec.call_variants
+                if variant.argument_count == len(args)
+                and all(
+                    args[index].strip() in values
+                    for index, values in variant.argument_values.items()
+                )
+            ]
+            if not matching_variants:
+                raise ValueError(
+                    f"{callee} arguments do not match a declared Catalog call variant"
+                )
         if len(args) > expected_count:
             raise ValueError(
                 f"{callee} expects at most {expected_count} arguments, got {len(args)}"
@@ -325,12 +352,13 @@ class _VFScopeParser:
             )
         if kind == ArgumentKind.CONFIG:
             if operand_spec.name == "offset":
-                allowed_names = (
-                    set(induction_variables)
-                    | set(self.loop_params)
-                    | self.scalar_names
-                )
-                if _is_affine_int_expression(arg, allowed_names):
+                variable_names = set(induction_variables) | self.scalar_names
+                constant_names = set(self.loop_params)
+                if _is_affine_int_expression(
+                    arg,
+                    variable_names=variable_names,
+                    constant_names=constant_names,
+                ):
                     return None
                 raise ValueError(
                     f"{callee} argument {index} has invalid offset expression: {arg}"
@@ -585,28 +613,49 @@ def _is_config_token(value: str) -> bool:
     )
 
 
-def _is_affine_int_expression(value: str, allowed_names: set[str]) -> bool:
+def _is_affine_int_expression(
+    value: str,
+    *,
+    variable_names: set[str],
+    constant_names: set[str] | None = None,
+) -> bool:
     try:
         tree = ast.parse(value.strip(), mode="eval")
     except SyntaxError:
         return False
 
-    def valid(node: ast.AST) -> bool:
-        if isinstance(node, ast.Expression):
-            return valid(node.body)
-        if isinstance(node, ast.Constant):
-            return isinstance(node.value, int) and not isinstance(node.value, bool)
-        if isinstance(node, ast.Name):
-            return node.id in allowed_names
-        if isinstance(node, ast.UnaryOp):
-            return isinstance(node.op, (ast.UAdd, ast.USub)) and valid(node.operand)
-        if isinstance(node, ast.BinOp):
-            return isinstance(node.op, (ast.Add, ast.Sub, ast.Mult)) and valid(
-                node.left
-            ) and valid(node.right)
-        return False
+    constant_names = constant_names or set()
 
-    return valid(tree)
+    def classify(node: ast.AST) -> tuple[bool, bool]:
+        if isinstance(node, ast.Expression):
+            return classify(node.body)
+        if isinstance(node, ast.Constant):
+            valid = isinstance(node.value, int) and not isinstance(node.value, bool)
+            return valid, valid
+        if isinstance(node, ast.Name):
+            if node.id in constant_names:
+                return True, True
+            return node.id in variable_names, False
+        if isinstance(node, ast.UnaryOp):
+            if not isinstance(node.op, (ast.UAdd, ast.USub)):
+                return False, False
+            return classify(node.operand)
+        if isinstance(node, ast.BinOp):
+            left_valid, left_constant = classify(node.left)
+            right_valid, right_constant = classify(node.right)
+            if not left_valid or not right_valid:
+                return False, False
+            if isinstance(node.op, (ast.Add, ast.Sub)):
+                return True, left_constant and right_constant
+            if isinstance(node.op, ast.Mult):
+                return (
+                    left_constant or right_constant,
+                    left_constant and right_constant,
+                )
+        return False, False
+
+    valid, _ = classify(tree)
+    return valid
 
 
 def _declared_identifier(value: str) -> str:

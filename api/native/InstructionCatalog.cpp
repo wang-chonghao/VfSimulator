@@ -32,6 +32,17 @@ struct GeneratedAllowedValue {
   int argumentIndex;
   const char *value;
 };
+struct GeneratedCallVariant {
+  const char *opcode;
+  int variantIndex;
+  int argumentCount;
+};
+struct GeneratedCallVariantValue {
+  const char *opcode;
+  int variantIndex;
+  int argumentIndex;
+  const char *value;
+};
 struct GeneratedAlias { const char *alias; const char *opcode; };
 struct GeneratedForm { const char *opcode; const char *form; };
 struct GeneratedSpecialization {
@@ -128,6 +139,24 @@ InstructionCatalog::InstructionCatalog() {
       throw std::runtime_error("Generated allowed value references missing operand: " +
                                std::string(entry.opcode));
     operand->allowedValues.emplace(entry.value);
+  }
+  for (const auto &entry : kGeneratedCallVariants) {
+    auto &variants = specs_.at(entry.opcode).callVariants;
+    if (entry.variantIndex != static_cast<int>(variants.size()))
+      throw std::runtime_error("Generated call variants are not contiguous: " +
+                               std::string(entry.opcode));
+    NativeCallVariant variant;
+    variant.argumentCount = entry.argumentCount;
+    variants.push_back(std::move(variant));
+  }
+  for (const auto &entry : kGeneratedCallVariantValues) {
+    auto &variants = specs_.at(entry.opcode).callVariants;
+    if (entry.variantIndex < 0 ||
+        entry.variantIndex >= static_cast<int>(variants.size()))
+      throw std::runtime_error("Generated call variant value is invalid: " +
+                               std::string(entry.opcode));
+    variants[entry.variantIndex].argumentValues[entry.argumentIndex].emplace(
+        entry.value);
   }
   for (const auto &entry : kGeneratedAliases) {
     auto [it, inserted] = aliases_.emplace(lower(entry.alias), entry.opcode);

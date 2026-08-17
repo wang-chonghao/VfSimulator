@@ -25,6 +25,7 @@ from api.frontend.validator import validate_canonical_vf_info
 from api.frontend.serialization import canonical_vf_info_from_dict
 from api.frontend.instruction_catalog import (
     ArgumentKind,
+    CallVariant,
     CatalogTimingDifference,
     DEFAULT_CATALOG_PATH,
     DEFAULT_INSTRUCTION_CATALOG,
@@ -51,6 +52,7 @@ __all__ = [
     "CanonicalValue",
     "CanonicalVfInfo",
     "CatalogTimingDifference",
+    "CallVariant",
     "DEFAULT_CATALOG_PATH",
     "DEFAULT_INSTRUCTION_CATALOG",
     "DependencyKind",

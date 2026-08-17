@@ -566,6 +566,9 @@ b32 -> fp32
 - 如果 `isa.json` 中存在显式 `OP.b16` 或 `OP.b32`，必须优先使用显式参数。
 - 如果显式 form 完全缺失但兼容 form 存在，借用兼容 form 参数，并记录
   `compatible_isa_form_fallback`。
+- 除上述共享映射外，不做普通 form 间的隐式借用。例如同 opcode 只有 `fp32`
+  参数而请求 `fp16` 时，Python/C++ 都使用默认参数并记录
+  `unsupported_isa_form`，不能静默继承 `fp32`。
 - 如果显式 form 存在但参数字段覆盖不完整，则按以下顺序合并：
 
 ```text

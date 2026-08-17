@@ -257,6 +257,16 @@ ParamDB makePartialCompatTestDb() {
               },
               "b16": {"latency": 123}
             }
+          },
+          "VFP32ONLY": {
+            "op_class": "COMPUTE",
+            "forms": {
+              "fp32": {
+                "latency": 123,
+                "EXU": "SFU",
+                "dispatch_exu": "EXU0_ONLY"
+              }
+            }
           }
         }
       })JSON");
@@ -303,6 +313,18 @@ void verifyNativePartialCompatibleFormMerge() {
   require(partial.dataLoadCost == 9, "native partial b16 data_load_cost must inherit fp16");
   require(partial.dataStoreCost == 9, "native partial b16 data_store_cost must inherit fp16");
   require(partial.dispatchExu == "EXU01", "native partial b16 dispatch_exu must inherit fp16");
+
+  const InstConfig &missingFp16 = db.inst("VFP32ONLY", "fp16");
+  require(missingFp16.latency == 9,
+          "native missing fp16 form must not borrow fp32 latency");
+  require(missingFp16.dispatchExu == "EXU01",
+          "native missing fp16 form must use compute fallback dispatch");
+  bool sawUnsupportedForm = false;
+  for (const auto &warning : db.warnings())
+    sawUnsupportedForm =
+        sawUnsupportedForm || warning.kind == "unsupported_isa_form";
+  require(sawUnsupportedForm,
+          "native missing fp16 form must record unsupported_isa_form");
 }
 
 void verifyVpackVsstbConfig(const ParamDB &db) {

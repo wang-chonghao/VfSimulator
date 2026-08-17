@@ -11,7 +11,11 @@
 
 CCE 中已登记的 load、store 和 compute 调用统一由 Catalog binder 按 argument index、方向和 kind 绑定。binder 同时检查参数数量、声明过的配置值和 semantic form；缺少必填 operand、携带额外参数，或把 UB、register、scalar、predicate 放入错误位置时会直接产生输入错误。未登记 opcode 暂时保留通用 vector-call 兼容路径，仍由 ParamDB 记录 timing fallback warning。
 
+CCE binder 使用词法作用域符号表：声明按源程序顺序生效，loop 内声明不会泄漏到外层。load/store 的普通寻址与 `POST_UPDATE`、`VDUP` 的 4/5 参数形式由 Catalog `call_variants` 声明，不通过忽略尾部参数兼容。offset MVP 只接受常量、变量、加减和“至少一侧为常量表达式”的乘法；变量相乘不属于 affine expression，会直接报错。
+
 Catalog 的 form 描述指令语义，不代表 timing 已覆盖。已知 opcode 的 canonical 输入必须匹配 Catalog 中的 instruction class、form 和 operand signature；未知 opcode 只要显式携带完整语义仍可通过 validator。`VPACK.b32` 的 `b32` 表示输入 lane 视角，逻辑寄存器仍可使用 `fp16/bf16` dtype，validator 不把 form 与每个 value dtype 强制等同。
+
+Timing form 兼容只由 `core/param_compat.py` 与 `native/ParamCompat.cpp` 维护，目前仅支持 `b16 -> fp16`、`b32 -> fp32`，并继承同 opcode 兼容 form 的完整参数后再由真实 form 局部覆盖。普通缺失 form（例如只有 `fp32` 参数却请求 `fp16`）不借用 `fp32`，统一使用默认参数并记录 `unsupported_isa_form`。
 
 现有 frontend 入口包括：
 

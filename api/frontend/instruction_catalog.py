@@ -51,6 +51,14 @@ class OperandSpec:
 
 
 @dataclass(frozen=True)
+class CallVariant:
+    argument_count: int
+    argument_values: Mapping[int, frozenset[str]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+
+
+@dataclass(frozen=True)
 class InstructionSpec:
     opcode: str
     instruction_class: InstructionClass
@@ -65,6 +73,7 @@ class InstructionSpec:
     )
     virtual: bool = False
     timing_optional: bool = False
+    call_variants: tuple[CallVariant, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -175,6 +184,43 @@ class InstructionCatalog:
                 raise ValueError(f"Ignored operand role mismatch in {spec.opcode}")
         if indexes and indexes != set(range(max(indexes) + 1)):
             raise ValueError(f"Argument indexes must be contiguous in {spec.opcode}")
+
+        required_count = max(
+            (
+                operand.argument_index + 1
+                for operand in spec.operands
+                if not operand.optional
+            ),
+            default=0,
+        )
+        maximum_count = max(indexes, default=-1) + 1
+        operands_by_index = {
+            operand.argument_index: operand for operand in spec.operands
+        }
+        for variant in spec.call_variants:
+            if (
+                isinstance(variant.argument_count, bool)
+                or not isinstance(variant.argument_count, int)
+                or not required_count <= variant.argument_count <= maximum_count
+            ):
+                raise ValueError(f"Invalid call variant count in {spec.opcode}")
+            for argument_index, values in variant.argument_values.items():
+                operand = operands_by_index.get(argument_index)
+                if (
+                    isinstance(argument_index, bool)
+                    or not isinstance(argument_index, int)
+                    or argument_index < 0
+                    or argument_index >= variant.argument_count
+                    or operand is None
+                    or operand.kind != ArgumentKind.CONFIG
+                    or not values
+                    or not all(isinstance(value, str) and value for value in values)
+                ):
+                    raise ValueError(f"Invalid call variant values in {spec.opcode}")
+                if operand.allowed_values and not values <= set(operand.allowed_values):
+                    raise ValueError(
+                        f"Call variant exceeds allowed values in {spec.opcode}"
+                    )
 
         tracked = [
             operand
@@ -358,6 +404,7 @@ def instruction_catalog_from_dict(payload: Mapping[str, Any]) -> InstructionCata
         specializations = raw.get("specializations", {})
         virtual = raw.get("virtual", False)
         timing_optional = raw.get("timing_optional", False)
+        raw_call_variants = raw.get("call_variants", [])
         if not isinstance(aliases, list) or not all(
             isinstance(value, str) and value for value in aliases
         ):
@@ -373,6 +420,42 @@ def instruction_catalog_from_dict(payload: Mapping[str, Any]) -> InstructionCata
             raise ValueError(f"{opcode}.specializations must map strings to strings")
         if not isinstance(virtual, bool) or not isinstance(timing_optional, bool):
             raise ValueError(f"{opcode}.virtual/timing_optional must be boolean")
+        if not isinstance(raw_call_variants, list):
+            raise ValueError(f"{opcode}.call_variants must be an array")
+        call_variants = []
+        for raw_variant in raw_call_variants:
+            if not isinstance(raw_variant, Mapping):
+                raise ValueError(f"Invalid call variant for {opcode}")
+            argument_count = raw_variant.get("argument_count")
+            raw_values = raw_variant.get("argument_values", {})
+            if isinstance(argument_count, bool) or not isinstance(
+                argument_count, int
+            ):
+                raise ValueError(f"{opcode}.argument_count must be an integer")
+            if not isinstance(raw_values, Mapping):
+                raise ValueError(f"{opcode}.argument_values must be an object")
+            argument_values = {}
+            for raw_index, values in raw_values.items():
+                try:
+                    argument_index = int(raw_index)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"{opcode}.argument_values index must be an integer"
+                    ) from exc
+                if (
+                    isinstance(raw_index, bool)
+                    or str(argument_index) != str(raw_index)
+                    or not isinstance(values, list)
+                    or not all(isinstance(value, str) and value for value in values)
+                ):
+                    raise ValueError(f"Invalid argument values for {opcode}")
+                argument_values[argument_index] = frozenset(values)
+            call_variants.append(
+                CallVariant(
+                    argument_count=argument_count,
+                    argument_values=MappingProxyType(argument_values),
+                )
+            )
         fixed_form = raw.get("fixed_form")
         if fixed_form is not None and (
             not isinstance(fixed_form, str) or not fixed_form
@@ -399,6 +482,7 @@ def instruction_catalog_from_dict(payload: Mapping[str, Any]) -> InstructionCata
             }),
             virtual=virtual,
             timing_optional=timing_optional,
+            call_variants=tuple(call_variants),
         ))
     return InstructionCatalog(specs)
 

@@ -510,6 +510,47 @@ class InstructionFallbackTest(unittest.TestCase):
         self.assertIn("compatible_forwarding_pair_fallback", kinds)
         self.assertIn("compatible_ii_pair_fallback", kinds)
 
+    def test_missing_fp16_form_does_not_borrow_fp32_params(self):
+        db = ParamDB(base_dir=str(ROOT))
+        db._insts["VFP32ONLY"] = {
+            "op_class": "COMPUTE",
+            "forms": {
+                "fp32": {
+                    "latency": 123,
+                    "EXU": "SFU",
+                    "dispatch_exu": "EXU0_ONLY",
+                }
+            },
+        }
+
+        params = db.get_inst_form("VFP32ONLY", form="fp16", dtype="fp32")
+
+        self.assertEqual(params["latency"], 9)
+        self.assertEqual(params["dispatch_exu"], "EXU01")
+        self.assertTrue(
+            any(
+                warning["kind"] == "unsupported_isa_form"
+                and warning.get("op") == "VFP32ONLY"
+                and warning.get("form") == "fp16"
+                for warning in db.get_warnings()
+            )
+        )
+
+    def test_timing_optional_store_uses_store_fallback(self):
+        db = ParamDB(base_dir=str(ROOT))
+
+        params = db.get_inst_form("VSTUS", form="fp32", dtype="fp32")
+
+        self.assertEqual(params["op_class"], "STORE")
+        self.assertEqual(params["latency"], 9)
+        self.assertTrue(
+            any(
+                warning["kind"] == "unsupported_isa_op"
+                and warning.get("op") == "VSTUS"
+                for warning in db.get_warnings()
+            )
+        )
+
     def test_loop_carried_vreg_alias_updates_following_store_source(self):
         values = {
             "memOut": {"value_id": "memOut", "storage": "UB", "dtype": "fp32", "shape": [64]},

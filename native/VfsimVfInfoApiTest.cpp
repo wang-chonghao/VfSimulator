@@ -63,7 +63,10 @@ int main() {
       instructionCatalog.lookup("VADD")->operands[2].kind !=
           CatalogArgumentKind::Register ||
       instructionCatalog.lookup("VLDS")->operands[3].allowedValues.count(
-          "NORM") != 1)
+          "NORM") != 1 ||
+      instructionCatalog.lookup("VLDS")->callVariants.size() != 2 ||
+      instructionCatalog.lookup("VDUP")->callVariants[1].argumentValues.at(3).count(
+          "POS_LOWEST") != 1)
     throw std::runtime_error("native generated instruction catalog mismatch");
 
   const auto sharedFixtureJson = json::parseFile(

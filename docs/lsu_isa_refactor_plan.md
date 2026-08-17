@@ -142,7 +142,7 @@ op_class = COMPUTE -> SHQ / EXQ / EXU 计算路径
 
 - `VLDS` 在 metadata 缺失时 fallback 为 load-like。
 - `VSTS` 在 metadata 缺失时 fallback 为 store-like。
-- `VLD`、`VST`、`VSTUS`、`VSTAS` 被视为真实 ISA op name；使用前需要显式配置，配置缺失会抛出 `MissingIsaConfigError`。
+- `VLD` / `VST` 由公开 CCE alias 规范化为 `VLDS` / `VSTS`；`VSTUS` / `VSTAS` 保留真实 op name 和 store semantic forms。后两者 timing 未校准时使用统一默认参数并记录 warning。
 - unknown op 为兼容旧路径会 fallback 为 compute-like。
 
 历史 JSON 输入曾用 `VLD` 和 `VST` 表示实际应为 `VLDS` 和 `VSTS` 的 case。当前公开示例应使用真实 ISA 名称。
@@ -387,7 +387,7 @@ python3 tools/run_cost_model_regression.py --tier smoke
 - ISA `op_class = LOAD` 是 load-like。
 - ISA `op_class = STORE` 是 store-like。
 - ISA `op_class = COMPUTE` 是 compute-like。
-- `VLD`、`VST`、`VSTUS`、`VSTAS` 在加入校准配置前，缺失配置会报错。
+- `VSTUS`、`VSTAS` 在加入校准配置前按 store fallback 执行并记录 timing warning。
 
 ### 阶段 2：旧版 LSU 指令的 ISA 条目
 

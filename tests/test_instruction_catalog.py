@@ -52,6 +52,17 @@ class InstructionCatalogTest(unittest.TestCase):
         )
         self.assertIsNone(DEFAULT_INSTRUCTION_CATALOG.lookup("vfuture"))
 
+    def test_timing_optional_store_forms_reach_timing_fallback(self):
+        for opcode in ("VSTUS", "VSTAS"):
+            with self.subTest(opcode=opcode):
+                resolved_opcode, resolved_form = (
+                    DEFAULT_INSTRUCTION_CATALOG.resolve_and_validate_form(
+                        opcode, "fp32"
+                    )
+                )
+                self.assertEqual(resolved_opcode, opcode)
+                self.assertEqual(resolved_form, "fp32")
+
     def test_catalog_and_current_timing_config_do_not_drift(self):
         payload = json.loads((ROOT / "configs/isa.json").read_text())
         difference = DEFAULT_INSTRUCTION_CATALOG.compare_timing_config(payload)
@@ -125,6 +136,15 @@ class InstructionCatalogTest(unittest.TestCase):
                 signature=7
             ),
             "schema_version_boolean": lambda data: data.update(schema_version=True),
+            "call_variants_string": lambda data: data["instructions"]["VDUP"].update(
+                call_variants="four"
+            ),
+            "call_variant_count_boolean": lambda data: data["instructions"]["VDUP"][
+                "call_variants"
+            ][0].update(argument_count=True),
+            "call_variant_bad_value": lambda data: data["instructions"]["VDUP"][
+                "call_variants"
+            ][0]["argument_values"].update({"3": ["TOTALLY_INVALID"]}),
         }
         for name, mutate in mutations.items():
             with self.subTest(name=name):

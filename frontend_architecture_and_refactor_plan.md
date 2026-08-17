@@ -311,7 +311,7 @@ dtype 和 form 必须由指令及其操作数共同确定，不能由全局 `val
 
 必须支持同一逻辑存储位置在不同定义上具有不同 dtype，例如转换或复用寄存器。具体 dtype 应绑定到值版本或指令 operand，而不是只绑定到可变的逻辑名称。
 
-`bf16 -> fp16`、`b32 -> f32` 一类 timing 参数回退属于 ParamDB 查询逻辑，不应改变 canonical 输入的真实 dtype。
+`b16 -> fp16`、`b32 -> fp32` 这类 timing form 参数回退属于 ParamDB 查询逻辑，不应改变 canonical 输入的真实 dtype。兼容映射只允许来自 Python/C++ 共享规则；普通缺失 form 不允许隐式借用 `fp32`，而是使用默认参数并产生 warning。
 
 ### 6.7 内存访问
 
@@ -575,7 +575,7 @@ unroll 应在 IFU 动态展开阶段统一处理。前端仅保留结构化 loop
 1. 指令 latency 未覆盖，使用统一默认 latency。
 2. forwarding pair 未覆盖，使用规定公式。
 3. II pair 未覆盖，使用规定公式。
-4. bf16/b32 timing 缺失，按已确定的 f16/f32 回退链查询。
+4. b16/b32 timing form 缺失，按已确定的 fp16/fp32 回退链查询。
 5. Legacy JSON 根据旧名称规则补全 storage 或 dtype。
 
 ### 11.4 结构化字段
@@ -889,6 +889,7 @@ Cycle 回归用于验证性能模型没有意外变化，但不能替代语义�
 10. 在前端重构前同步 Python/C++ 后端：native 已采用 ALU/SFU 独立 RR、EXU0 reserve 配置，并对齐 loop back-edge、loop exit alias、重定义 kill、零次 loop 和 `three_ports_mode` 语义。native SHQ 到 EXQ 只生成一次候选端口，再按 policy 选择 greedy 或 RR。
 11. 建立共享 `InstructionCatalog`：`configs/instruction_catalog.json` 是唯一手写语义目录，Python 直接加载，C++ 由生成表消费；已覆盖 alias、instruction class、semantic form、specialization、operand signature、可选参数和 CCE 配置值。
 12. CCE 已知指令统一通过 Catalog binder，严格检查参数数量、operand kind、predicate、配置值与 semantic form；Canonical Python/C++ validator 对已知 opcode 检查 Catalog class/form/signature，未知 opcode 保留显式语义输入和 ParamDB fallback。
+13. CCE block 使用按声明顺序生效的词法作用域符号表；Catalog `call_variants` 描述 POST_UPDATE 与关联参数 overload；offset MVP 拒绝变量乘变量，只接受 affine 整数表达式。
 
 ### 19.2 当前迁移边界
 

@@ -364,13 +364,13 @@ class ParamDB:
 
         candidates = []
         normalized = self._normalize_form_key(opu, form)
-        candidates.extend(form_candidates(normalized))
-        if dtype is not None:
+        if normalized:
+            candidates.extend(form_candidates(normalized))
+        elif dtype is not None:
             candidates.extend(form_candidates(self._dtype_to_form(dtype)))
         legacy = self._legacy_vcvt_form(opu)
         if legacy:
             candidates.append(legacy)
-        candidates.extend(["default", "fp32"])
 
         for candidate in candidates:
             if candidate in forms:

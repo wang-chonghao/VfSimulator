@@ -66,14 +66,16 @@
       {"name": "dst", "argument_index": 0, "direction": "output", "role": "destination", "kind": "register"},
       {"name": "memory", "argument_index": 1, "direction": "input", "role": "memory", "kind": "ub"},
       {"name": "offset", "argument_index": 2, "direction": "ignore", "role": "config", "kind": "config"},
-      {"name": "mode", "argument_index": 3, "direction": "ignore", "role": "config", "kind": "config", "allowed_values": ["NORM", "BRC_B32", "BRC_B16", "ONEPT_B32", "ONEPT_B16"]}
+      {"name": "mode", "argument_index": 3, "direction": "ignore", "role": "config", "kind": "config", "allowed_values": ["NORM", "BRC_B32", "BRC_B16", "ONEPT_B32", "ONEPT_B16"]},
+      {"name": "update", "argument_index": 4, "direction": "ignore", "role": "config", "kind": "config", "optional": true, "allowed_values": ["POST_UPDATE"]}
     ],
     "store": [
       {"name": "src", "argument_index": 0, "direction": "input", "role": "source", "kind": "register"},
       {"name": "memory", "argument_index": 1, "direction": "output", "role": "memory", "kind": "ub"},
       {"name": "offset", "argument_index": 2, "direction": "ignore", "role": "config", "kind": "config"},
       {"name": "mode", "argument_index": 3, "direction": "ignore", "role": "config", "kind": "config", "allowed_values": ["NORM_B16", "NORM_B32", "ONEPT_B16", "ONEPT_B32"]},
-      {"name": "predicate", "argument_index": 4, "direction": "ignore", "role": "predicate", "kind": "predicate"}
+      {"name": "predicate", "argument_index": 4, "direction": "ignore", "role": "predicate", "kind": "predicate"},
+      {"name": "update", "argument_index": 5, "direction": "ignore", "role": "config", "kind": "config", "optional": true, "allowed_values": ["POST_UPDATE"]}
     ],
     "vsstb": [
       {"name": "src", "argument_index": 0, "direction": "input", "role": "source", "kind": "register"},
@@ -99,9 +101,9 @@
     "VCMAX": {"class": "compute", "signature": "reduction", "forms": ["fp16", "fp32", "b16", "b32"]},
     "VCMIN": {"class": "compute", "signature": "reduction", "forms": ["fp16", "fp32", "b16", "b32"]},
     "VCADD": {"class": "compute", "signature": "reduction", "forms": ["fp16", "fp32", "b16", "b32"]},
-    "VLDS": {"class": "load", "aliases": ["VLD"], "signature": "load", "forms": ["fp16", "fp32", "b16", "b32"]},
-    "VSTS": {"class": "store", "aliases": ["VST"], "signature": "store", "forms": ["fp16", "fp32", "bf16", "b16", "b32"]},
-    "VDUP": {"class": "compute", "signature": "duplicate", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VLDS": {"class": "load", "aliases": ["VLD"], "signature": "load", "forms": ["fp16", "fp32", "b16", "b32"], "call_variants": [{"argument_count": 4}, {"argument_count": 5, "argument_values": {"4": ["POST_UPDATE"]}}]},
+    "VSTS": {"class": "store", "aliases": ["VST"], "signature": "store", "forms": ["fp16", "fp32", "bf16", "b16", "b32"], "call_variants": [{"argument_count": 5}, {"argument_count": 6, "argument_values": {"5": ["POST_UPDATE"]}}]},
+    "VDUP": {"class": "compute", "signature": "duplicate", "forms": ["fp16", "fp32", "b16", "b32"], "call_variants": [{"argument_count": 4, "argument_values": {"3": ["MODE_ZEROING"]}}, {"argument_count": 5, "argument_values": {"3": ["POS_LOWEST"], "4": ["MODE_ZEROING"]}}]},
     "VAND": {"class": "compute", "signature": "binary", "forms": ["fp16", "fp32", "b16", "b32"]},
     "VCGMAX": {"class": "compute", "signature": "reduction", "forms": ["fp16", "fp32", "b16", "b32"]},
     "VCMP_EQ": {"class": "compute", "signature": "binary", "forms": ["fp16", "fp32", "b16", "b32"]},
@@ -119,7 +121,7 @@
     "VSSTB": {"class": "store", "signature": "vsstb", "form_rule": "fixed", "fixed_form": "b16", "forms": ["b16"]},
     "VEXPDIF": {"class": "compute", "signature": "expdif", "forms": ["fp32", "b32"]},
     "VMULSCVT": {"class": "compute", "signature": "mulscvt", "form_rule": "conversion", "forms": ["f32_to_f16"]},
-    "VSTUS": {"class": "store", "signature": "store", "timing_optional": true},
-    "VSTAS": {"class": "store", "signature": "store", "timing_optional": true}
+    "VSTUS": {"class": "store", "signature": "store", "forms": ["fp16", "fp32", "bf16", "b16", "b32"], "timing_optional": true, "call_variants": [{"argument_count": 5}, {"argument_count": 6, "argument_values": {"5": ["POST_UPDATE"]}}]},
+    "VSTAS": {"class": "store", "signature": "store", "forms": ["fp16", "fp32", "bf16", "b16", "b32"], "timing_optional": true, "call_variants": [{"argument_count": 5}, {"argument_count": 6, "argument_values": {"5": ["POST_UPDATE"]}}]}
   }
 }

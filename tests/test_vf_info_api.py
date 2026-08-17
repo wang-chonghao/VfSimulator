@@ -404,6 +404,124 @@ class VfInfoApiTest(unittest.TestCase):
             vf_info = parse_cce_vf_info(path, kernel_name="valid")
         self.assertEqual(vf_info.context[0].name, "VADD")
 
+    def test_cce_predicate_obeys_lexical_scope_and_declaration_order(self):
+        sources = {
+            "use_before_declaration": """
+                void bad() {
+                  __VEC_SCOPE__ {
+                    vector_f32 dst, lhs, rhs;
+                    vadd(dst, lhs, rhs, late_mask);
+                    vector_bool late_mask = pset_b32(PAT_ALL);
+                  }
+                }
+            """,
+            "loop_local_used_after_loop": """
+                void bad() {
+                  __VEC_SCOPE__ {
+                    vector_f32 dst, lhs, rhs;
+                    for (int i = 0; i < 2; ++i) {
+                      vector_bool local_mask = pset_b32(PAT_ALL);
+                      vadd(dst, lhs, rhs, local_mask);
+                    }
+                    vadd(dst, lhs, rhs, local_mask);
+                  }
+                }
+            """,
+        }
+        for name, source in sources.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                path = Path(tmpdir) / "bad_scope.dsl"
+                path.write_text(source, encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "must be a predicate"):
+                    parse_cce_vf_info(path, kernel_name="bad")
+
+    def test_cce_load_store_and_vdup_call_variants(self):
+        source = """
+            void valid(__ubuf__ float *a, __ubuf__ float *b) {
+              __VEC_SCOPE__ {
+                vector_f32 value, broadcast;
+                vector_bool mask = pset_b32(PAT_ALL);
+                vlds(value, a, 64, NORM, POST_UPDATE);
+                vsts(value, b, 64, NORM_B32, mask, POST_UPDATE);
+                vdup(value, 0.0f, mask, MODE_ZEROING);
+                vdup(broadcast, value, mask, POS_LOWEST, MODE_ZEROING);
+              }
+            }
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "call_variants.dsl"
+            path.write_text(source, encoding="utf-8")
+            vf_info = parse_cce_vf_info(path, kernel_name="valid")
+        self.assertEqual(
+            [node.name for node in vf_info.context],
+            ["VLDS", "VSTS", "VDUP", "VDUP"],
+        )
+
+    def test_cce_timing_optional_store_forms_are_semantically_accepted(self):
+        source = """
+            void valid(__ubuf__ float *a) {
+              __VEC_SCOPE__ {
+                vector_f32 value;
+                vector_bool mask = pset_b32(PAT_ALL);
+                vstus(value, a, 0, NORM_B32, mask);
+                vstas(value, a, 64, NORM_B32, mask, POST_UPDATE);
+              }
+            }
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "optional_stores.dsl"
+            path.write_text(source, encoding="utf-8")
+            vf_info = parse_cce_vf_info(path, kernel_name="valid")
+        self.assertEqual(
+            [(node.name, node.form) for node in vf_info.context],
+            [("VSTUS", "fp32"), ("VSTAS", "fp32")],
+        )
+
+    def test_cce_rejects_invalid_vdup_call_variant_combinations(self):
+        sources = (
+            "vdup(dst, src, mask, POS_LOWEST);",
+            "vdup(dst, src, mask, MODE_ZEROING, MODE_ZEROING);",
+        )
+        for call in sources:
+            with self.subTest(call=call), tempfile.TemporaryDirectory() as tmpdir:
+                path = Path(tmpdir) / "bad_vdup.dsl"
+                path.write_text(
+                    f"""
+                    void bad() {{
+                      __VEC_SCOPE__ {{
+                        vector_f32 dst, src;
+                        vector_bool mask = pset_b32(PAT_ALL);
+                        {call}
+                      }}
+                    }}
+                    """,
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "call variant"):
+                    parse_cce_vf_info(path, kernel_name="bad")
+
+    def test_cce_offset_rejects_non_affine_products(self):
+        for expression in ("i * j", "i * i"):
+            with self.subTest(expression=expression), tempfile.TemporaryDirectory() as tmpdir:
+                path = Path(tmpdir) / "non_affine.dsl"
+                path.write_text(
+                    f"""
+                    void bad(__ubuf__ float *a) {{
+                      __VEC_SCOPE__ {{
+                        vector_f32 value;
+                        for (int i = 0; i < 2; ++i) {{
+                          for (int j = 0; j < 2; ++j) {{
+                            vlds(value, a, {expression}, NORM);
+                          }}
+                        }}
+                      }}
+                    }}
+                    """,
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "invalid offset expression"):
+                    parse_cce_vf_info(path, kernel_name="bad")
+
     def test_cce_adapter_parses_mem_bar_call(self):
         source = """
         void barrier_vf(__ubuf__ float *a, __ubuf__ float *b) {
