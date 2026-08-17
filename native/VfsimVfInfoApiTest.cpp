@@ -37,6 +37,14 @@ ValueInfo value(std::string id, ValueStorageKind storage, std::string dtype) {
   return result;
 }
 
+bool hasDiagnostic(const CanonicalValidationResult &result,
+                   const std::string &code) {
+  for (const auto &diagnostic : result.diagnostics)
+    if (diagnostic.code == code)
+      return true;
+  return false;
+}
+
 } // namespace
 
 int main() {
@@ -53,6 +61,52 @@ int main() {
   if (!validateCanonicalVfInfo(
            decodeCanonicalVfInfoFixture(sharedCarriedJson)).ok())
     throw std::runtime_error("shared valid loop-carried fixture was rejected");
+
+  CanonicalVfInfo ghostContract = canonicalContract;
+  CanonicalValue ghostValue;
+  ghostValue.definitionId = "ghost.0";
+  ghostValue.logicalId = "ghost";
+  ghostValue.storage = CanonicalStorageKind::Register;
+  ghostValue.dtype = "fp32";
+  ghostValue.producerNodeId = "inst.load";
+  ghostContract.values.emplace(ghostValue.definitionId, std::move(ghostValue));
+  if (!hasDiagnostic(validateCanonicalVfInfo(ghostContract),
+                     "producer_definition_not_emitted"))
+    throw std::runtime_error("native ghost definition was not diagnosed");
+
+  CanonicalVfInfo classContract = canonicalContract;
+  const auto originalLoop =
+      std::get<std::shared_ptr<const CanonicalLoop>>(
+          classContract.context.front().payload);
+  CanonicalLoop computeLoop = *originalLoop;
+  CanonicalInstruction computeWithMemory =
+      std::get<CanonicalInstruction>(computeLoop.body.front().payload);
+  computeWithMemory.instructionClass = CanonicalInstructionClass::Compute;
+  computeLoop.body.front() =
+      CanonicalNode::makeInstruction(std::move(computeWithMemory));
+  classContract.context.front() = CanonicalNode::makeLoop(std::move(computeLoop));
+  if (!hasDiagnostic(validateCanonicalVfInfo(classContract),
+                     "instruction_class_memory_access_mismatch"))
+    throw std::runtime_error("native class/access mismatch was not diagnosed");
+
+  if (CanonicalInstruction{}.instructionClass !=
+          CanonicalInstructionClass::Unknown ||
+      CanonicalOperand{}.role != CanonicalOperandRole::Unknown ||
+      CanonicalMemoryAccess{}.accessKind != CanonicalAccessKind::Unknown ||
+      CanonicalDependencyRef{}.kind != CanonicalDependencyKind::Unknown ||
+      CanonicalStorageObject{}.storage != CanonicalStorageKind::Unknown ||
+      CanonicalValue{}.storage != CanonicalStorageKind::Unknown)
+    throw std::runtime_error("native required enum defaults must be Unknown");
+  CanonicalVfInfo missingClassContract;
+  CanonicalInstruction missingClass;
+  missingClass.instructionId = "inst.missing_class";
+  missingClass.opcode = "VUNKNOWN";
+  missingClass.form = "fp32";
+  missingClassContract.context.push_back(
+      CanonicalNode::makeInstruction(std::move(missingClass)));
+  if (!hasDiagnostic(validateCanonicalVfInfo(missingClassContract),
+                     "missing_instruction_class"))
+    throw std::runtime_error("native missing instruction class was not diagnosed");
 
   using LoopPtr = std::variant_alternative_t<1, CanonicalNode::Payload>;
   static_assert(std::is_const_v<typename LoopPtr::element_type>,

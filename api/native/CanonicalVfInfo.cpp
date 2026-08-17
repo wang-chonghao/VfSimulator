@@ -228,6 +228,7 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
     std::string path;
   };
   std::vector<PendingDependency> pendingDependencies;
+  std::unordered_map<std::string, std::vector<std::string>> producedDefinitions;
 
   auto registerNodeId = [&](const std::string &nodeId, const std::string &path,
                             const std::optional<CanonicalSourceLocation> &location) {
@@ -334,7 +335,6 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
                     inst->sourceLocation);
             if (!operand.memoryAccess)
               continue;
-            hasMemory = true;
             const auto &memory = *operand.memoryAccess;
             if (operand.role != CanonicalOperandRole::Memory)
               error("memory_operand_role_mismatch",
@@ -354,6 +354,8 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
             if (memory.accessKind != expected)
               error("memory_access_direction_mismatch", "Memory direction mismatch",
                     operandPath, inst->sourceLocation);
+            else
+              hasMemory = true;
             if (memory.span && *memory.span <= 0)
               error("invalid_memory_span", "Memory span must be positive",
                     operandPath, inst->sourceLocation);
@@ -375,6 +377,16 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
 
         const bool hasReadMemory = validateOperands(inst->inputs, true);
         const bool hasWriteMemory = validateOperands(inst->outputs, false);
+        const bool hasInputMemory = std::any_of(
+            inst->inputs.begin(), inst->inputs.end(),
+            [](const CanonicalOperand &operand) {
+              return operand.memoryAccess.has_value();
+            });
+        const bool hasOutputMemory = std::any_of(
+            inst->outputs.begin(), inst->outputs.end(),
+            [](const CanonicalOperand &operand) {
+              return operand.memoryAccess.has_value();
+            });
         for (size_t inputIndex = 0; inputIndex < inst->inputs.size(); ++inputIndex) {
           auto valueIt = vfInfo.values.find(inst->inputs[inputIndex].valueId);
           if (valueIt == vfInfo.values.end() || !valueIt->second.producerNodeId)
@@ -395,11 +407,24 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
             error("output_producer_mismatch",
                   "Output definition must name producing instruction",
                   nodePath + ".outputs[" + std::to_string(outputIndex) + "]");
+          producedDefinitions[inst->instructionId].push_back(
+              inst->outputs[outputIndex].valueId);
         }
         if (inst->instructionClass == CanonicalInstructionClass::Load && !hasReadMemory)
           error("load_without_memory_read", "Load requires memory read", nodePath);
+        if (inst->instructionClass == CanonicalInstructionClass::Load && hasOutputMemory)
+          error("instruction_class_memory_access_mismatch",
+                "Load instructions cannot write memory", nodePath);
         if (inst->instructionClass == CanonicalInstructionClass::Store && !hasWriteMemory)
           error("store_without_memory_write", "Store requires memory write", nodePath);
+        if (inst->instructionClass == CanonicalInstructionClass::Store && hasInputMemory)
+          error("instruction_class_memory_access_mismatch",
+                "Store instructions cannot read memory", nodePath);
+        if ((inst->instructionClass == CanonicalInstructionClass::Compute ||
+             inst->instructionClass == CanonicalInstructionClass::Control) &&
+            (hasInputMemory || hasOutputMemory))
+          error("instruction_class_memory_access_mismatch",
+                "Compute/control instructions cannot access memory", nodePath);
         validateDependencies(inst->dependencies, inst->instructionId,
                              nodePath + ".dependencies");
         continue;
@@ -497,14 +522,14 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
             auto producer = back.producerNodeId
                 ? nodeInfo.find(*back.producerNodeId)
                 : nodeInfo.end();
-            if (producer == nodeInfo.end() ||
-                !scopePrefix(loopScope, producer->second.scope))
+            if (producer == nodeInfo.end() || producer->second.scope != loopScope)
               error("loop_back_edge_out_of_scope",
                     "Back-edge must be produced in loop body", carriedPath);
           }
           if (exit.producerNodeId != loop.loopId)
             error("loop_exit_producer_mismatch",
                   "Loop exit must be produced by loop node", carriedPath);
+          producedDefinitions[loop.loopId].push_back(carried.exitValueId);
         }
         inductionVariables.insert(variableId);
         validateNodes(loop.body, nodePath + ".body", std::move(inductionVariables));
@@ -524,8 +549,32 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
   validateNodes(vfInfo.context, "context", {});
 
   for (const auto &[definitionId, value] : vfInfo.values) {
-    if (value.producerNodeId && !nodeInfo.count(*value.producerNodeId))
+    if (!value.producerNodeId)
+      continue;
+    auto producer = nodeInfo.find(*value.producerNodeId);
+    if (producer == nodeInfo.end()) {
       error("unknown_value_producer", "Value references unknown producer node",
+            "values." + definitionId + ".producer_node_id", value.sourceLocation);
+      continue;
+    }
+    if (producer->second.kind == "membar") {
+      error("invalid_value_producer_kind",
+            "Membar cannot produce a value definition",
+            "values." + definitionId + ".producer_node_id", value.sourceLocation);
+      continue;
+    }
+    const auto emitted = producedDefinitions.find(*value.producerNodeId);
+    const int64_t count = emitted == producedDefinitions.end()
+        ? 0
+        : static_cast<int64_t>(
+              std::count(emitted->second.begin(), emitted->second.end(), definitionId));
+    if (count == 0)
+      error("producer_definition_not_emitted",
+            "Producer node does not emit the claimed value definition",
+            "values." + definitionId + ".producer_node_id", value.sourceLocation);
+    else if (count > 1)
+      error("definition_emitted_multiple_times",
+            "Producer node emits the same definition more than once",
             "values." + definitionId + ".producer_node_id", value.sourceLocation);
   }
   for (const auto &dependency : pendingDependencies) {

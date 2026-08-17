@@ -49,6 +49,7 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
     registered_node_ids: set[str] = set()
     dependency_refs: list[tuple[DependencyRef, str, str]] = []
     node_info: dict[str, _NodeInfo] = {}
+    produced_definitions: dict[str, list[str]] = {}
     next_order = 0
 
     def error(code: str, message: str, *, location=None, **context: Any) -> None:
@@ -246,7 +247,7 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
             dependency_path = f"{path}[{index}]"
             if dependency.producer_node_id == consumer_id:
                 error("self_dependency", "Node cannot depend on itself", path=dependency_path)
-            if dependency.kind not in (DependencyKind.MEMORY, DependencyKind.CONTROL):
+            if not isinstance(dependency.kind, DependencyKind):
                 error(
                     "unsupported_dependency_kind",
                     "Explicit dependency must be memory or control",
@@ -336,7 +337,13 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
         if memory.base_object_id not in vf_info.storage_objects:
             error("unknown_memory_base_object", "Memory base object is not declared", path=path)
         expected_kind = AccessKind.READ if direction == "input" else AccessKind.WRITE
-        if memory.access_kind != expected_kind:
+        if not isinstance(memory.access_kind, AccessKind):
+            error(
+                "unsupported_memory_access_kind",
+                "Memory access kind must be an AccessKind enum value",
+                path=path,
+            )
+        elif memory.access_kind != expected_kind:
             error("memory_access_direction_mismatch", "Memory direction mismatch", path=path)
         if memory.span is not None:
             validate_int64(memory.span, f"{path}.memory_access.span", minimum=1,
@@ -423,20 +430,53 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
                             "Output definition must name its producing instruction",
                             path=operand_path,
                         )
+                    produced_definitions.setdefault(node.instruction_id, []).append(
+                        operand.value_id
+                    )
                 has_read = any(
                     operand.memory_access is not None
+                    and isinstance(operand.memory_access.access_kind, AccessKind)
                     and operand.memory_access.access_kind == AccessKind.READ
                     for operand in node.inputs
                 )
                 has_write = any(
                     operand.memory_access is not None
+                    and isinstance(operand.memory_access.access_kind, AccessKind)
                     and operand.memory_access.access_kind == AccessKind.WRITE
                     for operand in node.outputs
                 )
+                has_input_memory = any(
+                    operand.memory_access is not None for operand in node.inputs
+                )
+                has_output_memory = any(
+                    operand.memory_access is not None for operand in node.outputs
+                )
                 if node.instruction_class == InstructionClass.LOAD and not has_read:
                     error("load_without_memory_read", "Load requires memory read", path=node_path)
+                if node.instruction_class == InstructionClass.LOAD and has_output_memory:
+                    error(
+                        "instruction_class_memory_access_mismatch",
+                        "Load instructions cannot write memory",
+                        path=node_path,
+                    )
                 if node.instruction_class == InstructionClass.STORE and not has_write:
                     error("store_without_memory_write", "Store requires memory write", path=node_path)
+                if node.instruction_class == InstructionClass.STORE and has_input_memory:
+                    error(
+                        "instruction_class_memory_access_mismatch",
+                        "Store instructions cannot read memory",
+                        path=node_path,
+                    )
+                if (
+                    node.instruction_class
+                    in (InstructionClass.COMPUTE, InstructionClass.CONTROL)
+                    and (has_input_memory or has_output_memory)
+                ):
+                    error(
+                        "instruction_class_memory_access_mismatch",
+                        "Compute/control instructions cannot access memory",
+                        path=node_path,
+                    )
                 validate_dependencies(node.dependencies, node.instruction_id, f"{node_path}.dependencies")
                 continue
 
@@ -498,14 +538,14 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
                             error("loop_entry_not_visible", "Loop entry is not visible before loop", path=carried_path)
                     if carried.back_edge_value_id != carried.entry_value_id:
                         producer = node_info.get(back_edge.producer_node_id or "")
-                        in_body = bool(
-                            producer
-                            and producer.scope[: len(loop_scope)] == loop_scope
-                        )
+                        in_body = bool(producer and producer.scope == loop_scope)
                         if not in_body:
                             error("loop_back_edge_out_of_scope", "Back-edge must be produced in loop body", path=carried_path)
                     if exit_value.producer_node_id != node.loop_id:
                         error("loop_exit_producer_mismatch", "Loop exit must be produced by loop node", path=carried_path)
+                    produced_definitions.setdefault(node.loop_id, []).append(
+                        carried.exit_value_id
+                    )
                 validate_nodes(node.body, f"{node_path}.body", induction_variables | {variable_id})
                 continue
 
@@ -522,10 +562,39 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
     validate_nodes(vf_info.context, "context", set())
 
     for definition_id, value in vf_info.values.items():
-        if value.producer_node_id is not None and value.producer_node_id not in node_info:
+        if value.producer_node_id is None:
+            continue
+        producer = node_info.get(value.producer_node_id)
+        if producer is None:
             error(
                 "unknown_value_producer",
                 "Value references unknown producer node",
+                definition_id=definition_id,
+                producer_node_id=value.producer_node_id,
+            )
+            continue
+        if producer.kind == "membar":
+            error(
+                "invalid_value_producer_kind",
+                "Membar cannot produce a value definition",
+                definition_id=definition_id,
+                producer_node_id=value.producer_node_id,
+            )
+            continue
+        emitted_count = produced_definitions.get(value.producer_node_id, []).count(
+            definition_id
+        )
+        if emitted_count == 0:
+            error(
+                "producer_definition_not_emitted",
+                "Producer node does not emit the claimed value definition",
+                definition_id=definition_id,
+                producer_node_id=value.producer_node_id,
+            )
+        elif emitted_count > 1:
+            error(
+                "definition_emitted_multiple_times",
+                "Producer node emits the same definition more than once",
                 definition_id=definition_id,
                 producer_node_id=value.producer_node_id,
             )

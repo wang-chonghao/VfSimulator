@@ -20,11 +20,11 @@ constexpr int64_t kCanonicalVfInfoSchemaVersion = 1;
 using CanonicalScalar = std::variant<std::monostate, bool, int64_t, double, std::string>;
 using CanonicalIntegerExpression = std::variant<int64_t, std::string>;
 
-enum class CanonicalStorageKind { Register, UB, Scalar };
-enum class CanonicalInstructionClass { Load, Store, Compute, Control };
-enum class CanonicalOperandRole { Source, Destination, Memory, Scalar, Predicate, Config };
-enum class CanonicalAccessKind { Read, Write };
-enum class CanonicalDependencyKind { Memory, Control };
+enum class CanonicalStorageKind { Unknown, Register, UB, Scalar };
+enum class CanonicalInstructionClass { Unknown, Load, Store, Compute, Control };
+enum class CanonicalOperandRole { Unknown, Source, Destination, Memory, Scalar, Predicate, Config };
+enum class CanonicalAccessKind { Unknown, Read, Write };
+enum class CanonicalDependencyKind { Unknown, Memory, Control };
 
 struct CanonicalSourceLocation {
   std::optional<std::string> source;
@@ -46,14 +46,14 @@ struct CanonicalAffineExpression {
 struct CanonicalMemoryAccess {
   std::string baseObjectId;
   CanonicalAffineExpression offset;
-  CanonicalAccessKind accessKind = CanonicalAccessKind::Read;
+  CanonicalAccessKind accessKind = CanonicalAccessKind::Unknown;
   std::optional<int64_t> span;
   std::optional<std::string> aliasGroup;
 };
 
 struct CanonicalStorageObject {
   std::string objectId;
-  CanonicalStorageKind storage = CanonicalStorageKind::UB;
+  CanonicalStorageKind storage = CanonicalStorageKind::Unknown;
   std::vector<int64_t> shape;
   std::optional<CanonicalSourceLocation> sourceLocation;
 };
@@ -61,7 +61,7 @@ struct CanonicalStorageObject {
 struct CanonicalValue {
   std::string definitionId;
   std::string logicalId;
-  CanonicalStorageKind storage = CanonicalStorageKind::Register;
+  CanonicalStorageKind storage = CanonicalStorageKind::Unknown;
   std::string dtype;
   std::vector<int64_t> shape;
   std::optional<std::string> producerNodeId;
@@ -71,21 +71,21 @@ struct CanonicalValue {
 
 struct CanonicalOperand {
   std::string valueId;
-  CanonicalOperandRole role = CanonicalOperandRole::Source;
+  CanonicalOperandRole role = CanonicalOperandRole::Unknown;
   std::optional<std::string> dtype;
   std::optional<CanonicalMemoryAccess> memoryAccess;
 };
 
 struct CanonicalDependencyRef {
   std::string producerNodeId;
-  CanonicalDependencyKind kind = CanonicalDependencyKind::Memory;
+  CanonicalDependencyKind kind = CanonicalDependencyKind::Unknown;
   std::optional<int64_t> operandIndex;
 };
 
 struct CanonicalInstruction {
   std::string instructionId;
   std::string opcode;
-  CanonicalInstructionClass instructionClass = CanonicalInstructionClass::Compute;
+  CanonicalInstructionClass instructionClass = CanonicalInstructionClass::Unknown;
   std::string form;
   std::vector<CanonicalOperand> inputs;
   std::vector<CanonicalOperand> outputs;

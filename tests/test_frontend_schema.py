@@ -140,6 +140,108 @@ class CanonicalVfInfoValidatorTest(unittest.TestCase):
         codes = {item.code for item in validate_canonical_vf_info(invalid).errors}
         self.assertIn("unsupported_dependency_kind", codes)
 
+    def test_plain_strings_are_not_accepted_as_enum_members(self):
+        vf_info = self._valid_vf_info()
+        loop = vf_info.context[0]
+        load = loop.body[0]
+        load_memory = load.inputs[0].memory_access
+        self.assertIsNotNone(load_memory)
+        load = replace(
+            load,
+            inputs=(replace(
+                load.inputs[0],
+                memory_access=replace(
+                    load_memory,
+                    access_kind="read",  # type: ignore[arg-type]
+                ),
+            ),),
+        )
+        store = replace(
+            loop.body[1],
+            dependencies=(
+                DependencyRef(
+                    "inst.load", "memory", 0  # type: ignore[arg-type]
+                ),
+            ),
+        )
+        invalid = replace(vf_info, context=(replace(loop, body=(load, store)),))
+        codes = {item.code for item in validate_canonical_vf_info(invalid).errors}
+        self.assertIn("unsupported_memory_access_kind", codes)
+        self.assertIn("unsupported_dependency_kind", codes)
+
+    def test_producer_must_actually_emit_definition(self):
+        producer = CanonicalInstruction(
+            "inst.producer", "VADD", InstructionClass.COMPUTE, "fp32"
+        )
+        consumer = CanonicalInstruction(
+            "inst.consumer", "VADD", InstructionClass.COMPUTE, "fp32",
+            (CanonicalOperand("ghost.0", OperandRole.SOURCE, "fp32"),),
+        )
+        barrier = CanonicalMembar("membar.0", "VST_VLD")
+        barrier_consumer = CanonicalInstruction(
+            "inst.after_barrier", "VADD", InstructionClass.COMPUTE, "fp32",
+            (CanonicalOperand("barrier.0", OperandRole.SOURCE, "fp32"),),
+        )
+        duplicate_producer = CanonicalInstruction(
+            "inst.duplicate", "VADD", InstructionClass.COMPUTE, "fp32", (),
+            (
+                CanonicalOperand("duplicate.0", OperandRole.DESTINATION, "fp32"),
+                CanonicalOperand("duplicate.0", OperandRole.DESTINATION, "fp32"),
+            ),
+        )
+        values = {
+            "ghost.0": CanonicalValue(
+                "ghost.0", "ghost", StorageKind.REGISTER, "fp32",
+                producer_node_id="inst.producer",
+            ),
+            "barrier.0": CanonicalValue(
+                "barrier.0", "barrier", StorageKind.REGISTER, "fp32",
+                producer_node_id="membar.0",
+            ),
+            "duplicate.0": CanonicalValue(
+                "duplicate.0", "duplicate", StorageKind.REGISTER, "fp32",
+                producer_node_id="inst.duplicate",
+            ),
+        }
+        codes = {
+            item.code for item in validate_canonical_vf_info(
+                CanonicalVfInfo(
+                    (
+                        producer,
+                        consumer,
+                        barrier,
+                        barrier_consumer,
+                        duplicate_producer,
+                    ),
+                    values,
+                )
+            ).errors
+        }
+        self.assertIn("producer_definition_not_emitted", codes)
+        self.assertIn("invalid_value_producer_kind", codes)
+        self.assertIn("definition_emitted_multiple_times", codes)
+
+    def test_instruction_class_memory_access_matrix(self):
+        vf_info = self._valid_vf_info()
+        loop = vf_info.context[0]
+        for instruction, invalid_class in (
+            (loop.body[0], InstructionClass.COMPUTE),
+            (loop.body[0], InstructionClass.STORE),
+            (loop.body[1], InstructionClass.LOAD),
+            (loop.body[1], InstructionClass.CONTROL),
+        ):
+            invalid_instruction = replace(
+                instruction, instruction_class=invalid_class
+            )
+            invalid_loop = replace(loop, body=(invalid_instruction,))
+            result = validate_canonical_vf_info(
+                replace(vf_info, context=(invalid_loop,))
+            )
+            self.assertIn(
+                "instruction_class_memory_access_mismatch",
+                {item.code for item in result.errors},
+            )
+
     def test_unknown_opcode_is_allowed_with_explicit_instruction_class(self):
         unknown = CanonicalInstruction(
             "inst.unknown", "VUNKNOWN", InstructionClass.COMPUTE, "fp32",

@@ -22,13 +22,16 @@
 - 必须携带 `schema_version=1`。
 - 跨语言序列化事实来源是 `api/frontend/canonical_vf_info_v1.schema.json`，共享样例位于 `tests/fixtures/canonical_vf_info/`。
 - value 使用 `definition_id` 表示一次定义、`logical_id` 关联同一逻辑值，并用 `producer_node_id` 建立唯一的数据依赖来源；instruction 使用稳定 `instruction_id`、显式 `instruction_class`、canonical `opcode/form` 和带角色的 `inputs/outputs`。
+- `producer_node_id` 必须与 producer 的实际 outputs 对应：instruction 只能产生其唯一 output definition，loop 只能产生 `carried_values.exit_value_id`，Membar 不能产生 value。
 - UB storage object 使用稳定 `object_id`。UB value definition 通过 `storage_object_id` 引用它，operand 携带 `MemoryAccess(base_object_id, affine offset, access_kind, span)`；内存 alias 基于 storage object 和访问范围，不基于 definition ID。
 - loop 保留结构化 `count/unroll/body`、induction variable 和 entry/back-edge/exit 关系；validator 检查三类 definition 的作用域和类型一致性。Membar 仅支持 `VST_VLD` 和 `VLD_VST`。
+- 外层 loop back-edge 只能由外层 loop body 同级节点产生；若值来自嵌套 loop，必须引用嵌套 loop node 产生的 exit definition，不能直接引用其内部 instruction。
+- instruction class 与 memory access 使用严格矩阵：load 只读 UB、store 只写 UB、compute/control 不携带 memory access。未来如需 fused memory operation，必须增加显式类别。
 - 显式 dependency 只表达额外 memory/control ordering；DATA dependency 自动从 input value 的 producer 推导，不能重复声明。未知 opcode 只要给出明确 `instruction_class` 和完整 operand 语义即可通过 validator，timing 缺失仍由 ParamDB fallback 并记录 warning。
 - 所有整数和整数表达式必须可表示为 `int64_t`，scalar 浮点值必须有限，确保 Python 直接构造的对象能由 C++ 等价表示。
 - validator 位于 `api/frontend/validator.py`，只检查语义完整性；未知但语义明确的 opcode 可以通过，timing 覆盖由 ParamDB 处理。
 
-C++ 对应契约位于 `api/native/CanonicalVfInfo.h`，字段类型与 v1 JSON 契约一致，不包含 CCE parser 或 legacy JSON 推断。递归 loop payload 以 `shared_ptr<const CanonicalLoop>` 表示，可共享但不能通过副本修改原 loop。
+C++ 对应契约位于 `api/native/CanonicalVfInfo.h`，字段类型与 v1 JSON 契约一致，不包含 CCE parser 或 legacy JSON 推断。必填枚举默认值均为 `Unknown` 并由 validator 拒绝；递归 loop payload 以 `shared_ptr<const CanonicalLoop>` 表示，可共享但不能通过副本修改原 loop。
 
 迁移期公共数据模型定义在 `vf_info.py`：
 

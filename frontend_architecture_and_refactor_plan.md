@@ -262,6 +262,8 @@ schema_version = 1
 
 操作数顺序和角色由 `InstructionCatalog` 定义，不应由各 adapter 自行解释。
 
+通用 validator 在 Catalog 之前也必须执行基础 class/access 矩阵：load 只能读取 memory operand，store 只能写入 memory operand，compute/control 不得携带 memory access。fused load-compute、compute-store 等语义不能伪装成现有类别，需新增明确 instruction class 或在后续 schema 版本中定义组合语义。
+
 ### 6.4 值与版本
 
 必须区分以下概念：
@@ -282,6 +284,8 @@ schema_version = 1
 `loop_id`、普通 `instruction_id` 和 Membar `instruction_id` 共用一个全局 node ID 命名空间；`definition_id` 使用独立的 value definition 命名空间。每个输出必须引用由当前 instruction 产生的新 definition，输入不得引用当前 instruction 自己产生的 definition。
 
 loop accumulator 必须通过通用的数据流规则表达 loop entry、back-edge 和 loop exit。entry 必须在 loop 前可见，back-edge 必须来自 loop body 或明确沿用 entry，exit 必须由 loop node 产生，且三者 storage、dtype、shape 和 storage object 必须一致。不得在 normalizer 中按某种指令排列增加特殊 alias。
+
+producer 关系必须双向一致：instruction producer 必须且只能在自己的 outputs 中产生一次 definition；loop producer 必须通过对应 `carried_values.exit_value_id` 产生；Membar 不得作为 value producer。外层 loop 的 back-edge producer scope 必须严格等于该 loop body scope，嵌套 loop 内部 instruction 不能直接泄漏 definition，必须经由嵌套 loop exit。
 
 ### 6.5 存储类型
 
