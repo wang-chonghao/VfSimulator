@@ -174,6 +174,7 @@ class VfInfoApiTest(unittest.TestCase):
         void softmax_vf(__ubuf__ half *nz_buffer_Ptr) {
           __VEC_SCOPE__ {
             vector_f16 vreg_x_exp_even_f16;
+            vector_bool preg_low_half = pset_b16(PAT_ALL);
             vpack((vector_u16 &)vreg_x_exp_even_f16, (vector_u32 &)vreg_x_exp_even_f16, LOWER);
             vsstb(vreg_x_exp_even_f16, ((__ubuf__ half *&)nz_buffer_Ptr), VSSTB_CONFIG, preg_low_half, POST_UPDATE);
           }
@@ -298,6 +299,110 @@ class VfInfoApiTest(unittest.TestCase):
                 path.write_text(source, encoding="utf-8")
                 with self.assertRaises(ValueError):
                     parse_cce_vf_info(path, kernel_name="bad")
+
+    def test_cce_catalog_rejects_invalid_forms(self):
+        sources = {
+            "vexpdif_fp16": """
+                void bad() {
+                  __VEC_SCOPE__ {
+                    vector_f16 dst, lhs, rhs;
+                    vector_bool mask = pset_b16(PAT_ALL);
+                    vexpdif(dst, lhs, rhs, mask, PART_EVEN);
+                  }
+                }
+            """,
+            "vcvt_same_dtype": """
+                void bad() {
+                  __VEC_SCOPE__ {
+                    vector_f16 dst, src;
+                    vector_bool mask = pset_b16(PAT_ALL);
+                    vcvt(dst, src, mask, ROUND_R, RS_DISABLE, PART_EVEN);
+                  }
+                }
+            """,
+            "vmulscvt_same_dtype": """
+                void bad() {
+                  __VEC_SCOPE__ {
+                    vector_f32 dst, src;
+                    vector_bool mask = pset_b32(PAT_ALL);
+                    vmulscvt(dst, src, 1.0f, mask, PART_EVEN);
+                  }
+                }
+            """,
+        }
+        for name, source in sources.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                path = Path(tmpdir) / "bad_form.dsl"
+                path.write_text(source, encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "Unsupported semantic form"):
+                    parse_cce_vf_info(path, kernel_name="bad")
+
+    def test_cce_catalog_rejects_extra_or_unresolved_arguments(self):
+        sources = {
+            "extra_compute_argument": """
+                void bad() {
+                  __VEC_SCOPE__ {
+                    vector_f32 dst, lhs, rhs;
+                    vector_bool mask = pset_b32(PAT_ALL);
+                    vadd(dst, lhs, rhs, mask, TOTALLY_INVALID);
+                  }
+                }
+            """,
+            "invalid_load_config": """
+                void bad(__ubuf__ float *a) {
+                  __VEC_SCOPE__ {
+                    vector_f32 dst;
+                    vld(dst, a, nonsense, also_nonsense);
+                  }
+                }
+            """,
+            "unsupported_load_mode": """
+                void bad(__ubuf__ float *a) {
+                  __VEC_SCOPE__ {
+                    vector_f32 dst;
+                    vld(dst, a, 0, TOTALLY_INVALID);
+                  }
+                }
+            """,
+            "undeclared_predicate": """
+                void bad() {
+                  __VEC_SCOPE__ {
+                    vector_f32 dst, lhs, rhs;
+                    vadd(dst, lhs, rhs, potato);
+                  }
+                }
+            """,
+            "predicate_name_contains_pset": """
+                void bad() {
+                  __VEC_SCOPE__ {
+                    vector_f32 dst, lhs, rhs;
+                    vadd(dst, lhs, rhs, not_a_pset_b32_value);
+                  }
+                }
+            """,
+        }
+        for name, source in sources.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                path = Path(tmpdir) / "bad_argument.dsl"
+                path.write_text(source, encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    parse_cce_vf_info(path, kernel_name="bad")
+
+    def test_cce_predicate_uses_declared_bool_not_name_prefix(self):
+        source = """
+            void valid() {
+              vector_bool lane_mask = pset_b32(PAT_ALL);
+              __VEC_SCOPE__ {
+                vector_f32 dst, lhs, rhs;
+                vadd(dst, lhs, rhs, lane_mask);
+              }
+            }
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "predicate.dsl"
+            path.write_text(source, encoding="utf-8")
+            vf_info = parse_cce_vf_info(path, kernel_name="valid")
+        self.assertEqual(vf_info.context[0].name, "VADD")
 
     def test_cce_adapter_parses_mem_bar_call(self):
         source = """

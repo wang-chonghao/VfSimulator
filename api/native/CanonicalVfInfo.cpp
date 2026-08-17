@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: CANN-1.0
 
 #include "api/native/CanonicalVfInfo.h"
+#include "api/native/InstructionCatalog.h"
 
 #include <algorithm>
 #include <charconv>
@@ -67,6 +68,42 @@ bool validStorageKind(CanonicalStorageKind value) {
   return value == CanonicalStorageKind::Register ||
          value == CanonicalStorageKind::UB ||
          value == CanonicalStorageKind::Scalar;
+}
+
+CatalogInstructionClass catalogClass(CanonicalInstructionClass value) {
+  switch (value) {
+  case CanonicalInstructionClass::Load:
+    return CatalogInstructionClass::Load;
+  case CanonicalInstructionClass::Store:
+    return CatalogInstructionClass::Store;
+  case CanonicalInstructionClass::Compute:
+    return CatalogInstructionClass::Compute;
+  case CanonicalInstructionClass::Control:
+    return CatalogInstructionClass::Control;
+  case CanonicalInstructionClass::Unknown:
+    return CatalogInstructionClass::Compute;
+  }
+  return CatalogInstructionClass::Compute;
+}
+
+std::string operandRoleName(CanonicalOperandRole role) {
+  switch (role) {
+  case CanonicalOperandRole::Source:
+    return "source";
+  case CanonicalOperandRole::Destination:
+    return "destination";
+  case CanonicalOperandRole::Memory:
+    return "memory";
+  case CanonicalOperandRole::Scalar:
+    return "scalar";
+  case CanonicalOperandRole::Predicate:
+    return "predicate";
+  case CanonicalOperandRole::Config:
+    return "config";
+  case CanonicalOperandRole::Unknown:
+    return "unknown";
+  }
+  return "unknown";
 }
 
 bool scopePrefix(const std::vector<std::string> &prefix,
@@ -300,6 +337,32 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
         if (inst->form.empty())
           error("missing_instruction_form", "Instruction form is required",
                 nodePath, inst->sourceLocation);
+        const NativeInstructionSpec *catalogSpec =
+            defaultInstructionCatalog().lookup(inst->opcode);
+        if (catalogSpec) {
+          if (inst->opcode != catalogSpec->opcode)
+            error("noncanonical_opcode",
+                  "Known opcode must use its canonical Catalog name", nodePath,
+                  inst->sourceLocation);
+          if (validInstructionClass(inst->instructionClass) &&
+              catalogClass(inst->instructionClass) !=
+                  catalogSpec->instructionClass)
+            error("catalog_instruction_class_mismatch",
+                  "Instruction class conflicts with Catalog semantics", nodePath,
+                  inst->sourceLocation);
+          const bool validForm = catalogSpec->forms.count(inst->form) ||
+                                 catalogSpec->specializations.count(inst->form);
+          if (!validForm)
+            error("catalog_instruction_form_mismatch",
+                  "Instruction form conflicts with Catalog semantics", nodePath,
+                  inst->sourceLocation);
+          auto specialized = catalogSpec->specializations.find(inst->form);
+          if (specialized != catalogSpec->specializations.end() &&
+              specialized->second != inst->opcode)
+            error("catalog_specialization_required",
+                  "Virtual opcode/form must use specialized opcode", nodePath,
+                  inst->sourceLocation);
+        }
         validateScalarMap(inst->attributes, nodePath + ".attributes");
 
         auto validateOperands = [&](const std::vector<CanonicalOperand> &operands,
@@ -425,6 +488,76 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
             (hasInputMemory || hasOutputMemory))
           error("instruction_class_memory_access_mismatch",
                 "Compute/control instructions cannot access memory", nodePath);
+        if (catalogSpec) {
+          std::vector<const NativeOperandSpec *> expectedInputs;
+          std::vector<const NativeOperandSpec *> expectedOutputs;
+          for (const auto &operand : catalogSpec->operands) {
+            if (operand.direction == CatalogOperandDirection::Input)
+              expectedInputs.push_back(&operand);
+            else if (operand.direction == CatalogOperandDirection::Output)
+              expectedOutputs.push_back(&operand);
+          }
+          auto actualOperands = [](const std::vector<CanonicalOperand> &operands) {
+            std::vector<const CanonicalOperand *> result;
+            for (const auto &operand : operands)
+              if (operand.role != CanonicalOperandRole::Predicate &&
+                  operand.role != CanonicalOperandRole::Config)
+                result.push_back(&operand);
+            return result;
+          };
+          const auto actualInputs = actualOperands(inst->inputs);
+          const auto actualOutputs = actualOperands(inst->outputs);
+          auto validateCatalogOperands = [&](const auto &actual,
+                                             const auto &expected,
+                                             const std::string &direction) {
+            if (actual.size() != expected.size()) {
+              error("catalog_operand_count_mismatch",
+                    "Operand count conflicts with Catalog signature", nodePath,
+                    inst->sourceLocation);
+              return;
+            }
+            for (size_t operandIndex = 0; operandIndex < actual.size();
+                 ++operandIndex) {
+              const auto &operand = *actual[operandIndex];
+              const auto &operandSpec = *expected[operandIndex];
+              const std::string operandPath = nodePath + "." + direction + "[" +
+                                              std::to_string(operandIndex) + "]";
+              if (operandRoleName(operand.role) != operandSpec.role)
+                error("catalog_operand_role_mismatch",
+                      "Operand role conflicts with Catalog signature", operandPath,
+                      inst->sourceLocation);
+              auto value = vfInfo.values.find(operand.valueId);
+              if (value == vfInfo.values.end())
+                continue;
+              const CanonicalStorageKind storage = value->second.storage;
+              bool storageMatches = true;
+              switch (operandSpec.kind) {
+              case CatalogArgumentKind::Register:
+                storageMatches = storage == CanonicalStorageKind::Register;
+                break;
+              case CatalogArgumentKind::UB:
+                storageMatches = storage == CanonicalStorageKind::UB;
+                break;
+              case CatalogArgumentKind::Scalar:
+                storageMatches = storage == CanonicalStorageKind::Scalar;
+                break;
+              case CatalogArgumentKind::RegisterOrScalar:
+                storageMatches = storage == CanonicalStorageKind::Register ||
+                                 storage == CanonicalStorageKind::Scalar;
+                break;
+              case CatalogArgumentKind::Predicate:
+              case CatalogArgumentKind::Config:
+                break;
+              }
+              if (!storageMatches)
+                error("catalog_operand_storage_mismatch",
+                      "Operand storage conflicts with Catalog signature", operandPath,
+                      inst->sourceLocation);
+            }
+          };
+          validateCatalogOperands(actualInputs, expectedInputs, "inputs");
+          validateCatalogOperands(actualOutputs, expectedOutputs, "outputs");
+        }
         validateDependencies(inst->dependencies, inst->instructionId,
                              nodePath + ".dependencies");
         continue;

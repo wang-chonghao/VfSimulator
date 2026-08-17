@@ -52,7 +52,10 @@
               "opcode": "VADD",
               "instruction_class": "compute",
               "form": "fp32",
-              "inputs": [],
+              "inputs": [
+                {"value_id": "acc.entry", "role": "source", "dtype": "fp32"},
+                {"value_id": "acc.entry", "role": "source", "dtype": "fp32"}
+              ],
               "outputs": [
                 {"value_id": "acc.back", "role": "destination", "dtype": "fp32"}
               ]

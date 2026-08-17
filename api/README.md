@@ -9,7 +9,9 @@
 
 指令语义目录的唯一手写数据源是 `configs/instruction_catalog.json`，Python loader/validator 位于 `api/frontend/instruction_catalog.py`。它集中声明 canonical opcode、alias、instruction class、semantic form、CCE operand signature 和 specialization；不包含 latency、forwarding、II 或 EXU 配置，也不是 timing 覆盖白名单。未知但语义明确的 opcode 仍可进入 ParamDB fallback。
 
-CCE 中已登记的 load、store 和 compute 调用统一由 Catalog binder 按 argument index、方向和 kind 绑定。缺少必填 operand，或把 UB、register、scalar 放入错误位置时会直接产生输入错误，不再回退到遍历参数猜测。未登记 opcode 暂时保留通用 vector-call 兼容路径，仍由 ParamDB 记录 timing fallback warning。
+CCE 中已登记的 load、store 和 compute 调用统一由 Catalog binder 按 argument index、方向和 kind 绑定。binder 同时检查参数数量、声明过的配置值和 semantic form；缺少必填 operand、携带额外参数，或把 UB、register、scalar、predicate 放入错误位置时会直接产生输入错误。未登记 opcode 暂时保留通用 vector-call 兼容路径，仍由 ParamDB 记录 timing fallback warning。
+
+Catalog 的 form 描述指令语义，不代表 timing 已覆盖。已知 opcode 的 canonical 输入必须匹配 Catalog 中的 instruction class、form 和 operand signature；未知 opcode 只要显式携带完整语义仍可通过 validator。`VPACK.b32` 的 `b32` 表示输入 lane 视角，逻辑寄存器仍可使用 `fp16/bf16` dtype，validator 不把 form 与每个 value dtype 强制等同。
 
 现有 frontend 入口包括：
 

@@ -242,6 +242,29 @@ class CanonicalVfInfoValidatorTest(unittest.TestCase):
                 {item.code for item in result.errors},
             )
 
+    def test_known_opcode_must_match_catalog_semantics(self):
+        vf_info = self._valid_vf_info()
+        loop = vf_info.context[0]
+        invalid_class = replace(loop.body[0], opcode="VADD")
+        invalid_form = replace(loop.body[0], opcode="VEXPDIF", form="fp16")
+
+        class_codes = {
+            item.code
+            for item in validate_canonical_vf_info(
+                replace(vf_info, context=(replace(loop, body=(invalid_class,)),))
+            ).errors
+        }
+        form_codes = {
+            item.code
+            for item in validate_canonical_vf_info(
+                replace(vf_info, context=(replace(loop, body=(invalid_form,)),))
+            ).errors
+        }
+        self.assertIn("catalog_instruction_class_mismatch", class_codes)
+        self.assertIn("catalog_operand_count_mismatch", class_codes)
+        self.assertIn("catalog_instruction_class_mismatch", form_codes)
+        self.assertIn("catalog_instruction_form_mismatch", form_codes)
+
     def test_unknown_opcode_is_allowed_with_explicit_instruction_class(self):
         unknown = CanonicalInstruction(
             "inst.unknown", "VUNKNOWN", InstructionClass.COMPUTE, "fp32",

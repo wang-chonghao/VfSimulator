@@ -9,10 +9,8 @@ from typing import Dict, List, Optional, Sequence
 from api.input_symbols import (
     compact_dtype,
     normalize_dtype,
-    normalize_form,
     normalize_membar_type,
     normalize_opcode,
-    specialize_opcode,
 )
 from api.frontend.instruction_catalog import (
     ArgumentKind,
@@ -47,6 +45,7 @@ class CCEVFScope:
     start_line: int
     end_line: int
     source: str
+    declaration_source: str
     params: Sequence[str]
     param_storage: Dict[str, str]
 
@@ -84,6 +83,7 @@ def extract_cce_vf_scopes(path: str | Path) -> List[CCEVFScope]:
                 start_line=_line_number(clean, vec_open),
                 end_line=_line_number(clean, vec_close),
                 source=vec_source,
+                declaration_source=body,
                 params=_parse_param_names(match.group("params")),
                 param_storage=_parse_param_storage(match.group("params")),
             )
@@ -118,7 +118,7 @@ class _VFScopeParser:
     def __init__(self, scope: CCEVFScope, loop_params: Dict[str, int]) -> None:
         self.scope = scope
         self.loop_params = loop_params
-        self.register_dtypes = _extract_vector_decls(scope.source)
+        self.register_dtypes = _extract_vector_decls(scope.declaration_source)
         self.register_names = set(self.register_dtypes)
         self.ub_names = {
             name for name, storage in scope.param_storage.items() if storage == "UB"
@@ -128,9 +128,13 @@ class _VFScopeParser:
         }
 
     def parse(self) -> List[VFNode]:
-        return self._parse_block(self.scope.source)
+        return self._parse_block(self.scope.source, frozenset())
 
-    def _parse_block(self, text: str) -> List[VFNode]:
+    def _parse_block(
+        self,
+        text: str,
+        induction_variables: frozenset[str],
+    ) -> List[VFNode]:
         nodes: List[VFNode] = []
         pos = 0
         pending_unroll = 1
@@ -155,8 +159,13 @@ class _VFScopeParser:
                 if body_open < 0:
                     raise ValueError("Only braced for-loops are supported in __VEC_SCOPE__")
                 body_close = _find_matching_brace(text, body_open)
-                count = self._loop_count_from_header(text[header_start + 1 : header_end])
-                body = self._parse_block(text[body_open + 1 : body_close])
+                count, variable = self._loop_count_from_header(
+                    text[header_start + 1 : header_end]
+                )
+                body = self._parse_block(
+                    text[body_open + 1 : body_close],
+                    induction_variables | {variable},
+                )
                 nodes.append(VFLoop(count=count, unroll=pending_unroll, body=body))
                 pending_unroll = 1
                 pos = body_close + 1
@@ -170,14 +179,18 @@ class _VFScopeParser:
                 break
 
             stmt = text[pos : stmt_end + 1].strip()
-            node = self._parse_statement(stmt)
+            node = self._parse_statement(stmt, induction_variables)
             if node is not None:
                 nodes.append(node)
             pos = stmt_end + 1
 
         return nodes
 
-    def _parse_statement(self, stmt: str) -> VFNode | None:
+    def _parse_statement(
+        self,
+        stmt: str,
+        induction_variables: frozenset[str],
+    ) -> VFNode | None:
         if not stmt:
             return None
         if stmt.startswith("vector_"):
@@ -206,18 +219,36 @@ class _VFScopeParser:
         spec = DEFAULT_INSTRUCTION_CATALOG.lookup(op)
         if spec is None:
             return self._bind_generic_compute_call(callee, op, args)
-        src, dst = self._bind_catalog_call(callee, spec, args)
+        src, dst = self._bind_catalog_call(
+            callee, spec, args, induction_variables
+        )
         form = _infer_inst_form(op, dst, src)
-        return VFInst(name=_specialize_op_for_form(op, form), form=form, src=src, dst=dst)
+        resolved_op, resolved_form = DEFAULT_INSTRUCTION_CATALOG.resolve_and_validate_form(
+            op, form
+        )
+        return VFInst(
+            name=resolved_op,
+            form=resolved_form,
+            src=src,
+            dst=dst,
+        )
 
     def _bind_catalog_call(
         self,
         callee: str,
         spec: InstructionSpec,
         args: Sequence[str],
+        induction_variables: frozenset[str],
     ) -> tuple[List[MemInfo], List[MemInfo]]:
         src: List[MemInfo] = []
         dst: List[MemInfo] = []
+        expected_count = max(
+            (operand.argument_index for operand in spec.operands), default=-1
+        ) + 1
+        if len(args) > expected_count:
+            raise ValueError(
+                f"{callee} expects at most {expected_count} arguments, got {len(args)}"
+            )
         for operand_spec in spec.operands:
             index = operand_spec.argument_index
             if index >= len(args):
@@ -230,8 +261,9 @@ class _VFScopeParser:
             operand = self._bind_catalog_argument(
                 callee,
                 args[index],
-                operand_spec.kind,
+                operand_spec,
                 index,
+                induction_variables,
             )
             if operand is None or operand_spec.direction == OperandDirection.IGNORE:
                 continue
@@ -245,9 +277,11 @@ class _VFScopeParser:
         self,
         callee: str,
         arg: str,
-        kind: ArgumentKind,
+        operand_spec,
         index: int,
+        induction_variables: frozenset[str],
     ) -> MemInfo | None:
+        kind = operand_spec.kind
         name = _base_identifier(arg)
         if kind == ArgumentKind.REGISTER:
             if name not in self.register_names:
@@ -282,13 +316,36 @@ class _VFScopeParser:
         if kind == ArgumentKind.PREDICATE:
             text = arg.strip().lower()
             if (
-                "pset_" in text
-                or name.lower().startswith(("p", "pred", "pat"))
+                re.fullmatch(r"pset_[a-z0-9_]+\s*\(.*\)", text, re.DOTALL)
                 or self.register_dtypes.get(name) == "bool"
             ):
                 return None
             raise ValueError(
                 f"{callee} argument {index} must be a predicate: {arg}"
+            )
+        if kind == ArgumentKind.CONFIG:
+            if operand_spec.name == "offset":
+                allowed_names = (
+                    set(induction_variables)
+                    | set(self.loop_params)
+                    | self.scalar_names
+                )
+                if _is_affine_int_expression(arg, allowed_names):
+                    return None
+                raise ValueError(
+                    f"{callee} argument {index} has invalid offset expression: {arg}"
+                )
+            if (
+                operand_spec.allowed_values
+                and arg.strip() not in operand_spec.allowed_values
+            ):
+                raise ValueError(
+                    f"{callee} argument {index} has unsupported configuration: {arg}"
+                )
+            if _is_config_token(arg):
+                return None
+            raise ValueError(
+                f"{callee} argument {index} must be a configuration token: {arg}"
             )
         return None
 
@@ -334,16 +391,14 @@ class _VFScopeParser:
         if not match:
             return
         dtype, names_text = match.groups()
-        if any(token in names_text for token in ("(", ")", "&", "*")):
-            return
         form = _vector_dtype_to_form(dtype)
-        for raw_name in names_text.split(","):
-            name = _base_identifier(raw_name)
+        for raw_name in _split_args(names_text):
+            name = _declared_identifier(raw_name)
             if name:
                 self.register_dtypes[name] = form
                 self.register_names.add(name)
 
-    def _loop_count_from_header(self, header: str) -> int:
+    def _loop_count_from_header(self, header: str) -> tuple[int, str]:
         parts = [part.strip() for part in header.split(";")]
         if len(parts) < 2:
             raise ValueError(f"Unsupported for-loop header: {header}")
@@ -369,8 +424,8 @@ class _VFScopeParser:
         inclusive = cond_match.group(2) == "<="
         span = bound - start + (1 if inclusive else 0)
         if span <= 0:
-            return 0
-        return (span + step - 1) // step
+            return 0, var
+        return (span + step - 1) // step, var
 
 
 def _select_scope(scopes: Sequence[CCEVFScope], kernel_name: str | None) -> CCEVFScope:
@@ -522,6 +577,43 @@ def _is_numeric_scalar_literal(value: str) -> bool:
     ))
 
 
+def _is_config_token(value: str) -> bool:
+    text = value.strip()
+    return bool(
+        re.fullmatch(r"[A-Z][A-Z0-9_]*", text)
+        or re.fullmatch(r"[+-]?\d+", text)
+    )
+
+
+def _is_affine_int_expression(value: str, allowed_names: set[str]) -> bool:
+    try:
+        tree = ast.parse(value.strip(), mode="eval")
+    except SyntaxError:
+        return False
+
+    def valid(node: ast.AST) -> bool:
+        if isinstance(node, ast.Expression):
+            return valid(node.body)
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, int) and not isinstance(node.value, bool)
+        if isinstance(node, ast.Name):
+            return node.id in allowed_names
+        if isinstance(node, ast.UnaryOp):
+            return isinstance(node.op, (ast.UAdd, ast.USub)) and valid(node.operand)
+        if isinstance(node, ast.BinOp):
+            return isinstance(node.op, (ast.Add, ast.Sub, ast.Mult)) and valid(
+                node.left
+            ) and valid(node.right)
+        return False
+
+    return valid(tree)
+
+
+def _declared_identifier(value: str) -> str:
+    match = re.match(r"\s*([A-Za-z_]\w*)", value)
+    return match.group(1) if match else ""
+
+
 def _extract_vector_decls(source: str) -> Dict[str, str]:
     register_dtypes: Dict[str, str] = {}
     for stmt in source.split(";"):
@@ -529,11 +621,9 @@ def _extract_vector_decls(source: str) -> Dict[str, str]:
         if not match:
             continue
         dtype, names_text = match.groups()
-        if any(token in names_text for token in ("(", ")", "&", "*")):
-            continue
         form = _vector_dtype_to_form(dtype)
-        for raw_name in names_text.split(","):
-            name = _base_identifier(raw_name)
+        for raw_name in _split_args(names_text):
+            name = _declared_identifier(raw_name)
             if name:
                 register_dtypes[name] = form
     return register_dtypes
@@ -552,12 +642,6 @@ def _infer_inst_form(op: str, dst: Sequence[MemInfo], src: Sequence[MemInfo]) ->
         if src_key and dst_key:
             return f"{src_key}_to_{dst_key}"
     return dst_dtype or src_dtype
-
-
-def _specialize_op_for_form(op: str, form: str | None) -> str:
-    op = normalize_opcode(op)
-    form = normalize_form(form) if form else None
-    return specialize_opcode(op, form) if form else op
 
 
 def _split_args(text: str) -> List[str]:

@@ -103,6 +103,28 @@ class InstructionCatalogTest(unittest.TestCase):
             "unknown_specialization": lambda data: data["instructions"]["VCVT"][
                 "specializations"
             ].update(f32_to_f64="VCVT_F32_TO_F64"),
+            "aliases_string": lambda data: data["instructions"]["VLDS"].update(
+                aliases="VLD"
+            ),
+            "forms_string": lambda data: data["instructions"]["VADD"].update(
+                forms="fp32"
+            ),
+            "virtual_string": lambda data: data["instructions"]["VCVT"].update(
+                virtual="true"
+            ),
+            "optional_string": lambda data: data["signatures"]["expdif"][4].update(
+                optional="true"
+            ),
+            "allowed_values_string": lambda data: data["signatures"]["load"][3].update(
+                allowed_values="NORM"
+            ),
+            "operand_name_number": lambda data: data["signatures"]["binary"][0].update(
+                name=7
+            ),
+            "signature_number": lambda data: data["instructions"]["VADD"].update(
+                signature=7
+            ),
+            "schema_version_boolean": lambda data: data.update(schema_version=True),
         }
         for name, mutate in mutations.items():
             with self.subTest(name=name):
@@ -119,6 +141,14 @@ class InstructionCatalogTest(unittest.TestCase):
             ROOT / "api/native/generated/InstructionCatalogData.inc"
         ).read_text()
         self.assertEqual(generated, render_catalog_cpp(payload))
+
+    def test_config_allowed_values_are_shared_with_native_catalog(self):
+        load = DEFAULT_INSTRUCTION_CATALOG.lookup("VLDS")
+        mode = next(operand for operand in load.operands if operand.name == "mode")
+        self.assertEqual(
+            set(mode.allowed_values),
+            {"NORM", "BRC_B32", "BRC_B16", "ONEPT_B32", "ONEPT_B16"},
+        )
 
 
 if __name__ == "__main__":

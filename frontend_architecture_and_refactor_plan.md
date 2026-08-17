@@ -887,9 +887,11 @@ Cycle 回归用于验证性能模型没有意外变化，但不能替代语义�
 8. loop 显式描述 induction variable 和 entry/back-edge/exit，并校验 definition scope 与类型；Python 直接输入同时检查 int64 边界和有限 scalar。
 9. 新增 Python/C++ 合法与非法契约测试，覆盖 value 引用、operand role/dtype、memory object、affine variable scope、loop-carried scope、非法 payload 和 Membar。
 10. 在前端重构前同步 Python/C++ 后端：native 已采用 ALU/SFU 独立 RR、EXU0 reserve 配置，并对齐 loop back-edge、loop exit alias、重定义 kill、零次 loop 和 `three_ports_mode` 语义。native SHQ 到 EXQ 只生成一次候选端口，再按 policy 选择 greedy 或 RR。
+11. 建立共享 `InstructionCatalog`：`configs/instruction_catalog.json` 是唯一手写语义目录，Python 直接加载，C++ 由生成表消费；已覆盖 alias、instruction class、semantic form、specialization、operand signature、可选参数和 CCE 配置值。
+12. CCE 已知指令统一通过 Catalog binder，严格检查参数数量、operand kind、predicate、配置值与 semantic form；Canonical Python/C++ validator 对已知 opcode 检查 Catalog class/form/signature，未知 opcode 保留显式语义输入和 ParamDB fallback。
 
 ### 19.2 当前迁移边界
 
 现有 CCE 和 legacy JSON adapter 仍返回 `api.vf_info.VFInfo`，Core 仍通过 `VFInfoLowerer` 消费迁移期 payload。新的 `CanonicalVfInfo` 暂不隐式 lower 到旧 payload，避免丢失结构化 memory access、operand role 和 source location。
 
-下一步按阶段二建立 `InstructionCatalog`，随后让各 adapter 生成 canonical 对象并删除重复 normalize/specialize 逻辑。在 canonical adapter 完成前，旧路径保持单一现有行为，不新增第二套隐式转换。
+阶段二的 `InstructionCatalog` 及 Python/C++ 共用语义表已经建立。当前 CCE binder 已消费 Catalog，但仍输出迁移期 `VFInfo`；下一步是让 CCE 与 legacy JSON adapter 直接生成 canonical 对象，再实现不丢失 definition、loop-carried 和结构化 memory access 的 Core lowering，最后删除旧 normalize/specialize 逻辑。在 canonical adapter 完成前，旧路径保持单一现有行为，不新增第二套隐式转换。

@@ -39,6 +39,7 @@ class OperandSpec:
     role: OperandRole
     kind: ArgumentKind
     optional: bool = False
+    allowed_values: tuple[str, ...] = ()
 
     @property
     def storage(self) -> StorageKind | None:
@@ -152,6 +153,10 @@ class InstructionCatalog:
                 operand.kind, ArgumentKind
             ):
                 raise ValueError(f"Invalid operand enum in {spec.opcode}")
+            if not all(
+                isinstance(value, str) and value for value in operand.allowed_values
+            ):
+                raise ValueError(f"Invalid allowed_values in {spec.opcode}")
             if operand.direction == OperandDirection.OUTPUT and operand.role not in {
                 OperandRole.DESTINATION,
                 OperandRole.MEMORY,
@@ -225,6 +230,28 @@ class InstructionCatalog:
             return canonical
         return spec.specializations.get(form, canonical)
 
+    def resolve_and_validate_form(
+        self,
+        opcode: Any,
+        form: str | None,
+    ) -> tuple[str, str]:
+        canonical = self.canonical_opcode(opcode)
+        spec = self._by_opcode.get(canonical)
+        if spec is None:
+            if not form:
+                raise ValueError(f"Unknown opcode {canonical} requires an explicit form")
+            return canonical, form
+        resolved_form = form
+        if not resolved_form:
+            raise ValueError(f"Instruction {canonical} requires a form")
+        allowed_forms = set(spec.forms) | set(spec.specializations)
+        if resolved_form not in allowed_forms:
+            raise ValueError(
+                f"Unsupported semantic form {canonical}.{resolved_form}; "
+                f"expected one of {sorted(allowed_forms)}"
+            )
+        return spec.specializations.get(resolved_form, canonical), resolved_form
+
     def compare_timing_config(self, payload: Mapping[str, Any]) -> CatalogTimingDifference:
         instructions = payload.get("instructions", {})
         if not isinstance(instructions, Mapping):
@@ -273,7 +300,10 @@ def _enum(enum_type, value: Any, path: str):
 
 
 def instruction_catalog_from_dict(payload: Mapping[str, Any]) -> InstructionCatalog:
-    if payload.get("schema_version") != 1:
+    if (
+        isinstance(payload.get("schema_version"), bool)
+        or payload.get("schema_version") != 1
+    ):
         raise ValueError("Unsupported instruction catalog schema_version")
     raw_signatures = payload.get("signatures")
     raw_instructions = payload.get("instructions")
@@ -290,32 +320,71 @@ def instruction_catalog_from_dict(payload: Mapping[str, Any]) -> InstructionCata
         for raw in raw_operands:
             if not isinstance(raw, Mapping):
                 raise ValueError(f"Invalid operand in signature {name}")
+            operand_name = raw.get("name")
+            optional = raw.get("optional", False)
+            allowed_values = raw.get("allowed_values", [])
+            if not isinstance(operand_name, str) or not operand_name:
+                raise ValueError(f"{name}.name must be a non-empty string")
+            if not isinstance(optional, bool):
+                raise ValueError(f"{name}.optional must be boolean")
+            if not isinstance(allowed_values, list) or not all(
+                isinstance(value, str) and value for value in allowed_values
+            ):
+                raise ValueError(f"{name}.allowed_values must be an array of strings")
             operands.append(OperandSpec(
-                name=str(raw.get("name", "")),
+                name=operand_name,
                 argument_index=raw.get("argument_index"),
                 direction=_enum(
                     OperandDirection, raw.get("direction"), f"{name}.direction"
                 ),
                 role=_enum(OperandRole, raw.get("role"), f"{name}.role"),
                 kind=_enum(ArgumentKind, raw.get("kind"), f"{name}.kind"),
-                optional=raw.get("optional", False) is True,
+                optional=optional,
+                allowed_values=tuple(allowed_values),
             ))
         signatures[name] = tuple(operands)
 
     specs = []
     for opcode, raw in raw_instructions.items():
-        if not isinstance(raw, Mapping):
+        if not isinstance(opcode, str) or not opcode or not isinstance(raw, Mapping):
             raise ValueError(f"Invalid instruction declaration: {opcode}")
-        signature = str(raw.get("signature", ""))
+        signature = raw.get("signature")
+        if not isinstance(signature, str):
+            raise ValueError(f"{opcode}.signature must be a string")
         if signature not in signatures:
             raise ValueError(f"Unknown signature {signature} for {opcode}")
+        aliases = raw.get("aliases", [])
+        forms = raw.get("forms", [])
+        specializations = raw.get("specializations", {})
+        virtual = raw.get("virtual", False)
+        timing_optional = raw.get("timing_optional", False)
+        if not isinstance(aliases, list) or not all(
+            isinstance(value, str) and value for value in aliases
+        ):
+            raise ValueError(f"{opcode}.aliases must be an array of strings")
+        if not isinstance(forms, list) or not all(
+            isinstance(value, str) and value for value in forms
+        ):
+            raise ValueError(f"{opcode}.forms must be an array of strings")
+        if not isinstance(specializations, Mapping) or not all(
+            isinstance(form, str) and form and isinstance(target, str) and target
+            for form, target in specializations.items()
+        ):
+            raise ValueError(f"{opcode}.specializations must map strings to strings")
+        if not isinstance(virtual, bool) or not isinstance(timing_optional, bool):
+            raise ValueError(f"{opcode}.virtual/timing_optional must be boolean")
+        fixed_form = raw.get("fixed_form")
+        if fixed_form is not None and (
+            not isinstance(fixed_form, str) or not fixed_form
+        ):
+            raise ValueError(f"{opcode}.fixed_form must be a non-empty string")
         specs.append(InstructionSpec(
-            opcode=str(opcode),
+            opcode=opcode,
             instruction_class=_enum(
                 InstructionClass, raw.get("class"), f"{opcode}.class"
             ),
-            aliases=tuple(str(value) for value in raw.get("aliases", ())),
-            forms=frozenset(str(value) for value in raw.get("forms", ())),
+            aliases=tuple(aliases),
+            forms=frozenset(forms),
             signature=signature,
             operands=signatures[signature],
             form_rule=_enum(
@@ -323,15 +392,13 @@ def instruction_catalog_from_dict(payload: Mapping[str, Any]) -> InstructionCata
                 raw.get("form_rule", FormRule.OPERAND_DTYPE.value),
                 f"{opcode}.form_rule",
             ),
-            fixed_form=(
-                str(raw["fixed_form"]) if raw.get("fixed_form") is not None else None
-            ),
+            fixed_form=fixed_form,
             specializations=MappingProxyType({
                 str(form): str(target)
-                for form, target in raw.get("specializations", {}).items()
+                for form, target in specializations.items()
             }),
-            virtual=raw.get("virtual", False) is True,
-            timing_optional=raw.get("timing_optional", False) is True,
+            virtual=virtual,
+            timing_optional=timing_optional,
         ))
     return InstructionCatalog(specs)
 

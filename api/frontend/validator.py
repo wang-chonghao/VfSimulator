@@ -5,6 +5,11 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from api.frontend.diagnostics import Diagnostic, DiagnosticSeverity, ValidationResult
+from api.frontend.instruction_catalog import (
+    ArgumentKind,
+    DEFAULT_INSTRUCTION_CATALOG,
+    OperandDirection,
+)
 from api.frontend.schema import (
     CANONICAL_VF_INFO_SCHEMA_VERSION,
     AccessKind,
@@ -394,6 +399,38 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
                     error("missing_instruction_class", "Instruction class is required", path=node_path)
                 if not node.form:
                     error("missing_instruction_form", "Instruction form is required", path=node_path)
+                catalog_spec = DEFAULT_INSTRUCTION_CATALOG.lookup(node.opcode)
+                if catalog_spec is not None:
+                    if node.opcode != catalog_spec.opcode:
+                        error(
+                            "noncanonical_opcode",
+                            "Known opcode must use its canonical Catalog name",
+                            path=node_path,
+                        )
+                    if node.instruction_class != catalog_spec.instruction_class:
+                        error(
+                            "catalog_instruction_class_mismatch",
+                            "Instruction class conflicts with Catalog semantics",
+                            path=node_path,
+                        )
+                    try:
+                        resolved_opcode, _ = (
+                            DEFAULT_INSTRUCTION_CATALOG.resolve_and_validate_form(
+                                node.opcode, node.form
+                            )
+                        )
+                        if resolved_opcode != node.opcode:
+                            error(
+                                "catalog_specialization_required",
+                                "Virtual opcode/form must use its specialized opcode",
+                                path=node_path,
+                            )
+                    except ValueError:
+                        error(
+                            "catalog_instruction_form_mismatch",
+                            "Instruction form conflicts with Catalog semantics",
+                            path=node_path,
+                        )
                 validate_scalar_map(node.attributes, f"{node_path}.attributes")
                 for operand_index, operand in enumerate(node.inputs):
                     operand_path = f"{node_path}.inputs[{operand_index}]"
@@ -476,6 +513,79 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
                         "instruction_class_memory_access_mismatch",
                         "Compute/control instructions cannot access memory",
                         path=node_path,
+                    )
+                if catalog_spec is not None:
+                    expected_inputs = [
+                        operand
+                        for operand in catalog_spec.operands
+                        if operand.direction == OperandDirection.INPUT
+                    ]
+                    expected_outputs = [
+                        operand
+                        for operand in catalog_spec.operands
+                        if operand.direction == OperandDirection.OUTPUT
+                    ]
+                    actual_inputs = [
+                        operand
+                        for operand in node.inputs
+                        if operand.role
+                        not in (OperandRole.PREDICATE, OperandRole.CONFIG)
+                    ]
+                    actual_outputs = [
+                        operand
+                        for operand in node.outputs
+                        if operand.role
+                        not in (OperandRole.PREDICATE, OperandRole.CONFIG)
+                    ]
+
+                    def validate_catalog_operands(actual, expected, direction):
+                        if len(actual) != len(expected):
+                            error(
+                                "catalog_operand_count_mismatch",
+                                "Operand count conflicts with Catalog signature",
+                                path=node_path,
+                                direction=direction,
+                                expected=len(expected),
+                                actual=len(actual),
+                            )
+                            return
+                        for operand_index, (operand, operand_spec) in enumerate(
+                            zip(actual, expected)
+                        ):
+                            operand_path = (
+                                f"{node_path}.{direction}[{operand_index}]"
+                            )
+                            if operand.role != operand_spec.role:
+                                error(
+                                    "catalog_operand_role_mismatch",
+                                    "Operand role conflicts with Catalog signature",
+                                    path=operand_path,
+                                )
+                            value = vf_info.values.get(operand.value_id)
+                            if value is None:
+                                continue
+                            allowed_storage = {
+                                ArgumentKind.REGISTER: {StorageKind.REGISTER},
+                                ArgumentKind.UB: {StorageKind.UB},
+                                ArgumentKind.SCALAR: {StorageKind.SCALAR},
+                                ArgumentKind.REGISTER_OR_SCALAR: {
+                                    StorageKind.REGISTER,
+                                    StorageKind.SCALAR,
+                                },
+                            }.get(operand_spec.kind)
+                            if (
+                                allowed_storage is not None
+                                and value.storage not in allowed_storage
+                            ):
+                                error(
+                                    "catalog_operand_storage_mismatch",
+                                    "Operand storage conflicts with Catalog signature",
+                                    path=operand_path,
+                                )
+
+                    validate_catalog_operands(actual_inputs, expected_inputs, "inputs")
+                    validate_catalog_operands(
+                        actual_outputs, expected_outputs, "outputs"
                     )
                 validate_dependencies(node.dependencies, node.instruction_id, f"{node_path}.dependencies")
                 continue

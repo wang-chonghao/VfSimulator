@@ -27,6 +27,11 @@ struct GeneratedOperand {
   const char *kind;
   bool optional;
 };
+struct GeneratedAllowedValue {
+  const char *opcode;
+  int argumentIndex;
+  const char *value;
+};
 struct GeneratedAlias { const char *alias; const char *opcode; };
 struct GeneratedForm { const char *opcode; const char *form; };
 struct GeneratedSpecialization {
@@ -112,6 +117,17 @@ InstructionCatalog::InstructionCatalog() {
     operand.kind = parseArgumentKind(entry.kind);
     operand.optional = entry.optional;
     specs_.at(entry.opcode).operands.push_back(std::move(operand));
+  }
+  for (const auto &entry : kGeneratedAllowedValues) {
+    auto &operands = specs_.at(entry.opcode).operands;
+    auto operand = std::find_if(
+        operands.begin(), operands.end(), [&](const NativeOperandSpec &candidate) {
+          return candidate.argumentIndex == entry.argumentIndex;
+        });
+    if (operand == operands.end())
+      throw std::runtime_error("Generated allowed value references missing operand: " +
+                               std::string(entry.opcode));
+    operand->allowedValues.emplace(entry.value);
   }
   for (const auto &entry : kGeneratedAliases) {
     auto [it, inserted] = aliases_.emplace(lower(entry.alias), entry.opcode);

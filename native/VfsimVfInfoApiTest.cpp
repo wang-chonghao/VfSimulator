@@ -61,7 +61,9 @@ int main() {
       instructionCatalog.lookup("VADD")->signature != "binary" ||
       instructionCatalog.lookup("VADD")->operands.size() != 4 ||
       instructionCatalog.lookup("VADD")->operands[2].kind !=
-          CatalogArgumentKind::Register)
+          CatalogArgumentKind::Register ||
+      instructionCatalog.lookup("VLDS")->operands[3].allowedValues.count(
+          "NORM") != 1)
     throw std::runtime_error("native generated instruction catalog mismatch");
 
   const auto sharedFixtureJson = json::parseFile(
@@ -104,6 +106,21 @@ int main() {
   if (!hasDiagnostic(validateCanonicalVfInfo(classContract),
                      "instruction_class_memory_access_mismatch"))
     throw std::runtime_error("native class/access mismatch was not diagnosed");
+
+  CanonicalVfInfo catalogContract = canonicalContract;
+  CanonicalLoop catalogLoop = *originalLoop;
+  CanonicalInstruction catalogMismatch =
+      std::get<CanonicalInstruction>(catalogLoop.body.front().payload);
+  catalogMismatch.opcode = "VEXPDIF";
+  catalogMismatch.form = "fp16";
+  catalogLoop.body.front() =
+      CanonicalNode::makeInstruction(std::move(catalogMismatch));
+  catalogContract.context.front() =
+      CanonicalNode::makeLoop(std::move(catalogLoop));
+  const auto catalogResult = validateCanonicalVfInfo(catalogContract);
+  if (!hasDiagnostic(catalogResult, "catalog_instruction_class_mismatch") ||
+      !hasDiagnostic(catalogResult, "catalog_instruction_form_mismatch"))
+    throw std::runtime_error("native Catalog semantics mismatch was not diagnosed");
 
   if (CanonicalInstruction{}.instructionClass !=
           CanonicalInstructionClass::Unknown ||

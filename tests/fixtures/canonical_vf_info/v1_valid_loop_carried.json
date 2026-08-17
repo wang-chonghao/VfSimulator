@@ -7,6 +7,12 @@
       "storage": "Register",
       "dtype": "fp32"
     },
+    "rhs.entry": {
+      "definition_id": "rhs.entry",
+      "logical_id": "rhs",
+      "storage": "Register",
+      "dtype": "fp32"
+    },
     "acc.back": {
       "definition_id": "acc.back",
       "logical_id": "acc",
@@ -45,7 +51,8 @@
           "instruction_class": "compute",
           "form": "fp32",
           "inputs": [
-            {"value_id": "acc.entry", "role": "source", "dtype": "fp32"}
+            {"value_id": "acc.entry", "role": "source", "dtype": "fp32"},
+            {"value_id": "rhs.entry", "role": "source", "dtype": "fp32"}
           ],
           "outputs": [
             {"value_id": "acc.back", "role": "destination", "dtype": "fp32"}

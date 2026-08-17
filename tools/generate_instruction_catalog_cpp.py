@@ -47,6 +47,19 @@ def render_catalog_cpp(payload: Mapping[str, Any]) -> str:
                 )
             )
     lines.append("};")
+    lines.append("static constexpr GeneratedAllowedValue kGeneratedAllowedValues[] = {")
+    for opcode, spec in instructions.items():
+        for operand in signatures[spec["signature"]]:
+            for value in operand.get("allowed_values", []):
+                lines.append(
+                    "  {%s, %d, %s},"
+                    % (
+                        _quote(opcode),
+                        operand["argument_index"],
+                        _quote(value),
+                    )
+                )
+    lines.append("};")
     lines.append("static constexpr GeneratedAlias kGeneratedAliases[] = {")
     for opcode, spec in instructions.items():
         for alias in spec.get("aliases", []):
