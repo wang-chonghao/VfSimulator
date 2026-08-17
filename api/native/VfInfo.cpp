@@ -75,6 +75,7 @@ std::string normalizeOpcode(const std::string &op) {
       {"vmuls", "VMULS"},
       {"vcvt", "VCVT"},
       {"vcvt_f32_to_f16", "VCVT_F32_TO_F16"},
+      {"vcvt_f32_to_bf16", "VCVT_F32_TO_BF16"},
       {"vcvt_f16_to_f32", "VCVT_F16_TO_F32"},
       {"vcvt_f32_to_s32", "VCVT_F32_TO_S32"},
       {"vcvt_s32_to_f32", "VCVT_S32_TO_F32"},
@@ -92,6 +93,8 @@ std::string specializeOpcode(const std::string &op, const std::string &form) {
   const std::string canonicalForm = normalizeForm(form);
   if (canonicalForm == "f32_to_f16")
     return "VCVT_F32_TO_F16";
+  if (canonicalForm == "f32_to_bf16")
+    return "VCVT_F32_TO_BF16";
   if (canonicalForm == "f16_to_f32")
     return "VCVT_F16_TO_F32";
   if (canonicalForm == "f32_to_s32")

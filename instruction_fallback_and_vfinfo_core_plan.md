@@ -47,6 +47,12 @@ load/store 指令时序口径必须先收敛：load/store 的执行完成延迟�
     `data_store_cost`，不重新接入主线 timing。
   - 已补 `VMULS -> VEXPDIF`、`VEXPDIF -> VMULSCVT`、
     `VMULSCVT -> VPACK` forwarding。
+- 新增 `VCVT_F32_TO_BF16.f32_to_bf16` 和 `VSTS.bf16`：
+  - `VCVT_F32_TO_BF16.f32_to_bf16`：compute，`latency = 7`，
+    `dispatch_exu = EXU01`，`EXU = ALU`。
+  - `VSTS.bf16`：store，`latency = 9`。
+  - 已补 `VEXP -> VCVT_F32_TO_BF16`、`VCVT_F32_TO_BF16 -> VSTS.bf16`、
+    `VCVT_F32_TO_BF16 -> VPACK`、`VEXPDIF -> VADD` forwarding。
 - CCE adapter 已对 `vpack(...)` 和 `vsstb(...)` 做专门解析：
   - `vpack(dst_cast_reg, src_cast_reg, LOWER/UPPER)` 映射为 `VPACK.b32`。
   - `vsstb(src_reg, ub_ptr, config, pred, mode)` 映射为 `VSSTB.b16`。
@@ -54,10 +60,156 @@ load/store 指令时序口径必须先收敛：load/store 的执行完成延迟�
     `(vector_u16 &)vreg` 和 `((__ubuf__ half *&)ptr)`。
   - vector 声明提取只匹配完整 declaration statement，不会把 `vpack` cast
     误识别成 `vector_u16` 声明。
+  - 逐语句解析时也会登记 `vector_*` 声明，避免 loop body 第一条
+    `vector_f32 x0;` 因预扫描和 `for (...) {` 粘连而漏记，导致后续
+    `vmuls(x0, x0, ...)` / `vexpdif(..., x0, ...)` 的源操作数被丢弃。
 - 新增临时参数兼容层，独立维护 `b16 -> fp16`、`b32 -> fp32`：
   - Python: `core/param_compat.py`
   - C++: `native/ParamCompat.h` / `native/ParamCompat.cpp`
   - 该层只在模型参数缺失时提供兼容候选，不改变输入、日志和真实 form。
+
+## Python 侧 SHQ 到 EXQ 分发策略实验
+
+### 背景与目标
+
+当前 Python 主线 queue-level4 的计算指令路径是：
+
+```text
+IDU -> OoO/SHQ -> EXQ -> EXU
+```
+
+其中 `core/isu.py` 的 `enqueue_shq_to_exq()` 会在每条 ready 指令进入 EXQ
+时预测各个合法端口的最早 issue cycle，并选择 `(predicted_issue, occ, port)`
+最小的端口。这等价于“哪个 EXU/EXQ 看起来能更快执行，就把指令送到哪里”。
+
+这个策略对软件预测有利，但不一定符合硬件的固定分发行为。新的 Python 实验目标是：
+
+- 按 ISA 参数中的 `EXU` 字段把 compute 指令分成 `ALU` 和 `SFU` 两组。
+- `ALU` 组和 `SFU` 组分别维护 round-robin 分发指针。
+- 同一组内部保持 FIFO：更晚的同组指令不能绕过更早的同组指令进入 EXQ。
+- `ALU` 与 `SFU` 两组之间允许乱序：早的 ALU 被挡住时，后面的 SFU 仍可进入
+  SFU 分发路径，反之亦然。
+- `dispatch_exu = EXU0_ONLY` 的指令仍只能进入 EXU0/EXQ0，例如 `VPACK.b32`
+  这类单端口指令不能被 round-robin 分到 EXU1。
+- 本阶段只修改 Python 侧，不同步 C++ native 实现。
+
+### 拟采用的具体语义
+
+在每个 cycle 的 SHQ 扫描中：
+
+1. 仍按 SHQ 程序顺序遍历指令。
+2. 对每条 compute 指令读取 `fu_type = ALU/SFU`。
+3. 如果该 `fu_type` 本周期已经被一个更早的 ready 同组指令阻塞，则跳过当前指令，保持组内
+   FIFO。
+4. 如果当前指令尚未 ready，则它不参与本周期 SHQ->EXQ 分发仲裁，也不阻塞后面已经
+   ready 的同组指令。也就是说，这里的 FIFO 是 ready 候选分发 FIFO，不是按数据未
+   ready 的指令做全局同组 head-of-line blocking。
+5. 如果当前 ready 指令存在同周期源 hazard，则标记该 `fu_type` 本周期 blocked；
+   后续 ready 同组指令不能绕过。
+6. 如果当前 ready 指令没有合法可用端口，只在它的合法端口集合已经覆盖全部 EXQ
+   端口时标记该 `fu_type` 本周期 blocked。若它是 `EXU0_ONLY` 这类窄端口指令，
+   因 EXQ0 满而无法入队时，不阻塞后面可进入 EXQ1 的 ready ALU 指令。
+7. `fu_round_robin_exu0_reserve` 策略下，若当前 ready 指令是 `EXU01` / `EXU012`
+   这类 flexible 指令，并且 SHQ 前瞻窗口内出现足够数量的 `EXU0_ONLY` compute
+   指令，则优先避让 EXQ0：
+   - 前瞻窗口大小由 `configs/uarch.json` 的 `exu0_reserve_lookahead` 配置。
+   - 当前实验值为 `8`，代码中不写死该值。
+   - 触发阈值由 `configs/uarch.json` 的 `exu0_reserve_min_count` 配置。
+   - 当前实验值为 `1`，即看到单条 `EXU0_ONLY` 压力时就保护 EXQ0。
+   - 窗口从当前指令之后开始，最多看 8 条 SHQ compute 指令。
+   - 窗口内指令不要求已经 ready；near-ready 的 `EXU0_ONLY` 也会形成 EXQ0 压力。
+   - 若过滤 EXQ0 后仍有候选端口，则在非 EXQ0 候选端口内按该 FU 的 RR 指针选择。
+   - 若过滤后没有候选端口，则 fallback 到原候选端口，避免 EXQ1 满时无意义空转。
+8. 对 ready 且可入队的指令，在它的合法端口集合内按该 `fu_type` 的 round-robin
+   指针选择第一个可用端口。
+9. 入队成功后只推进该 `fu_type` 的 round-robin 指针。
+
+这个策略和当前贪心预测策略的主要差异是：端口选择不再看“哪个端口预测更早 issue”，
+而是由 `ALU` / `SFU` 两套固定 RR 分发器决定。EXQ 内部仍保留现有行为：
+
+- 每个 EXQ port 内仍分 `ALU` / `SFU` 两个 FIFO 子队列。
+- EXQ 到 EXU issue 阶段仍允许 ALU/SFU 之间按 ready/recv/inst_id 仲裁。
+- II、forwarding、EXQ depth、inflight cap、same-cycle source hazard 等约束继续生效。
+
+### 影响文件
+
+本阶段计划修改：
+
+- `core/ooo_mainline.py`
+  - 增加 Python 主线 OOO 的 `ALU` / `SFU` 独立 RR 指针配置和状态。
+- `core/isu.py`
+  - 修改 `enqueue_shq_to_exq()` 的端口选择策略。
+  - 保留旧贪心策略的代码路径，便于本地对比和必要时回退。
+- `configs/uarch.json`
+  - 增加默认分发策略字段，使 Python 主线默认使用新的
+    `fu_round_robin_exu0_reserve`。
+  - 增加 `exu0_reserve_lookahead = 8`，作为 EXU0_ONLY 前瞻保护窗口大小。
+  - 增加 `exu0_reserve_min_count = 1`，作为 EXU0_ONLY 压力触发阈值。
+- `tests/test_instruction_fallback.py`
+  - 增加最小调度测试，验证 `EXU0_ONLY` 不会被分到 EXU1，并验证 ALU/SFU 可跨组乱序。
+
+不在本阶段修改：
+
+- `native/*` C++ 实现。
+- ISA 参数、forwarding 和 II 表。
+- load/store LSQ 调度路径。
+- mem_bar 控制语义。
+
+### 验收与精度评估
+
+开发完成后执行：
+
+```text
+python3 -m unittest discover tests
+python3 tools/run_cost_model_regression.py --tier smoke --out-dir /tmp/vfsim_reg_after_shq_rr
+```
+
+并和修改前 `/tmp/vfsim_reg_before_shq_rr/current_metrics.json` 对比：
+
+- 每个 case 的 `vf_end` 变化。
+- 有 CCE ground truth 的 case 的 `error_to_cce_abs` / `error_to_cce_rel` 变化。
+- 汇总平均绝对误差和平均相对误差，判断整体精度是提高、降低还是基本不变。
+
+### 当前实验观察
+
+softmax `macro_instr_ir_layout` 上，CA model 参考值为 u1=713、u4=594。
+
+修复 loop body 首条 vector 声明漏记后，当前实验结果为：
+
+| 策略 | u1 | u4 |
+|---|---:|---:|
+| `fu_round_robin_fifo`, cap=7 | 677 | 686 |
+| `fu_round_robin_exu0_reserve`, `lookahead=8`, `min_count=1`, cap=7 | 706 | 674 |
+| `fu_round_robin_exu0_reserve`, `lookahead=8`, `min_count=2`, cap=7 | 674 | 669 |
+| greedy, cap=7 | 629 | 651 |
+| `fu_round_robin_exu0_reserve`, `lookahead=8`, `min_count=2`, cap=8 | 624 | 590 |
+
+结论：
+
+- `EXU0_ONLY` reserve 能解释一部分 u4 误差，但不是全部。
+- CCE adapter 漏记 loop body 首条 vector 声明会丢失 lane0 RAW 依赖，是独立的输入
+  语义问题；修复后模型更保守。
+- live range normalization 对 loop-carried accumulator 的出口别名必须传播到 loop 后
+  的 sibling 指令；否则 u1 中 `vsts(sum, ...)` 会错误读取 `vdup` 初始值，而不是
+  loop 内最后一次 `vadd` 的结果，导致 u1 明显偏乐观。
+- loop 出口别名需要有 kill 语义：如果 loop 后某个普通 sibling 重新定义了同名逻辑
+  vreg，例如 `VADD ... -> V5`，则后续 `VSTS V5` 应读取新定义的 `V5`，不能继续使用
+  旧的 loop exit alias。
+- 修复 loop-carried alias 后，结果更新为：
+
+| 策略 | u1 | u4 |
+|---|---:|---:|
+| `fu_round_robin_fifo`, cap=7 | 661 | 686 |
+| `fu_round_robin_exu0_reserve`, `lookahead=8`, `min_count=1`, cap=7 | 715 | 664 |
+| `fu_round_robin_exu0_reserve`, `lookahead=8`, `min_count=2`, cap=7 | 685 | 651 |
+| greedy, cap=7 | 626 | 645 |
+| `fu_round_robin_exu0_reserve`, `lookahead=8`, `min_count=2`, cap=8 | 628 | 592 |
+
+- u4 对 `exq_issue_inflight_cap_per_port` 极敏感：cap 从 7 改到 8 会让 u4 从 651
+  降到 592，接近 CA model；但 u1 会从 685 降到 628，明显过快。
+- 因此后续不应简单把 cap 全局改为 8。更可能需要把当前“每端口总 inflight cap”
+  拆成更接近硬件的维度，例如按 FU/pipe 类型统计，或只对真正占用同一 completion
+  资源的指令计数。
 
 ## 当前问题
 
@@ -741,6 +893,36 @@ VMULSCVT.f32_to_f16 -> VPACK.b32 = 5
 
 旧 microbenchmark 表里的 startup/drain/load/store 仍按当前 schema 记录在历史字段中，
 其中 load/store 字段不参与主线 load/store 执行时长计算。
+
+已新增 `VCVT_F32_TO_BF16` / `VSTS.bf16` 覆盖：
+
+- `VCVT_F32_TO_BF16.f32_to_bf16`
+  - `op_class = COMPUTE`
+  - `pipeline_startup_cost = 6`
+  - `latency = 7`
+  - `pipeline_drain_cost = 5`
+  - `dispatch_exu = EXU01`
+  - `EXU = ALU`
+- `VSTS.bf16`
+  - `op_class = STORE`
+  - `pipeline_startup_cost = 8`
+  - `latency = 9`
+  - `pipeline_drain_cost = 0`
+
+已知 forwarding：
+
+```text
+VEXP.fp32 -> VCVT_F32_TO_BF16.f32_to_bf16 = 13
+VCVT_F32_TO_BF16.f32_to_bf16 -> VSTS.bf16 = 5
+VCVT_F32_TO_BF16.f32_to_bf16 -> VPACK.b32 = 4
+VEXPDIF.fp32 -> VADD.fp32 = 15
+```
+
+已补 II 矩阵：
+
+```text
+prev/cur: VEXPDIF.fp32, VPACK.b32, VMULSCVT.f32_to_f16, VADD.fp32
+```
 
 ### 步骤五点六：临时兼容 form helper
 

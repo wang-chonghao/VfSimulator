@@ -31,6 +31,7 @@ class VfInfoApiTest(unittest.TestCase):
         self.assertEqual(normalize_opcode("vsstb"), "VSSTB")
         self.assertEqual(normalize_opcode("vunknown"), "VUNKNOWN")
         self.assertEqual(specialize_opcode("vcvt", "fp32_to_s32"), "VCVT_F32_TO_S32")
+        self.assertEqual(specialize_opcode("vcvt", "f32_to_bf16"), "VCVT_F32_TO_BF16")
         self.assertEqual(specialize_opcode("vcvt", "f16_to_s32"), "VCVT")
         self.assertEqual(normalize_membar_type("SMEM_BAR.VLD_VST"), "VLD_VST")
         self.assertEqual(normalize_membar_type("SMEM_BAR.VV_ALL"), "VV_ALL")
@@ -235,6 +236,34 @@ class VfInfoApiTest(unittest.TestCase):
 
         self.assertEqual(vf_info.context[0].name, "VMULSCVT")
         self.assertEqual(vf_info.context[0].form, "f32_to_f16")
+
+    def test_cce_adapter_registers_first_vector_decl_inside_loop(self):
+        source = """
+        void loop_decl_vf(__ubuf__ float *src) {
+          __VEC_SCOPE__ {
+            vector_bool pred = pset_b32(PAT_ALL);
+            for (uint16_t row = 0; row < 2; ++row) {
+              vector_f32 x0;
+              vector_f32 exp0;
+              vld(x0, src, 0, NORM);
+              vmuls(x0, x0, 0.125f, pred);
+              vexpdif(exp0, x0, x0, pred, PART_ODD);
+            }
+          }
+        }
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "loop_decl.dsl"
+            path.write_text(source, encoding="utf-8")
+            vf_info = InputAPI.load_cce_file(path, kernel_name="loop_decl_vf")
+
+        loop = vf_info.context[0]
+        vmuls = next(inst for inst in loop.body if getattr(inst, "name", None) == "VMULS")
+        vexpdif = next(inst for inst in loop.body if getattr(inst, "name", None) == "VEXPDIF")
+        self.assertEqual(vmuls.src, ["x0"])
+        self.assertEqual(vmuls.dst, ["x0"])
+        self.assertEqual(vexpdif.src, ["x0", "x0"])
+        self.assertEqual(vexpdif.dst, ["exp0"])
 
     def test_cce_adapter_parses_mem_bar_call(self):
         source = """

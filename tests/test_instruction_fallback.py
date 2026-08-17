@@ -5,13 +5,46 @@ import unittest
 from pathlib import Path
 
 from api.simulator_costmodel import CoreVfCostModel
+from core.flatten import Flattener
+from core.ifu import IFUUnroll
+from core.ooo import Uop
+from core.ooo_mainline import OoOCoreMainline
 from core.param_db import ParamDB
+from core.vreg_live_range_normalization import normalize_program_vreg_live_ranges
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class InstructionFallbackTest(unittest.TestCase):
+    def _make_compute_uop(self, inst_id, op, form="fp32", state="ready"):
+        return Uop(
+            inst_id=inst_id,
+            op=op,
+            form=form,
+            src=[],
+            dst=[f"v{inst_id}"],
+            preg_src=[],
+            preg_dst=[f"p{inst_id}"],
+            preg_old=[],
+            state=state,
+        )
+
+    def _make_mainline_core_for_isu(self):
+        db = ParamDB(base_dir=str(ROOT))
+        uarch = dict(db.get_uarch())
+        uarch.update(
+            {
+                "enable_isu_queue_model": True,
+                "shq_exq_dispatch_policy": "fu_round_robin_exu0_reserve",
+                "exu0_reserve_lookahead": 8,
+                "exu0_reserve_min_count": 2,
+                "enforce_same_cycle_src_hazard": False,
+                "exq_depth": 2,
+            }
+        )
+        return OoOCoreMainline(uarch, db, dtype="fp32")
+
     def test_unknown_vector_op_uses_default_compute_params(self):
         db = ParamDB(base_dir=str(ROOT))
 
@@ -24,6 +57,109 @@ class InstructionFallbackTest(unittest.TestCase):
         self.assertTrue(
             any(warning["kind"] == "unsupported_isa_op" for warning in db.get_warnings())
         )
+
+    def test_fu_round_robin_keeps_exu0_only_on_exq0(self):
+        core = self._make_mainline_core_for_isu()
+        core.SHQ.append(self._make_compute_uop(0, "VPACK", form="b32"))
+
+        issued = core.isu.enqueue_shq_to_exq(0, set())
+
+        self.assertEqual(issued, 1)
+        self.assertEqual(len(core.exq_wait[0]["ALU"]), 1)
+        self.assertEqual(core.exq_wait[0]["ALU"][0].op, "VPACK")
+        self.assertEqual(core.exq_wait[0]["ALU"][0].exu_port, 0)
+        self.assertEqual(len(core.exq_wait[1]["ALU"]), 0)
+
+    def test_fu_round_robin_fifo_allows_alu_to_pass_blocked_exu0_only_alu(self):
+        core = self._make_mainline_core_for_isu()
+        core.exq_wait[0]["ALU"].append(self._make_compute_uop(100, "VADDS"))
+        core.exq_wait[0]["SFU"].append(self._make_compute_uop(101, "VEXP"))
+        core.SHQ.extend(
+            [
+                self._make_compute_uop(0, "VPACK", form="b32"),
+                self._make_compute_uop(1, "VADDS"),
+            ]
+        )
+
+        issued = core.isu.enqueue_shq_to_exq(0, set())
+
+        self.assertEqual(issued, 1)
+        self.assertEqual([u.op for u in core.SHQ], ["VPACK"])
+        self.assertEqual(len(core.exq_wait[1]["ALU"]), 1)
+        self.assertEqual(core.exq_wait[1]["ALU"][0].op, "VADDS")
+        self.assertEqual(core.exq_wait[1]["ALU"][0].exu_port, 1)
+
+    def test_fu_round_robin_fifo_allows_sfu_to_pass_blocked_alu_group(self):
+        core = self._make_mainline_core_for_isu()
+        core.enforce_same_cycle_src_hazard = True
+        blocked_alu = self._make_compute_uop(0, "VADDS")
+        blocked_alu.preg_src = ["p_shared"]
+        second_alu = self._make_compute_uop(1, "VADDS")
+        sfu = self._make_compute_uop(2, "VEXP")
+        core.SHQ.extend([blocked_alu, second_alu, sfu])
+
+        issued = core.isu.enqueue_shq_to_exq(0, {"p_shared"})
+
+        self.assertEqual(issued, 1)
+        self.assertEqual([u.op for u in core.SHQ], ["VADDS", "VADDS"])
+        self.assertEqual(len(core.exq_wait[0]["SFU"]), 1)
+        self.assertEqual(core.exq_wait[0]["SFU"][0].op, "VEXP")
+
+    def test_exu0_reserve_lookahead_min_count_sends_flexible_alu_to_exq1(self):
+        core = self._make_mainline_core_for_isu()
+        core.SHQ.extend(
+            [
+                self._make_compute_uop(0, "VADDS"),
+                self._make_compute_uop(1, "VPACK", form="b32"),
+                self._make_compute_uop(2, "VPACK", form="b32"),
+            ]
+        )
+
+        issued = core.isu.enqueue_shq_to_exq(0, set())
+
+        self.assertEqual(issued, 2)
+        self.assertEqual(len(core.exq_wait[0]["ALU"]), 1)
+        self.assertEqual(core.exq_wait[0]["ALU"][0].op, "VPACK")
+        self.assertEqual(core.exq_wait[0]["ALU"][0].exu_port, 0)
+        self.assertEqual(len(core.exq_wait[1]["ALU"]), 1)
+        self.assertEqual(core.exq_wait[1]["ALU"][0].op, "VADDS")
+        self.assertEqual(core.exq_wait[1]["ALU"][0].exu_port, 1)
+
+    def test_exu0_reserve_ignores_single_exu0_only_in_window(self):
+        core = self._make_mainline_core_for_isu()
+        core.SHQ.extend(
+            [
+                self._make_compute_uop(0, "VADDS"),
+                self._make_compute_uop(1, "VPACK", form="b32"),
+            ]
+        )
+
+        issued = core.isu.enqueue_shq_to_exq(0, set())
+
+        self.assertEqual(issued, 1)
+        self.assertEqual([u.op for u in core.SHQ], ["VPACK"])
+        self.assertEqual(len(core.exq_wait[0]["ALU"]), 1)
+        self.assertEqual(core.exq_wait[0]["ALU"][0].op, "VADDS")
+        self.assertEqual(core.exq_wait[0]["ALU"][0].exu_port, 0)
+        self.assertEqual(len(core.exq_wait[1]["ALU"]), 0)
+
+    def test_default_exu0_reserve_min_count_reserves_for_single_exu0_only(self):
+        db = ParamDB(base_dir=str(ROOT))
+        uarch = dict(db.get_uarch())
+        self.assertEqual(uarch["exu0_reserve_min_count"], 1)
+        core = OoOCoreMainline(uarch, db, dtype="fp32")
+        core.SHQ.extend(
+            [
+                self._make_compute_uop(0, "VADDS"),
+                self._make_compute_uop(1, "VPACK", form="b32"),
+            ]
+        )
+
+        issued = core.isu.enqueue_shq_to_exq(0, set())
+
+        self.assertEqual(issued, 2)
+        self.assertEqual([u.op for u in core.exq_wait[0]["ALU"]], ["VPACK"])
+        self.assertEqual([u.op for u in core.exq_wait[1]["ALU"]], ["VADDS"])
 
     def test_unknown_load_store_prefixes_use_lsu_defaults(self):
         db = ParamDB(base_dir=str(ROOT))
@@ -218,6 +354,72 @@ class InstructionFallbackTest(unittest.TestCase):
             ),
             5,
         )
+        self.assertEqual(
+            db.get_ii(
+                "VEXPDIF",
+                "VEXPDIF",
+                dtype="fp32",
+                prev_form="fp32",
+                cur_form="fp32",
+            ),
+            4,
+        )
+
+    def test_vcvt_f32_to_bf16_and_vsts_bf16_have_explicit_model_params(self):
+        db = ParamDB(base_dir=str(ROOT))
+
+        vcvt = db.get_inst_form("VCVT_F32_TO_BF16", form="f32_to_bf16", dtype="bf16")
+        vsts = db.get_inst_form("VSTS", form="bf16", dtype="bf16")
+
+        self.assertEqual(vcvt["op_class"], "COMPUTE")
+        self.assertEqual(vcvt["pipeline_startup_cost"], 6)
+        self.assertEqual(vcvt["latency"], 7)
+        self.assertEqual(vcvt["pipeline_drain_cost"], 5)
+        self.assertEqual(vcvt["dispatch_exu"], "EXU01")
+        self.assertEqual(vsts["op_class"], "STORE")
+        self.assertEqual(vsts["pipeline_startup_cost"], 8)
+        self.assertEqual(vsts["latency"], 9)
+        self.assertEqual(vsts["pipeline_drain_cost"], 0)
+        self.assertEqual(
+            db.get_forwarding_cycles(
+                "VEXP",
+                "VCVT_F32_TO_BF16",
+                dtype="bf16",
+                producer_form="fp32",
+                consumer_form="f32_to_bf16",
+            ),
+            13,
+        )
+        self.assertEqual(
+            db.get_forwarding_cycles(
+                "VCVT_F32_TO_BF16",
+                "VSTS",
+                dtype="bf16",
+                producer_form="f32_to_bf16",
+                consumer_form="bf16",
+            ),
+            5,
+        )
+        self.assertEqual(
+            db.get_forwarding_cycles(
+                "VCVT_F32_TO_BF16",
+                "VPACK",
+                dtype="bf16",
+                producer_form="f32_to_bf16",
+                consumer_form="b32",
+            ),
+            4,
+        )
+        self.assertEqual(
+            db.get_forwarding_cycles(
+                "VEXPDIF",
+                "VADD",
+                dtype="fp32",
+                producer_form="fp32",
+                consumer_form="fp32",
+            ),
+            15,
+        )
 
     def test_vpack_vsstb_forms_do_not_fallback_through_python_idu(self):
         payload = {
@@ -307,6 +509,255 @@ class InstructionFallbackTest(unittest.TestCase):
         self.assertIn("compatible_isa_form_fallback", kinds)
         self.assertIn("compatible_forwarding_pair_fallback", kinds)
         self.assertIn("compatible_ii_pair_fallback", kinds)
+
+    def test_loop_carried_vreg_alias_updates_following_store_source(self):
+        values = {
+            "memOut": {"value_id": "memOut", "storage": "UB", "dtype": "fp32", "shape": [64]},
+            "memIn": {"value_id": "memIn", "storage": "UB", "dtype": "fp32", "shape": [64]},
+            "V5": {"value_id": "V5", "storage": "Register", "dtype": "fp32", "shape": [64]},
+            "V6": {"value_id": "V6", "storage": "Register", "dtype": "fp32", "shape": [64]},
+            "V7": {"value_id": "V7", "storage": "Register", "dtype": "fp32", "shape": [64]},
+        }
+        program = [
+            {
+                "type": "loop",
+                "iters": 4,
+                "body": [
+                    {"type": "inst", "op": "VLDS", "form": "fp32", "src": ["memIn"], "dst": ["V6"]},
+                    {
+                        "type": "inst",
+                        "op": "VADD",
+                        "form": "fp32",
+                        "src": ["V7", "V5"],
+                        "dst": ["V5"],
+                    },
+                ],
+            },
+            {"type": "inst", "op": "VSTS", "form": "fp32", "src": ["V5"], "dst": ["memOut"]},
+        ]
+
+        normalized, _, _ = normalize_program_vreg_live_ranges(program, values=values)
+
+        loop_add = normalized[0]["body"][1]
+        store = normalized[1]
+        self.assertEqual(loop_add["src"][1], loop_add["dst"][0])
+        self.assertEqual(store["src"], loop_add["dst"])
+
+    def test_loop_carried_vreg_alias_is_killed_by_following_redefinition(self):
+        values = {
+            "memOut": {"value_id": "memOut", "storage": "UB", "dtype": "fp32", "shape": [64]},
+            "memIn": {"value_id": "memIn", "storage": "UB", "dtype": "fp32", "shape": [64]},
+            "V5": {"value_id": "V5", "storage": "Register", "dtype": "fp32", "shape": [64]},
+            "V6": {"value_id": "V6", "storage": "Register", "dtype": "fp32", "shape": [64]},
+            "V7": {"value_id": "V7", "storage": "Register", "dtype": "fp32", "shape": [64]},
+            "V8": {"value_id": "V8", "storage": "Register", "dtype": "fp32", "shape": [64]},
+        }
+        program = [
+            {
+                "type": "loop",
+                "iters": 4,
+                "body": [
+                    {"type": "inst", "op": "VLDS", "form": "fp32", "src": ["memIn"], "dst": ["V6"]},
+                    {
+                        "type": "inst",
+                        "op": "VADD",
+                        "form": "fp32",
+                        "src": ["V7", "V5"],
+                        "dst": ["V5"],
+                    },
+                ],
+            },
+            {"type": "inst", "op": "VADD", "form": "fp32", "src": ["V8", "V8"], "dst": ["V5"]},
+            {"type": "inst", "op": "VSTS", "form": "fp32", "src": ["V5"], "dst": ["memOut"]},
+        ]
+
+        normalized, _, _ = normalize_program_vreg_live_ranges(program, values=values)
+
+        redefinition = normalized[1]
+        store = normalized[2]
+        self.assertEqual(redefinition["dst"], ["V5"])
+        self.assertEqual(store["src"], ["V5"])
+
+    def test_loop_carried_vreg_alias_is_killed_inside_following_loop(self):
+        values = {
+            "memOut": {"value_id": "memOut", "storage": "UB", "dtype": "fp32", "shape": [64]},
+            "memIn": {"value_id": "memIn", "storage": "UB", "dtype": "fp32", "shape": [64]},
+            "V5": {"value_id": "V5", "storage": "Register", "dtype": "fp32", "shape": [64]},
+            "V6": {"value_id": "V6", "storage": "Register", "dtype": "fp32", "shape": [64]},
+            "V7": {"value_id": "V7", "storage": "Register", "dtype": "fp32", "shape": [64]},
+            "V8": {"value_id": "V8", "storage": "Register", "dtype": "fp32", "shape": [64]},
+        }
+        program = [
+            {
+                "type": "loop",
+                "iters": 4,
+                "body": [
+                    {"type": "inst", "op": "VLDS", "form": "fp32", "src": ["memIn"], "dst": ["V6"]},
+                    {
+                        "type": "inst",
+                        "op": "VADD",
+                        "form": "fp32",
+                        "src": ["V7", "V5"],
+                        "dst": ["V5"],
+                    },
+                ],
+            },
+            {
+                "type": "loop",
+                "iters": 4,
+                "body": [
+                    {"type": "inst", "op": "VADD", "form": "fp32", "src": ["V8", "V8"], "dst": ["V5"]},
+                    {"type": "inst", "op": "VSTS", "form": "fp32", "src": ["V5"], "dst": ["memOut"]},
+                ],
+            },
+        ]
+
+        normalized, _, _ = normalize_program_vreg_live_ranges(program, values=values)
+
+        second_loop_redefinition = normalized[1]["body"][0]
+        second_loop_store = normalized[1]["body"][1]
+        self.assertEqual(second_loop_redefinition["dst"], ["V5"])
+        self.assertEqual(second_loop_store["src"], ["V5"])
+
+    def test_loop_entry_alias_preserves_dynamic_accumulator_dependency(self):
+        values = {
+            "memIn": {"value_id": "memIn", "storage": "UB", "dtype": "fp32", "shape": [64]},
+            "V5": {"value_id": "V5", "storage": "Register", "dtype": "fp32", "shape": [64]},
+            "V6": {"value_id": "V6", "storage": "Register", "dtype": "fp32", "shape": [64]},
+            "V7": {"value_id": "V7", "storage": "Register", "dtype": "fp32", "shape": [64]},
+            "V8": {"value_id": "V8", "storage": "Register", "dtype": "fp32", "shape": [64]},
+        }
+        program = [
+            {
+                "type": "loop",
+                "iters": 1,
+                "body": [
+                    {"type": "inst", "op": "VLDS", "form": "fp32", "src": ["memIn"], "dst": ["V6"]},
+                    {"type": "inst", "op": "VADD", "form": "fp32", "src": ["V7", "V5"], "dst": ["V5"]},
+                ],
+            },
+            {
+                "type": "loop",
+                "iters": 4,
+                "body": [
+                    {"type": "inst", "op": "VADD", "form": "fp32", "src": ["V5", "V8"], "dst": ["V5"]},
+                ],
+            },
+        ]
+
+        normalized, normalized_values, _ = normalize_program_vreg_live_ranges(
+            program,
+            values=values,
+        )
+        accumulator = normalized[1]["body"][0]
+        self.assertEqual(accumulator["src"][0], accumulator["dst"][0])
+
+        dynamic_insts = []
+        ifu = IFUUnroll(Flattener({}).flatten(normalized))
+        while True:
+            inst = ifu.next_inst()
+            if inst is None:
+                break
+            dynamic_insts.append(inst)
+
+        db = ParamDB(base_dir=str(ROOT))
+        core = OoOCoreMainline(dict(db.get_uarch()), db, dtype="fp32", values=normalized_values)
+        for inst in dynamic_insts:
+            core.accept(inst)
+
+        accumulator_uops = [
+            uop
+            for uop in core.ROB
+            if uop.top_block_id == 1 and uop.op == "VADD"
+        ]
+        self.assertEqual(len(accumulator_uops), 4)
+        for previous, current in zip(accumulator_uops, accumulator_uops[1:]):
+            self.assertEqual(current.preg_src[0], previous.preg_dst[0])
+
+    def test_single_loop_normalization_preserves_accumulator_back_edge(self):
+        values = {
+            "memIn": {"value_id": "memIn", "storage": "UB", "dtype": "fp32", "shape": [64]},
+            "V5": {"value_id": "V5", "storage": "Register", "dtype": "fp32", "shape": [64]},
+            "V6": {"value_id": "V6", "storage": "Register", "dtype": "fp32", "shape": [64]},
+            "V7": {"value_id": "V7", "storage": "Register", "dtype": "fp32", "shape": [64]},
+            "V9": {"value_id": "V9", "storage": "Register", "dtype": "fp32", "shape": [64]},
+        }
+        program = [
+            {
+                "type": "loop",
+                "iters": 4,
+                "body": [
+                    {"type": "inst", "op": "VLDS", "form": "fp32", "src": ["memIn"], "dst": ["V6"]},
+                    {"type": "inst", "op": "VEXP", "form": "fp32", "src": ["V6"], "dst": ["V7"]},
+                    {"type": "inst", "op": "VADD", "form": "fp32", "src": ["V7", "V5"], "dst": ["V5"]},
+                    {"type": "inst", "op": "VEXP", "form": "fp32", "src": ["V5"], "dst": ["V9"]},
+                ],
+            },
+        ]
+
+        normalized, normalized_values, _ = normalize_program_vreg_live_ranges(
+            program,
+            values=values,
+        )
+        accumulator = normalized[0]["body"][2]
+        self.assertEqual(accumulator["src"][1], accumulator["dst"][0])
+        self.assertNotEqual(normalized[0]["body"][3]["dst"][0], accumulator["dst"][0])
+
+        dynamic_insts = []
+        ifu = IFUUnroll(Flattener({}).flatten(normalized))
+        while True:
+            inst = ifu.next_inst()
+            if inst is None:
+                break
+            dynamic_insts.append(inst)
+
+        db = ParamDB(base_dir=str(ROOT))
+        core = OoOCoreMainline(dict(db.get_uarch()), db, dtype="fp32", values=normalized_values)
+        for inst in dynamic_insts:
+            core.accept(inst)
+
+        accumulator_uops = [uop for uop in core.ROB if uop.op == "VADD"]
+        self.assertEqual(len(accumulator_uops), 4)
+        for previous, current in zip(accumulator_uops, accumulator_uops[1:]):
+            self.assertEqual(current.preg_src[1], previous.preg_dst[0])
+
+    def test_zero_iteration_loop_does_not_kill_entry_alias(self):
+        values = {
+            "memOut": {"value_id": "memOut", "storage": "UB", "dtype": "fp32", "shape": [64]},
+            "memIn": {"value_id": "memIn", "storage": "UB", "dtype": "fp32", "shape": [64]},
+            "V5": {"value_id": "V5", "storage": "Register", "dtype": "fp32", "shape": [64]},
+            "V6": {"value_id": "V6", "storage": "Register", "dtype": "fp32", "shape": [64]},
+            "V7": {"value_id": "V7", "storage": "Register", "dtype": "fp32", "shape": [64]},
+            "V8": {"value_id": "V8", "storage": "Register", "dtype": "fp32", "shape": [64]},
+        }
+        program = [
+            {
+                "type": "loop",
+                "iters": 1,
+                "body": [
+                    {"type": "inst", "op": "VLDS", "form": "fp32", "src": ["memIn"], "dst": ["V6"]},
+                    {"type": "inst", "op": "VADD", "form": "fp32", "src": ["V7", "V5"], "dst": ["V5"]},
+                ],
+            },
+            {
+                "type": "loop",
+                "iters": "ZERO",
+                "body": [
+                    {"type": "inst", "op": "VADD", "form": "fp32", "src": ["V8", "V8"], "dst": ["V5"]},
+                ],
+            },
+            {"type": "inst", "op": "VSTS", "form": "fp32", "src": ["V5"], "dst": ["memOut"]},
+        ]
+
+        normalized, _, _ = normalize_program_vreg_live_ranges(
+            program,
+            values=values,
+            params={"ZERO": 0},
+        )
+
+        first_loop_exit = normalized[0]["body"][1]["dst"][0]
+        self.assertNotEqual(first_loop_exit, "V5")
+        self.assertEqual(normalized[2]["src"], [first_loop_exit])
 
     def test_partial_compatible_form_params_inherit_missing_fields(self):
         db = ParamDB(base_dir=str(ROOT))

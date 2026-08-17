@@ -176,6 +176,7 @@ class _VFScopeParser:
         if not stmt:
             return None
         if stmt.startswith("vector_"):
+            self._record_vector_decl_statement(stmt)
             return None
         smem_bar = re.match(r"SMEM_BAR\s*\.\s*([A-Za-z_]\w*)\s*;", stmt, re.IGNORECASE)
         if smem_bar:
@@ -259,6 +260,21 @@ class _VFScopeParser:
         if name in self.scalar_names:
             return MemInfo(name, "Scalar")
         return None
+
+    def _record_vector_decl_statement(self, stmt: str) -> None:
+        clean = stmt.strip().rstrip(";").strip()
+        match = _VECTOR_DECL_STMT_RE.fullmatch(clean)
+        if not match:
+            return
+        dtype, names_text = match.groups()
+        if any(token in names_text for token in ("(", ")", "&", "*")):
+            return
+        form = _vector_dtype_to_form(dtype)
+        for raw_name in names_text.split(","):
+            name = _base_identifier(raw_name)
+            if name:
+                self.register_dtypes[name] = form
+                self.register_names.add(name)
 
     def _loop_count_from_header(self, header: str) -> int:
         parts = [part.strip() for part in header.split(";")]
@@ -451,9 +467,10 @@ def _infer_inst_form(op: str, dst: Sequence[MemInfo], src: Sequence[MemInfo]) ->
     op = normalize_opcode(op)
     src_dtype = next((operand.dtype for operand in src if operand.dtype), None)
     dst_dtype = next((operand.dtype for operand in dst if operand.dtype), None)
-    if op in {"VCVT_F32_TO_F16", "VCVT_F16_TO_F32", "VCVT_F32_TO_S32", "VCVT_S32_TO_F32"}:
+    if op in {"VCVT_F32_TO_F16", "VCVT_F32_TO_BF16", "VCVT_F16_TO_F32", "VCVT_F32_TO_S32", "VCVT_S32_TO_F32"}:
         explicit = {
             "VCVT_F32_TO_F16": "f32_to_f16",
+            "VCVT_F32_TO_BF16": "f32_to_bf16",
             "VCVT_F16_TO_F32": "f16_to_f32",
             "VCVT_F32_TO_S32": "f32_to_s32",
             "VCVT_S32_TO_F32": "s32_to_f32",

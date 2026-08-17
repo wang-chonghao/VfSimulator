@@ -467,6 +467,19 @@ class OoOCoreMainline(OoOCore):
             uarch.get("shq_exq_static_rr", False)
         )
         self.shq_exq_rr_ptr: int = 0
+        self.shq_exq_dispatch_policy: str = str(
+            uarch.get("shq_exq_dispatch_policy", "fu_round_robin_fifo")
+        ).lower()
+        self.exu0_reserve_lookahead: int = int(
+            uarch.get("exu0_reserve_lookahead", 0)
+        )
+        self.exu0_reserve_min_count: int = int(
+            uarch.get("exu0_reserve_min_count", 1)
+        )
+        self.shq_exq_rr_ptr_by_fu: Dict[str, int] = {
+            "ALU": 0,
+            "SFU": 0,
+        }
         self.admit_blocked_to_exq: bool = bool(
             uarch.get("admit_blocked_to_exq", False)
         )

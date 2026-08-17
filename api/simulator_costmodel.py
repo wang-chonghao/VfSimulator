@@ -53,7 +53,11 @@ class CoreVfCostModel(VfCostModel):
         values = payload.get("values", {}) or {}
 
         db = ParamDB(base_dir=str(base_dir))
-        program, values, norm_stats = normalize_program_vreg_live_ranges(program, values=values)
+        program, values, norm_stats = normalize_program_vreg_live_ranges(
+            program,
+            values=values,
+            params=params,
+        )
         program, canonicalization_stats = canonicalize_single_super_iteration_loops(
             program,
             params,

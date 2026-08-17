@@ -40,6 +40,7 @@ class OpCode(_StrEnum):
     VMULS = "VMULS"
     VCVT = "VCVT"
     VCVT_F32_TO_F16 = "VCVT_F32_TO_F16"
+    VCVT_F32_TO_BF16 = "VCVT_F32_TO_BF16"
     VCVT_F16_TO_F32 = "VCVT_F16_TO_F32"
     VCVT_F32_TO_S32 = "VCVT_F32_TO_S32"
     VCVT_S32_TO_F32 = "VCVT_S32_TO_F32"
@@ -99,6 +100,7 @@ OPCODE_ALIASES = {
     "vmuls": OpCode.VMULS,
     "vcvt": OpCode.VCVT,
     "vcvt_f32_to_f16": OpCode.VCVT_F32_TO_F16,
+    "vcvt_f32_to_bf16": OpCode.VCVT_F32_TO_BF16,
     "vcvt_f16_to_f32": OpCode.VCVT_F16_TO_F32,
     "vcvt_f32_to_s32": OpCode.VCVT_F32_TO_S32,
     "vcvt_s32_to_f32": OpCode.VCVT_S32_TO_F32,
@@ -108,6 +110,7 @@ OPCODE_ALIASES = {
 
 VCVT_SPECIALIZATIONS = {
     "f32_to_f16": OpCode.VCVT_F32_TO_F16,
+    "f32_to_bf16": OpCode.VCVT_F32_TO_BF16,
     "f16_to_f32": OpCode.VCVT_F16_TO_F32,
     "f32_to_s32": OpCode.VCVT_F32_TO_S32,
     "s32_to_f32": OpCode.VCVT_S32_TO_F32,

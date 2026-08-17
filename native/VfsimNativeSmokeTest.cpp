@@ -299,6 +299,33 @@ void verifyVexpdifVmulscvtConfig(const ParamDB &db) {
           "VEXPDIF -> VMULSCVT forwarding mismatch");
   require(db.forwardingCycles("VMULSCVT", "f32_to_f16", "VPACK", "b32") == 5,
           "VMULSCVT -> VPACK forwarding mismatch");
+  require(db.initiationInterval("VEXPDIF", "fp32", "VEXPDIF", "fp32") == 4,
+          "VEXPDIF -> VEXPDIF II mismatch");
+}
+
+void verifyBf16ConvertStoreConfig(const ParamDB &db) {
+  const InstConfig &vcvt = db.inst("VCVT_F32_TO_BF16", "f32_to_bf16");
+  const InstConfig &vsts = db.inst("VSTS", "bf16");
+  require(vcvt.opClass == "COMPUTE", "VCVT_F32_TO_BF16 must be modeled as compute");
+  require(vcvt.pipelineStartupCost == 6, "VCVT_F32_TO_BF16 startup mismatch");
+  require(vcvt.latency == 7, "VCVT_F32_TO_BF16 latency mismatch");
+  require(vcvt.pipelineDrainCost == 5, "VCVT_F32_TO_BF16 drain mismatch");
+  require(vcvt.dispatchExu == "EXU01", "VCVT_F32_TO_BF16 dispatch mismatch");
+  require(vsts.opClass == "STORE", "VSTS.bf16 must be modeled as store");
+  require(vsts.pipelineStartupCost == 8, "VSTS.bf16 startup mismatch");
+  require(vsts.latency == 9, "VSTS.bf16 latency mismatch");
+  require(vsts.pipelineDrainCost == 0, "VSTS.bf16 drain mismatch");
+  require(db.forwardingCycles("VEXP", "fp32", "VCVT_F32_TO_BF16",
+                              "f32_to_bf16") == 13,
+          "VEXP -> VCVT_F32_TO_BF16 forwarding mismatch");
+  require(db.forwardingCycles("VCVT_F32_TO_BF16", "f32_to_bf16", "VSTS",
+                              "bf16") == 5,
+          "VCVT_F32_TO_BF16 -> VSTS.bf16 forwarding mismatch");
+  require(db.forwardingCycles("VCVT_F32_TO_BF16", "f32_to_bf16", "VPACK",
+                              "b32") == 4,
+          "VCVT_F32_TO_BF16 -> VPACK forwarding mismatch");
+  require(db.forwardingCycles("VEXPDIF", "fp32", "VADD", "fp32") == 15,
+          "VEXPDIF -> VADD forwarding mismatch");
 }
 
 void verifyCompatibleFormFallback(ParamDB &db) {
@@ -613,6 +640,7 @@ int main() {
     verifyNativePartialCompatibleFormMerge();
     verifyVpackVsstbConfig(db);
     verifyVexpdifVmulscvtConfig(db);
+    verifyBf16ConvertStoreConfig(db);
     verifyCompatibleFormFallback(db);
     verifyNativeVpackVsstbScheduling(db);
     verifyUnrollOrder(db);

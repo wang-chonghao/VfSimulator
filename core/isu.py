@@ -25,6 +25,68 @@ class ISUController:
     def __init__(self, core) -> None:
         self.core = core
 
+    def _use_fu_round_robin_fifo(self) -> bool:
+        policy = str(
+            getattr(self.core, "shq_exq_dispatch_policy", "fu_round_robin_fifo")
+        ).lower()
+        return policy in (
+            "fu_round_robin_fifo",
+            "fu_rr_fifo",
+            "fu_round_robin",
+            "fu_round_robin_exu0_reserve",
+        )
+
+    def _use_exu0_reserve(self) -> bool:
+        policy = str(
+            getattr(self.core, "shq_exq_dispatch_policy", "fu_round_robin_fifo")
+        ).lower()
+        return policy == "fu_round_robin_exu0_reserve"
+
+    def _dispatch_exu_tag(self, u: Any) -> str:
+        try:
+            return str(
+                self.core._inst_params(u.op, form=u.form).get("dispatch_exu", "")
+            ).upper()
+        except Exception:
+            return ""
+
+    def _has_exu0_only_pressure(self, start_index: int) -> bool:
+        lookahead = int(getattr(self.core, "exu0_reserve_lookahead", 0))
+        if lookahead <= 0:
+            return False
+        min_count = max(1, int(getattr(self.core, "exu0_reserve_min_count", 1)))
+        seen_compute = 0
+        seen_exu0_only = 0
+        for cand in self.core.SHQ[start_index + 1 :]:
+            seen_compute += 1
+            if self._dispatch_exu_tag(cand) == "EXU0_ONLY":
+                seen_exu0_only += 1
+                if seen_exu0_only >= min_count:
+                    return True
+            if seen_compute >= lookahead:
+                break
+        return False
+
+    def _apply_exu0_reserve(
+        self,
+        index: int,
+        u: Any,
+        legal_ports: Set[int],
+        candidates: List[int],
+    ) -> List[int]:
+        if not self._use_exu0_reserve():
+            return candidates
+        if 0 not in candidates:
+            return candidates
+        if self._dispatch_exu_tag(u) == "EXU0_ONLY":
+            return candidates
+        if 0 not in legal_ports or len(legal_ports) <= 1:
+            return candidates
+        if not self._has_exu0_only_pressure(index):
+            return candidates
+        non_exu0 = [port for port in candidates if port != 0]
+        return non_exu0 or candidates
+
     def remove_issued(self, queue_name: str, issued: List[Any]) -> None:
         if not issued:
             return
@@ -46,6 +108,25 @@ class ISUController:
         for q in self.core.exq_wait:
             total += len(q["ALU"]) + len(q["SFU"])
         return int(total)
+
+    def select_fu_rr_port(self, fu_type: str, candidates: List[int]) -> int:
+        if not candidates:
+            raise ValueError("select_fu_rr_port() requires at least one candidate")
+        ptrs = getattr(self.core, "shq_exq_rr_ptr_by_fu", None)
+        if ptrs is None:
+            self.core.shq_exq_rr_ptr_by_fu = {"ALU": 0, "SFU": 0}
+            ptrs = self.core.shq_exq_rr_ptr_by_fu
+        ptr = int(ptrs.get(fu_type, 0))
+        issue_ports = max(1, int(self.core.issue_ports))
+        candidate_set = set(candidates)
+        for off in range(issue_ports):
+            port = (ptr + off) % issue_ports
+            if port in candidate_set:
+                ptrs[fu_type] = (port + 1) % issue_ports
+                return port
+        chosen = min(candidates)
+        ptrs[fu_type] = (chosen + 1) % issue_ports
+        return chosen
 
     def predict_exq_issue_cycle(
         self,
@@ -85,7 +166,7 @@ class ISUController:
     ) -> int:
         issued_ex: List[Any] = []
         ex_count = 0
-        for u in self.core.SHQ:
+        for index, u in enumerate(self.core.SHQ):
             if u.state != "ready":
                 continue
             if ex_count >= self.core.issue_ports:
@@ -146,8 +227,13 @@ class ISUController:
         issued_shq: List[Any] = []
         shq_to_exq_cnt = [0] * self.core.issue_ports
         ex_count = 0
+        use_fu_rr_fifo = self._use_fu_round_robin_fifo()
+        blocked_fu_types: Set[str] = set()
 
-        for u in self.core.SHQ:
+        for index, u in enumerate(self.core.SHQ):
+            fu_type = self.core._get_fu_type(u.op, u.form)
+            if use_fu_rr_fifo and fu_type in blocked_fu_types:
+                continue
             if u.state != "ready":
                 continue
             if ex_count >= self.core.issue_ports:
@@ -159,9 +245,10 @@ class ISUController:
                 and (not self.core.theoretical_limit_mode)
                 and (issued_srcs_this_cycle & cur_srcs)
             ):
+                if use_fu_rr_fifo:
+                    blocked_fu_types.add(fu_type)
                 continue
 
-            fu_type = self.core._get_fu_type(u.op, u.form)
             legal_ports = set(self.core._eligible_exu_ports(u.op, u.form))
             candidates: List[int] = []
             for port in range(self.core.issue_ports):
@@ -174,10 +261,19 @@ class ISUController:
                     continue
                 candidates.append(port)
             if not candidates:
+                all_ports = set(range(self.core.issue_ports))
+                if use_fu_rr_fifo and all_ports.issubset(legal_ports):
+                    blocked_fu_types.add(fu_type)
                 continue
+            candidates = self._apply_exu0_reserve(index, u, legal_ports, candidates)
 
             recv_cycle = cycle + self.core.exq_recv_delay
-            if self.core.shq_exq_static_rr:
+            if use_fu_rr_fifo:
+                chosen_port = self.select_fu_rr_port(fu_type, candidates)
+                predicted_issue = self.predict_exq_issue_cycle(
+                    chosen_port, fu_type, u.op, recv_cycle, u.form
+                )
+            elif self.core.shq_exq_static_rr:
                 ordered = sorted(
                     candidates,
                     key=lambda p: ((p - self.core.shq_exq_rr_ptr) % self.core.issue_ports, p),

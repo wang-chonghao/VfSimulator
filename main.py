@@ -235,7 +235,11 @@ def main():
         raise RuntimeError("trace.json missing key 'program'")
     db = ParamDB(base_dir=base_dir)
 
-    program, values, norm_stats = normalize_program_vreg_live_ranges(program, values=values)
+    program, values, norm_stats = normalize_program_vreg_live_ranges(
+        program,
+        values=values,
+        params=params,
+    )
     print(
         "[INFO] vreg live-range normalization = ON, changed_chains =",
         int(norm_stats.get("changed_fields", norm_stats.get("changed_chains", 0))),
