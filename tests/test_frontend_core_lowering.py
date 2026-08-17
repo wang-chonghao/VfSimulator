@@ -253,7 +253,14 @@ class CanonicalCoreLoweringTest(unittest.TestCase):
         self.assertEqual(
             [item["iteration_path"] for item in updates],
             [
-                [{"loop_id": "loop.acc", "iteration": index}]
+                [
+                    {
+                        "loop_id": "loop.acc",
+                        "iteration": index,
+                        "induction_variable": "i",
+                        "induction_value": index,
+                    }
+                ]
                 for index in range(4)
             ],
         )
@@ -277,7 +284,14 @@ class CanonicalCoreLoweringTest(unittest.TestCase):
         self.assertEqual(
             [uop.iteration_path for uop in update_uops],
             [
-                [{"loop_id": "loop.acc", "iteration": index}]
+                [
+                    {
+                        "loop_id": "loop.acc",
+                        "iteration": index,
+                        "induction_variable": "i",
+                        "induction_value": index,
+                    }
+                ]
                 for index in range(4)
             ],
         )
@@ -305,9 +319,52 @@ class CanonicalCoreLoweringTest(unittest.TestCase):
         )
         self.assertEqual(
             first_update_event["iteration_path"],
-            [{"loop_id": "loop.acc", "iteration": 0}],
+            [
+                {
+                    "loop_id": "loop.acc",
+                    "iteration": 0,
+                    "induction_variable": "i",
+                    "induction_value": 0,
+                }
+            ],
         )
         self.assertEqual(first_update_event["stream_seq"], 0)
+
+    def test_non_default_induction_is_preserved_in_dynamic_identity(self):
+        payload = json.loads(
+            (self.fixtures / "v1_valid_loop_carried.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        payload["context"][0]["induction"] = {
+            "variable_id": "row",
+            "start": 10,
+            "step": -2,
+        }
+        vf_info = canonical_vf_info_from_dict(payload)
+
+        lowered, dynamic = self._lower_and_expand(vf_info, 4)
+        self.assertEqual(
+            [item["iteration_path"] for item in dynamic],
+            [
+                [
+                    {
+                        "loop_id": "loop.acc",
+                        "iteration": index,
+                        "induction_variable": "row",
+                        "induction_value": 10 - 2 * index,
+                    }
+                ]
+                for index in range(4)
+            ],
+        )
+        uops = self._rename_dynamic(lowered, dynamic)
+        for previous, current in zip(uops, uops[1:]):
+            self.assertEqual(current.preg_src[0], previous.preg_dst[0])
+
+        with tempfile.TemporaryDirectory() as out_dir:
+            result = CoreVfCostModel(out_dir=out_dir).run_canonical_vf_info(vf_info)
+        self.assertGreater(result["vf_end_cycle"], 0)
 
     def test_zero_iteration_loop_exit_uses_entry_definition(self):
         vf_info = self._loop_carried_with_exit_consumer(count=0)
@@ -467,12 +524,32 @@ class CanonicalCoreLoweringTest(unittest.TestCase):
             [inst["iteration_path"] for inst in dynamic],
             [
                 [
-                    {"loop_id": "loop.outer", "iteration": 0},
-                    {"loop_id": "loop.inner", "iteration": 0},
+                    {
+                        "loop_id": "loop.outer",
+                        "iteration": 0,
+                        "induction_variable": "i",
+                        "induction_value": 0,
+                    },
+                    {
+                        "loop_id": "loop.inner",
+                        "iteration": 0,
+                        "induction_variable": "j",
+                        "induction_value": 0,
+                    },
                 ],
                 [
-                    {"loop_id": "loop.outer", "iteration": 1},
-                    {"loop_id": "loop.inner", "iteration": 0},
+                    {
+                        "loop_id": "loop.outer",
+                        "iteration": 1,
+                        "induction_variable": "i",
+                        "induction_value": 1,
+                    },
+                    {
+                        "loop_id": "loop.inner",
+                        "iteration": 0,
+                        "induction_variable": "j",
+                        "induction_value": 0,
+                    },
                 ],
             ],
         )

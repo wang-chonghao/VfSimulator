@@ -59,6 +59,23 @@ def _resolve_unroll(unroll: Any, params: Dict[str, Any]) -> int:
     return _resolve_int(unroll, params, default=1, minv=1)
 
 
+def _resolve_signed_int(x: Any, params: Dict[str, Any], default: int) -> int:
+    if x is None or isinstance(x, bool):
+        return default
+    if isinstance(x, int):
+        return x
+    if isinstance(x, float) and x.is_integer():
+        return int(x)
+    if isinstance(x, str):
+        value = params.get(x, x)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        text = str(value).strip()
+        if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+            return int(text)
+    return default
+
+
 @dataclass
 class LoopCarriedBinding:
     entry_value_id: str
@@ -78,6 +95,9 @@ class LoopFrame:
     unroll: int
     top_block_id: int
     static_loop_id: str
+    induction_variable: str
+    induction_start: int
+    induction_step: int
     carried_bindings: List[LoopCarriedBinding]
 
 
@@ -224,6 +244,10 @@ class IFUUnroll:
             {
                 "loop_id": frame.static_loop_id,
                 "iteration": frame.iter_now,
+                "induction_variable": frame.induction_variable,
+                "induction_value": (
+                    frame.induction_start + frame.iter_now * frame.induction_step
+                ),
             }
             for frame in self.frames
         ]
@@ -570,6 +594,18 @@ class IFUUnroll:
                     carried_values,
                     zero_iterations=iters <= 0,
                 )
+                induction = n.get("induction", {})
+                if not isinstance(induction, dict):
+                    induction = {}
+                induction_variable = str(
+                    induction.get("variable_id", f"iter_{loop_id}")
+                )
+                induction_start = _resolve_signed_int(
+                    induction.get("start", 0), self.params, 0
+                )
+                induction_step = _resolve_signed_int(
+                    induction.get("step", 1), self.params, 1
+                )
 
                 if iters <= 0:
                     self.pc = end + 1
@@ -600,6 +636,9 @@ class IFUUnroll:
                     unroll=(unroll if (is_innermost and unroll > 1) else 1),
                     top_block_id=int(top_block_id),
                     static_loop_id=str(n.get("name", f"loop_{loop_id}")),
+                    induction_variable=induction_variable,
+                    induction_start=induction_start,
+                    induction_step=induction_step,
                     carried_bindings=carried_bindings,
                 )
                 self.frames.append(frame)

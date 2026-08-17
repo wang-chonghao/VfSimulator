@@ -155,13 +155,6 @@ class CoreLoweringPass:
                     issues.append(
                         f"loop {node.loop_id} has unsupported unroll={node.unroll}"
                     )
-                start = resolve(node.induction.start)
-                step = resolve(node.induction.step)
-                if start != 0 or step != 1:
-                    issues.append(
-                        f"loop {node.loop_id} has unsupported induction "
-                        f"start={node.induction.start}, step={node.induction.step}"
-                    )
                 visit(node.body)
 
         visit(vf_info.context)
