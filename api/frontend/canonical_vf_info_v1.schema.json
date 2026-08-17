@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vfsimulator.local/schema/canonical-vf-info-v1.json",
+  "title": "CanonicalVfInfo v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "context", "values"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "context": {"type": "array", "items": {"$ref": "#/$defs/node"}},
+    "values": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/value"}
+    },
+    "params": {"$ref": "#/$defs/integerMap"},
+    "uarch": {"$ref": "#/$defs/scalarMap"},
+    "source": {"$ref": "#/$defs/scalarMap"}
+  },
+  "$defs": {
+    "scalar": {"type": ["null", "boolean", "integer", "number", "string"]},
+    "scalarMap": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/scalar"}
+    },
+    "integerMap": {
+      "type": "object",
+      "additionalProperties": {"type": "integer"}
+    },
+    "integerExpression": {"type": ["integer", "string"]},
+    "sourceLocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source": {"type": ["string", "null"]},
+        "line": {"type": ["integer", "null"], "minimum": 1},
+        "column": {"type": ["integer", "null"], "minimum": 1},
+        "path": {"type": ["string", "null"]}
+      }
+    },
+    "value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["definition_id", "logical_id", "storage", "dtype"],
+      "properties": {
+        "definition_id": {"type": "string", "minLength": 1},
+        "logical_id": {"type": "string", "minLength": 1},
+        "storage": {"enum": ["Register", "UB", "Scalar"]},
+        "dtype": {"type": "string", "minLength": 1},
+        "shape": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+        "producer_instruction_id": {"type": ["string", "null"]},
+        "source_location": {"anyOf": [{"$ref": "#/$defs/sourceLocation"}, {"type": "null"}]}
+      }
+    },
+    "affineTerm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["variable_id", "coefficient"],
+      "properties": {
+        "variable_id": {"type": "string", "minLength": 1},
+        "coefficient": {"type": "integer"}
+      }
+    },
+    "affineExpression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["constant", "terms"],
+      "properties": {
+        "constant": {"type": "integer"},
+        "terms": {"type": "array", "items": {"$ref": "#/$defs/affineTerm"}}
+      }
+    },
+    "memoryAccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_value_id", "offset", "access_kind"],
+      "properties": {
+        "base_value_id": {"type": "string", "minLength": 1},
+        "offset": {"$ref": "#/$defs/affineExpression"},
+        "access_kind": {"enum": ["read", "write"]},
+        "span": {"type": ["integer", "null"], "minimum": 1},
+        "alias_group": {"type": ["string", "null"]}
+      }
+    },
+    "operand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value_id", "role"],
+      "properties": {
+        "value_id": {"type": "string", "minLength": 1},
+        "role": {"enum": ["source", "destination", "memory", "scalar", "predicate", "config"]},
+        "dtype": {"type": ["string", "null"]},
+        "memory_access": {"anyOf": [{"$ref": "#/$defs/memoryAccess"}, {"type": "null"}]}
+      }
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer_instruction_id", "kind"],
+      "properties": {
+        "producer_instruction_id": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["data", "memory", "control"]},
+        "operand_index": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "instruction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "instruction_id", "opcode", "instruction_class", "form"],
+      "properties": {
+        "kind": {"const": "instruction"},
+        "instruction_id": {"type": "string", "minLength": 1},
+        "opcode": {"type": "string", "minLength": 1},
+        "instruction_class": {"enum": ["load", "store", "compute", "control"]},
+        "form": {"type": "string", "minLength": 1},
+        "inputs": {"type": "array", "items": {"$ref": "#/$defs/operand"}},
+        "outputs": {"type": "array", "items": {"$ref": "#/$defs/operand"}},
+        "dependencies": {"type": "array", "items": {"$ref": "#/$defs/dependency"}},
+        "attributes": {"$ref": "#/$defs/scalarMap"},
+        "source_location": {"anyOf": [{"$ref": "#/$defs/sourceLocation"}, {"type": "null"}]}
+      }
+    },
+    "induction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["variable_id", "start", "step"],
+      "properties": {
+        "variable_id": {"type": "string", "minLength": 1},
+        "start": {"$ref": "#/$defs/integerExpression"},
+        "step": {"$ref": "#/$defs/integerExpression"}
+      }
+    },
+    "loopCarriedValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logical_id", "entry_value_id", "back_edge_value_id", "exit_value_id"],
+      "properties": {
+        "logical_id": {"type": "string", "minLength": 1},
+        "entry_value_id": {"type": "string", "minLength": 1},
+        "back_edge_value_id": {"type": "string", "minLength": 1},
+        "exit_value_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "loop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "loop_id", "induction", "count", "unroll", "body"],
+      "properties": {
+        "kind": {"const": "loop"},
+        "loop_id": {"type": "string", "minLength": 1},
+        "induction": {"$ref": "#/$defs/induction"},
+        "count": {"$ref": "#/$defs/integerExpression"},
+        "unroll": {"$ref": "#/$defs/integerExpression"},
+        "carried_values": {"type": "array", "items": {"$ref": "#/$defs/loopCarriedValue"}},
+        "body": {"type": "array", "items": {"$ref": "#/$defs/node"}},
+        "source_location": {"anyOf": [{"$ref": "#/$defs/sourceLocation"}, {"type": "null"}]}
+      }
+    },
+    "membar": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "instruction_id", "barrier"],
+      "properties": {
+        "kind": {"const": "membar"},
+        "instruction_id": {"type": "string", "minLength": 1},
+        "barrier": {"enum": ["VST_VLD", "VLD_VST"]},
+        "dependencies": {"type": "array", "items": {"$ref": "#/$defs/dependency"}},
+        "source_location": {"anyOf": [{"$ref": "#/$defs/sourceLocation"}, {"type": "null"}]}
+      }
+    },
+    "node": {"oneOf": [{"$ref": "#/$defs/instruction"}, {"$ref": "#/$defs/loop"}, {"$ref": "#/$defs/membar"}]}
+  }
+}

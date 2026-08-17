@@ -149,6 +149,53 @@ int64_t cycleForInstId(const std::string &jsonl, int64_t instId) {
   throw std::runtime_error("inst_id not found in jsonl: " + std::to_string(instId));
 }
 
+void verifyNativeExu0ReserveDispatch(const ParamDB &db) {
+  require(db.uarch().shqExqDispatchPolicy == "fu_round_robin_exu0_reserve",
+          "native uarch must load SHQ-to-EXQ dispatch policy");
+  require(db.uarch().exu0ReserveLookahead == 8,
+          "native EXU0 reserve lookahead mismatch");
+  require(db.uarch().exu0ReserveMinCount == 1,
+          "native EXU0 reserve min_count mismatch");
+
+  OoOCoreMainline core(db.uarch(), db, "fp32");
+  DynamicInst flexible;
+  flexible.type = "inst";
+  flexible.instId = 9000;
+  flexible.op = "VADDS";
+  flexible.form = "fp32";
+  DynamicInst exu0Only;
+  exu0Only.type = "inst";
+  exu0Only.instId = 9001;
+  exu0Only.op = "VPACK";
+  exu0Only.form = "b32";
+  core.accept(flexible);
+  core.accept(exu0Only);
+
+  for (int cycle = 0; cycle < 32; ++cycle) {
+    core.step();
+    if (core.getExuPortForInst(9000).has_value() &&
+        core.getExuPortForInst(9001).has_value())
+      break;
+  }
+  require(core.getExuPortForInst(9000) == std::optional<int>{1},
+          "flexible ALU must reserve EXQ0 for pending EXU0_ONLY work");
+  require(core.getExuPortForInst(9001) == std::optional<int>{0},
+          "EXU0_ONLY work must dispatch to EXQ0");
+}
+
+void verifyNativeThreePortsMode(const ParamDB &db) {
+  UarchConfig uarch = db.uarch();
+  uarch.issuePorts = 3;
+  uarch.threePortsMode = true;
+  OoOCoreMainline core(uarch, db, "fp32");
+  require(core.getEligibleExuPorts("VADD", "fp32") ==
+              std::vector<int>({0, 1, 2}),
+          "native three_ports_mode must allow EXU01 on ports 0/1/2");
+  require(core.getEligibleExuPorts("VPACK", "b32") ==
+              std::vector<int>({0}),
+          "native three_ports_mode must preserve EXU0_ONLY routing");
+}
+
 ParamDB makeDurationTestDb() {
   const auto root = std::filesystem::temp_directory_path() / "vfsim_native_duration_cfg";
   writeText(
@@ -643,6 +690,8 @@ int main() {
     verifyBf16ConvertStoreConfig(db);
     verifyCompatibleFormFallback(db);
     verifyNativeVpackVsstbScheduling(db);
+    verifyNativeExu0ReserveDispatch(db);
+    verifyNativeThreePortsMode(db);
     verifyUnrollOrder(db);
     verifyMembarDisablesUnroll(db);
     verifyExplicitMembarTiming(db);

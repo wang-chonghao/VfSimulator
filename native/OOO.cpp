@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -110,6 +111,7 @@ OoOCore::OoOCore(const UarchConfig &uarch, const ParamDB &db, std::string dtype,
   enableIsuQueueModel_ = uarch.enableIsuQueueModel;
   loadPorts_ = static_cast<int>(uarch.loadPorts);
   issuePorts_ = static_cast<int>(uarch.issuePorts);
+  threePortsMode_ = uarch.threePortsMode;
   storePorts_ = static_cast<int>(uarch.storePorts);
   shqDepth_ = static_cast<int>(uarch.shqDepth);
   lsqDepth_ = static_cast<int>(uarch.ldqWidth ? uarch.ldqWidth : 24);
@@ -141,6 +143,13 @@ OoOCore::OoOCore(const UarchConfig &uarch, const ParamDB &db, std::string dtype,
   exqCapacityCountsInflight_ = uarch.exqCapacityCountsInflight;
   exqDepth_ = static_cast<int>(uarch.exqDepth ? uarch.exqDepth : 26);
   shqToExqPortPerCycle_ = static_cast<int>(uarch.shqToExqPortPerCycle ? uarch.shqToExqPortPerCycle : 1);
+  shqExqDispatchPolicy_ = uarch.shqExqDispatchPolicy;
+  std::transform(shqExqDispatchPolicy_.begin(), shqExqDispatchPolicy_.end(),
+                 shqExqDispatchPolicy_.begin(), [](unsigned char c) {
+                   return static_cast<char>(std::tolower(c));
+                 });
+  exu0ReserveLookahead_ = static_cast<int>(uarch.exu0ReserveLookahead);
+  exu0ReserveMinCount_ = std::max<int>(1, static_cast<int>(uarch.exu0ReserveMinCount));
   exqIssueInflightCapPerPort_ = static_cast<int>(uarch.exqIssueInflightCapPerPort);
   computeInflightCap_ = static_cast<int>(uarch.computeInflightCap);
   shqReleaseDelay_ = static_cast<int>(uarch.shqReleaseDelay ? uarch.shqReleaseDelay : 1);
@@ -171,6 +180,29 @@ int OoOCore::getFreeShq() const {
   if (enableCreditVisibilityDelay_)
     return std::max(0, shqDepth_ - visibleShqUsed_);
   return std::max(0, shqDepth_ - shqUsed_);
+}
+
+std::optional<int> OoOCore::getExuPortForInst(int64_t instId) const {
+  const Uop *uop = findRobUop(instId);
+  if (uop == nullptr || uop->exuPort < 0)
+    return std::nullopt;
+  return uop->exuPort;
+}
+
+std::optional<std::string> OoOCore::getPregSrcForInst(int64_t instId,
+                                                      size_t index) const {
+  const Uop *uop = findRobUop(instId);
+  if (uop == nullptr || index >= uop->pregSrc.size())
+    return std::nullopt;
+  return uop->pregSrc[index];
+}
+
+std::optional<std::string> OoOCore::getPregDstForInst(int64_t instId,
+                                                      size_t index) const {
+  const Uop *uop = findRobUop(instId);
+  if (uop == nullptr || index >= uop->pregDst.size() || uop->pregDst[index].empty())
+    return std::nullopt;
+  return uop->pregDst[index];
 }
 
 bool OoOCore::hasPendingLsuBefore(int64_t streamSeq,
@@ -335,13 +367,25 @@ std::vector<int> OoOCore::eligibleExuPorts(const std::string &op,
   if (tag == "EXU0_ONLY")
     return issuePorts_ > 0 ? std::vector<int>{0} : std::vector<int>{};
   if (tag == "EXU01")
-    return issuePorts_ >= 2 ? std::vector<int>{0, 1} : std::vector<int>{0};
+    if (threePortsMode_) {
+      std::vector<int> out;
+      for (int port = 0; port < std::min(issuePorts_, 3); ++port)
+        out.push_back(port);
+      return out;
+    } else {
+      return issuePorts_ >= 2 ? std::vector<int>{0, 1} : std::vector<int>{0};
+    }
   if (tag == "EXU012")
     return issuePorts_ >= 3 ? std::vector<int>{0, 1, 2} : std::vector<int>{0, 1};
   std::vector<int> out;
   for (int i = 0; i < issuePorts_; ++i)
     out.push_back(i);
   return out;
+}
+
+std::vector<int> OoOCore::getEligibleExuPorts(const std::string &op,
+                                              const std::string &form) const {
+  return eligibleExuPorts(op, form);
 }
 
 int64_t OoOCore::getIi(const std::string *prevOp,
@@ -556,6 +600,55 @@ int64_t OoOCore::predictExqIssueCycle(int port, const std::string &fuType,
   }
   pred = std::max<int64_t>(pred, prevIssue + getIi(prevOp, prevForm, op, form));
   return pred;
+}
+
+bool OoOCore::useFuRoundRobinFifo() const {
+  return shqExqDispatchPolicy_ == "fu_round_robin_fifo" ||
+         shqExqDispatchPolicy_ == "fu_rr_fifo" ||
+         shqExqDispatchPolicy_ == "fu_round_robin" ||
+         shqExqDispatchPolicy_ == "fu_round_robin_exu0_reserve";
+}
+
+bool OoOCore::useExu0Reserve() const {
+  return shqExqDispatchPolicy_ == "fu_round_robin_exu0_reserve";
+}
+
+bool OoOCore::hasExu0OnlyPressure(size_t startIndex) const {
+  if (exu0ReserveLookahead_ <= 0)
+    return false;
+  int seenCompute = 0;
+  int seenExu0Only = 0;
+  for (size_t index = startIndex + 1; index < shq_.size(); ++index) {
+    const Uop &candidate = shq_[index];
+    ++seenCompute;
+    std::string dispatch = db_.inst(candidate.op, candidate.form).dispatchExu;
+    std::transform(dispatch.begin(), dispatch.end(), dispatch.begin(),
+                   [](unsigned char c) {
+                     return static_cast<char>(std::toupper(c));
+                   });
+    if (dispatch == "EXU0_ONLY" && ++seenExu0Only >= exu0ReserveMinCount_)
+      return true;
+    if (seenCompute >= exu0ReserveLookahead_)
+      break;
+  }
+  return false;
+}
+
+int OoOCore::selectFuRoundRobinPort(const std::string &fuType,
+                                    const std::vector<int> &candidates) {
+  if (candidates.empty())
+    throw std::invalid_argument("selectFuRoundRobinPort requires candidates");
+  const int ptr = shqExqRrPtrByFu_[fuType];
+  for (int offset = 0; offset < std::max(1, issuePorts_); ++offset) {
+    const int port = (ptr + offset) % std::max(1, issuePorts_);
+    if (std::find(candidates.begin(), candidates.end(), port) == candidates.end())
+      continue;
+    shqExqRrPtrByFu_[fuType] = (port + 1) % std::max(1, issuePorts_);
+    return port;
+  }
+  const int chosen = *std::min_element(candidates.begin(), candidates.end());
+  shqExqRrPtrByFu_[fuType] = (chosen + 1) % std::max(1, issuePorts_);
+  return chosen;
 }
 
 void OoOCore::scheduleShqRelease(int64_t cycle, int count) {
@@ -922,8 +1015,15 @@ void OoOCoreMainline::step() {
   } else {
     std::vector<int> shqToExqCnt(static_cast<size_t>(issuePorts_), 0);
     int exCount = 0;
+    const bool useFuRrFifo = useFuRoundRobinFifo();
+    std::unordered_set<std::string> blockedFuTypes;
     for (auto it = shq_.begin(); it != shq_.end();) {
       auto &u = *it;
+      const std::string fuType = getFuType(u.op, u.form);
+      if (useFuRrFifo && blockedFuTypes.count(fuType)) {
+        ++it;
+        continue;
+      }
       if (u.state != "ready") {
         ++it;
         continue;
@@ -940,14 +1040,13 @@ void OoOCoreMainline::step() {
         }
       }
       if (hazard) {
+        if (useFuRrFifo)
+          blockedFuTypes.insert(fuType);
         ++it;
         continue;
       }
-      const std::string fuType = getFuType(u.op, u.form);
       const auto legalPorts = eligibleExuPorts(u.op, u.form);
-      int chosenPort = -1;
-      int64_t chosenPred = 0;
-      int chosenOcc = 0;
+      std::vector<int> candidates;
       for (int port : legalPorts) {
         if (port < 0 || port >= issuePorts_)
           continue;
@@ -959,29 +1058,70 @@ void OoOCoreMainline::step() {
           occ += exqInflight_[static_cast<size_t>(port)];
         if (occ >= exqDepth_)
           continue;
-        const int64_t recv = c + exqRecvDelay_;
-        int64_t pred = recv;
-        const auto &fq = q.at(fuType);
-        if (!fq.empty()) {
-          const Uop &prev = fq.back();
-          pred = std::max<int64_t>(
-              pred, prev.exqPredIssue +
-                        getIi(&prev.op, &prev.form, u.op, u.form));
-        } else {
-          pred = std::max<int64_t>(
-              pred, predictExqIssueCycle(port, fuType, u.op, u.form, recv));
-        }
-        const auto key = std::make_tuple(pred, occ, port);
-        const auto best = std::make_tuple(chosenPred, chosenOcc, chosenPort);
-        if (chosenPort < 0 || key < best) {
-          chosenPort = port;
-          chosenPred = pred;
-          chosenOcc = occ;
-        }
+        candidates.push_back(port);
       }
-      if (chosenPort < 0) {
+
+      if (candidates.empty()) {
+        bool allPortsLegal = true;
+        for (int port = 0; port < issuePorts_; ++port) {
+          if (std::find(legalPorts.begin(), legalPorts.end(), port) == legalPorts.end()) {
+            allPortsLegal = false;
+            break;
+          }
+        }
+        if (useFuRrFifo && allPortsLegal)
+          blockedFuTypes.insert(fuType);
         ++it;
         continue;
+      }
+
+      const size_t shqIndex = static_cast<size_t>(std::distance(shq_.begin(), it));
+      if (useExu0Reserve() &&
+          std::find(candidates.begin(), candidates.end(), 0) != candidates.end() &&
+          legalPorts.size() > 1 &&
+          db_.inst(u.op, u.form).dispatchExu != "EXU0_ONLY" &&
+          hasExu0OnlyPressure(shqIndex)) {
+        std::vector<int> nonExu0;
+        std::copy_if(candidates.begin(), candidates.end(),
+                     std::back_inserter(nonExu0),
+                     [](int port) { return port != 0; });
+        if (!nonExu0.empty())
+          candidates = std::move(nonExu0);
+      }
+
+      const int64_t recv = c + exqRecvDelay_;
+      auto predictCandidate = [&](int port) {
+        const auto &fq = exqWait_[static_cast<size_t>(port)].at(fuType);
+        if (!fq.empty()) {
+          const Uop &prev = fq.back();
+          return std::max<int64_t>(
+              recv, prev.exqPredIssue +
+                        getIi(&prev.op, &prev.form, u.op, u.form));
+        }
+        return predictExqIssueCycle(port, fuType, u.op, u.form, recv);
+      };
+
+      int chosenPort = -1;
+      int64_t chosenPred = 0;
+      if (useFuRrFifo) {
+        chosenPort = selectFuRoundRobinPort(fuType, candidates);
+        chosenPred = predictCandidate(chosenPort);
+      } else {
+        int chosenOcc = 0;
+        for (int port : candidates) {
+          const auto &q = exqWait_[static_cast<size_t>(port)];
+          int occ = static_cast<int>(q.at("ALU").size() + q.at("SFU").size());
+          if (exqCapacityCountsInflight_)
+            occ += exqInflight_[static_cast<size_t>(port)];
+          const int64_t pred = predictCandidate(port);
+          const auto key = std::make_tuple(pred, occ, port);
+          const auto best = std::make_tuple(chosenPred, chosenOcc, chosenPort);
+          if (chosenPort < 0 || key < best) {
+            chosenPort = port;
+            chosenPred = pred;
+            chosenOcc = occ;
+          }
+        }
       }
       u.exuPort = chosenPort;
       u.exqRecvCycle = c + exqRecvDelay_;

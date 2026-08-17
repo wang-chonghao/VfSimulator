@@ -254,6 +254,7 @@ ParamDB::ParamDB(std::filesystem::path baseDir)
   if (!uarchRoot.empty()) {
     const auto &obj = uarchRoot;
     bundle_.uarch.issuePorts = readIntField(obj, "issue_ports");
+    bundle_.uarch.threePortsMode = readBoolField(obj, "three_ports_mode");
     bundle_.uarch.loadPorts = readIntField(obj, "load_ports");
     bundle_.uarch.storePorts = readIntField(obj, "store_ports");
     bundle_.uarch.iduWindowWidth = readIntField(obj, "IDU_window_width");
@@ -287,6 +288,12 @@ ParamDB::ParamDB(std::filesystem::path baseDir)
     bundle_.uarch.oooToLsqDelay = readIntField(obj, "ooo_to_lsq_delay");
     bundle_.uarch.exqRecvDelay = readIntField(obj, "exq_recv_delay");
     bundle_.uarch.shqToExqPortPerCycle = readIntField(obj, "shq_to_exq_port_per_cycle");
+    bundle_.uarch.shqExqDispatchPolicy =
+        readStringField(obj, "shq_exq_dispatch_policy", "fu_round_robin_fifo");
+    bundle_.uarch.exu0ReserveLookahead =
+        readIntField(obj, "exu0_reserve_lookahead");
+    bundle_.uarch.exu0ReserveMinCount =
+        readIntField(obj, "exu0_reserve_min_count", 1);
     bundle_.uarch.computeInflightCap = readIntField(obj, "compute_inflight_cap");
     bundle_.uarch.exqIssueInflightCapPerPort =
         readIntField(obj, "exq_issue_inflight_cap_per_port");

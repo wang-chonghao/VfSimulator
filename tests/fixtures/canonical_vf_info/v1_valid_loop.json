@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "params": {"ROWS": 4},
+  "uarch": {},
+  "source": {"format": "shared-conformance-fixture"},
+  "values": {
+    "input.0": {
+      "definition_id": "input.0",
+      "logical_id": "input",
+      "storage": "UB",
+      "dtype": "fp32",
+      "shape": [64]
+    },
+    "acc.0": {
+      "definition_id": "acc.0",
+      "logical_id": "acc",
+      "storage": "Register",
+      "dtype": "fp32",
+      "shape": [64],
+      "producer_instruction_id": "inst.load"
+    }
+  },
+  "context": [
+    {
+      "kind": "loop",
+      "loop_id": "loop.row",
+      "induction": {"variable_id": "i", "start": 0, "step": 1},
+      "count": "ROWS",
+      "unroll": 1,
+      "carried_values": [],
+      "body": [
+        {
+          "kind": "instruction",
+          "instruction_id": "inst.load",
+          "opcode": "VLDS",
+          "instruction_class": "load",
+          "form": "fp32",
+          "inputs": [
+            {
+              "value_id": "input.0",
+              "role": "memory",
+              "dtype": "fp32",
+              "memory_access": {
+                "base_value_id": "input.0",
+                "offset": {
+                  "constant": 0,
+                  "terms": [{"variable_id": "i", "coefficient": 64}]
+                },
+                "access_kind": "read",
+                "span": 64
+              }
+            }
+          ],
+          "outputs": [
+            {"value_id": "acc.0", "role": "destination", "dtype": "fp32"}
+          ],
+          "dependencies": [],
+          "attributes": {}
+        }
+      ]
+    }
+  ]
+}

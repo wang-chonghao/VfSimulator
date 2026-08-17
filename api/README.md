@@ -2,7 +2,12 @@
 
 本目录包含 VF Simulator 的 typed input boundary。
 
-当前两个 frontend 都返回同一个公共 `VFInfo` 结构：
+当前迁移期包含两个明确边界：
+
+- `api.frontend.CanonicalVfInfo`：版本化的目标输入契约。validator 不修改输入；Python 容器和 C++ 对象本身不承诺深度不可变。
+- `api.vf_info.VFInfo`：现有 CCE/legacy JSON adapter 和 Core 仍在使用的迁移期接口。
+
+现有 frontend 入口包括：
 
 - `InputAPI.load_json_trace(path)`：把旧 JSON trace 加载为 `VFInfo`。
 - `InputAPI.load_cce_file(path, kernel_name=None, loop_params=None)`：解析 CCE/DSL 文件，并从一个 `__VEC_SCOPE__` kernel 提取 `VFInfo`。
@@ -10,8 +15,21 @@
 - `parse_cce_vf_info(path, kernel_name=None, loop_params=None)`：直接 CCE parser 入口。
 - `VFInfoLowerer().lower(vf_info)`：把公共 `VFInfo` lower 成当前 core simulator payload。
 - `CoreVfCostModel().predict_vf_cycles(vf_info)`：用当前 queue-level 主线模拟器运行 `VFInfo`。
+- `InputAPI.validate_canonical_vf_info(vf_info)`：只校验 `CanonicalVfInfo`，不修复、不查询 timing 参数，也不产生文件系统副作用。
 
-公共数据模型定义在 `vf_info.py`：
+目标 canonical 数据模型定义在 `api/frontend/schema.py`：
+
+- 必须携带 `schema_version=1`。
+- 跨语言序列化事实来源是 `api/frontend/canonical_vf_info_v1.schema.json`，共享样例位于 `tests/fixtures/canonical_vf_info/`。
+- value 使用 `definition_id` 表示一次定义，并用 `logical_id` 关联同一逻辑存储位置；instruction 使用稳定 `instruction_id`、显式 `instruction_class`、canonical `opcode/form` 和带角色的 `inputs/outputs`。
+- UB operand 必须携带结构化 `MemoryAccess(base_value_id, affine offset, access_kind, span)`；仿射变量必须来自所在 loop 的 induction variable 或顶层参数。
+- loop 保留结构化 `count/unroll/body`、induction variable 和 entry/back-edge/exit 关系；Membar 仅支持 `VST_VLD` 和 `VLD_VST`。
+- instruction 可携带编译器已分析出的显式 data/memory/control dependency。未知 opcode 只要给出明确 `instruction_class` 和完整 operand 语义即可通过 validator，timing 缺失仍由 ParamDB fallback 并记录 warning。
+- validator 位于 `api/frontend/validator.py`，只检查语义完整性；未知但语义明确的 opcode 可以通过，timing 覆盖由 ParamDB 处理。
+
+C++ 对应契约位于 `api/native/CanonicalVfInfo.h`，字段类型与 v1 JSON 契约一致，不包含 CCE parser 或 legacy JSON 推断。
+
+迁移期公共数据模型定义在 `vf_info.py`：
 
 - `VFInfo`：顶层 program 容器，包含 `context`、`values`、`params`、`default_dtype` 和可选 `uarch` override。
 - `VFLoop`：结构化 loop 节点，包含 `count`、`unroll`、`body` 和可选 `loop_id`。
@@ -20,4 +38,4 @@
 - `MemInfo`：`ValueInfo` 的兼容别名。
 - `Membar`：显式 memory/order barrier 节点。
 
-`core/` 后端仍消费历史 JSON-like payload。该格式被有意放在 `VFInfoLowerer` 后面，调用方不需要依赖模拟器内部 operand 命名或 loop flattening 细节。
+`core/` 后端仍消费历史 JSON-like payload。当前不会把新的 canonical 对象隐式转换成旧 `VFInfo`，因为那会丢失结构化 memory access 和 source location。后续 adapter 迁移完成后，再由单一 `CoreLoweringPass` 接入 Core。

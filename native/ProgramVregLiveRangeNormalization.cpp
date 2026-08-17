@@ -24,6 +24,21 @@ struct VregVersion {
   int64_t generation = 0;
 };
 
+struct FlatNormalizeResult {
+  std::vector<ProgramNode> nodes;
+  std::unordered_map<std::string, std::string> exitAliases;
+};
+
+struct ApplyAliasesResult {
+  ProgramNode node;
+  std::unordered_set<std::string> killedAliases;
+};
+
+struct NormalizeNodesResult {
+  std::vector<ProgramNode> nodes;
+  std::unordered_map<std::string, std::string> exitAliases;
+};
+
 std::string makeVersionKey(const VregVersion &version) {
   return version.name + "#" + std::to_string(version.generation);
 }
@@ -92,12 +107,35 @@ void ensureRegisterValue(
   values->emplace(slot, std::move(value));
 }
 
-std::vector<ProgramNode> normalizeFlatLoopVregs(
+FlatNormalizeResult normalizeFlatLoopVregs(
     const std::vector<ProgramNode> &body,
     const ProgramAnalysis &analysis,
     ProgramVregLiveRangeNormalizationStats &stats,
-    std::unordered_map<std::string, ValueInfo> *values) {
+    std::unordered_map<std::string, ValueInfo> *values,
+    bool hasBackEdge) {
   std::vector<ProgramNode> out = body;
+  std::unordered_map<std::string, std::string> firstAccess;
+  std::unordered_set<std::string> written;
+  for (const ProgramNode &node : out) {
+    for (const std::string &src : node.inst.src) {
+      if (analysis.isVregName(src) && firstAccess.find(src) == firstAccess.end())
+        firstAccess.emplace(src, "read");
+    }
+    for (const std::string &dst : node.inst.dst) {
+      if (!analysis.isVregName(dst))
+        continue;
+      if (firstAccess.find(dst) == firstAccess.end())
+        firstAccess.emplace(dst, "write");
+      written.insert(dst);
+    }
+  }
+  std::unordered_set<std::string> loopCarriedVregs;
+  if (hasBackEdge) {
+    for (const auto &[name, access] : firstAccess) {
+      if (access == "read" && written.count(name))
+        loopCarriedVregs.insert(name);
+    }
+  }
   std::unordered_map<std::string, VregVersion> currentVersionByVreg;
   std::unordered_map<std::string, int64_t> versionCounter;
   std::vector<std::vector<std::optional<std::string>>> srcVersions(out.size());
@@ -139,7 +177,12 @@ std::vector<ProgramNode> normalizeFlatLoopVregs(
   std::unordered_map<std::string, std::string> currentSlotByVreg;
   std::unordered_map<std::string, std::string> slotOfVersion;
   std::unordered_map<std::string, std::optional<std::string>> slotOccupant;
-  std::vector<std::string> slotPool;
+  std::vector<std::string> slotPool(loopCarriedVregs.begin(),
+                                    loopCarriedVregs.end());
+  std::sort(slotPool.begin(), slotPool.end(),
+            [](const std::string &lhs, const std::string &rhs) {
+              return vregSortKey(lhs) < vregSortKey(rhs);
+            });
 
   for (size_t idx = 0; idx < out.size(); ++idx) {
     ProgramInstNode before = out[idx].inst;
@@ -184,6 +227,8 @@ std::vector<ProgramNode> normalizeFlatLoopVregs(
       if (dstVersion) {
         std::vector<std::string> candidateSlots;
         for (const std::string &slot : slotPool) {
+          if (loopCarriedVregs.count(slot))
+            continue;
           auto occIt = slotOccupant.find(slot);
           bool reusable = occIt == slotOccupant.end() || !occIt->second;
           if (!reusable) {
@@ -203,13 +248,17 @@ std::vector<ProgramNode> normalizeFlatLoopVregs(
           if (lastIt == lastUse.end() ||
               lastIt->second != static_cast<int64_t>(idx))
             continue;
+          if (pos < newSrcs.size() && loopCarriedVregs.count(newSrcs[pos]))
+            continue;
           if (pos < newSrcs.size() &&
               !containsSlot(candidateSlots, newSrcs[pos]))
             candidateSlots.push_back(newSrcs[pos]);
         }
 
         std::string chosenSlot;
-        if (newSrcs.size() == 1 && containsSlot(candidateSlots, newSrcs[0])) {
+        if (loopCarriedVregs.count(dstName)) {
+          chosenSlot = dstName;
+        } else if (newSrcs.size() == 1 && containsSlot(candidateSlots, newSrcs[0])) {
           chosenSlot = newSrcs[0];
         } else if (!candidateSlots.empty()) {
           std::sort(candidateSlots.begin(), candidateSlots.end(),
@@ -240,37 +289,216 @@ std::vector<ProgramNode> normalizeFlatLoopVregs(
     countFieldChanges(before, inst, stats);
   }
 
-  return out;
+  std::unordered_map<std::string, std::string> exitAliases;
+  for (const auto &[logical, slot] : currentSlotByVreg) {
+    if (logical != slot)
+      exitAliases.emplace(logical, slot);
+  }
+  return FlatNormalizeResult{std::move(out), std::move(exitAliases)};
 }
 
-std::vector<ProgramNode> normalizeNodes(
+void collectVregAccesses(const std::vector<ProgramNode> &nodes,
+                         const ProgramAnalysis &analysis,
+                         std::unordered_map<std::string, std::string> &firstAccess,
+                         std::unordered_set<std::string> &written) {
+  for (const ProgramNode &node : nodes) {
+    if (node.kind == ProgramNode::Kind::Inst) {
+      for (const std::string &src : node.inst.src) {
+        if (analysis.isVregName(src) && firstAccess.find(src) == firstAccess.end())
+          firstAccess.emplace(src, "read");
+      }
+      for (const std::string &dst : node.inst.dst) {
+        if (!analysis.isVregName(dst))
+          continue;
+        if (firstAccess.find(dst) == firstAccess.end())
+          firstAccess.emplace(dst, "write");
+        written.insert(dst);
+      }
+      continue;
+    }
+    if (node.kind == ProgramNode::Kind::Loop && node.loop) {
+      if (analysis.resolveBound(node.loop->iters) <= 0)
+        continue;
+      collectVregAccesses(node.loop->body, analysis, firstAccess, written);
+    }
+  }
+}
+
+ProgramNode renameVregs(
+    const ProgramNode &node,
+    const std::unordered_map<std::string, std::string> &aliases,
+    const ProgramAnalysis &analysis,
+    ProgramVregLiveRangeNormalizationStats &stats) {
+  if (node.kind == ProgramNode::Kind::Inst) {
+    ProgramInstNode rewritten = node.inst;
+    const ProgramInstNode before = rewritten;
+    for (std::string &src : rewritten.src) {
+      if (!analysis.isVregName(src))
+        continue;
+      auto it = aliases.find(src);
+      if (it != aliases.end())
+        src = it->second;
+    }
+    for (std::string &dst : rewritten.dst) {
+      if (!analysis.isVregName(dst))
+        continue;
+      auto it = aliases.find(dst);
+      if (it != aliases.end())
+        dst = it->second;
+    }
+    countFieldChanges(before, rewritten, stats);
+    return ProgramNode::makeInst(std::move(rewritten));
+  }
+  if (node.kind != ProgramNode::Kind::Loop || !node.loop)
+    return node;
+  ProgramLoopNode rewritten = *node.loop;
+  std::vector<ProgramNode> body;
+  body.reserve(rewritten.body.size());
+  for (const ProgramNode &child : rewritten.body)
+    body.push_back(renameVregs(child, aliases, analysis, stats));
+  rewritten.body = std::move(body);
+  return ProgramNode::makeLoop(std::move(rewritten));
+}
+
+std::pair<std::vector<ProgramNode>, std::unordered_set<std::string>>
+applyAliasesToNodes(
+    const std::vector<ProgramNode> &nodes,
+    const std::unordered_map<std::string, std::string> &aliases,
+    const ProgramAnalysis &analysis,
+    ProgramVregLiveRangeNormalizationStats &stats);
+
+ApplyAliasesResult applyAliasesToNode(
+    const ProgramNode &node,
+    const std::unordered_map<std::string, std::string> &aliases,
+    const ProgramAnalysis &analysis,
+    ProgramVregLiveRangeNormalizationStats &stats) {
+  if (node.kind == ProgramNode::Kind::Inst) {
+    ProgramInstNode rewritten = node.inst;
+    const ProgramInstNode before = rewritten;
+    for (std::string &src : rewritten.src) {
+      if (!analysis.isVregName(src))
+        continue;
+      auto it = aliases.find(src);
+      if (it != aliases.end())
+        src = it->second;
+    }
+    std::unordered_set<std::string> killed;
+    for (const std::string &dst : rewritten.dst) {
+      if (analysis.isVregName(dst))
+        killed.insert(dst);
+    }
+    countFieldChanges(before, rewritten, stats);
+    return ApplyAliasesResult{ProgramNode::makeInst(std::move(rewritten)),
+                              std::move(killed)};
+  }
+  if (node.kind != ProgramNode::Kind::Loop || !node.loop)
+    return ApplyAliasesResult{node, {}};
+
+  ProgramLoopNode rewritten = *node.loop;
+  if (analysis.resolveBound(rewritten.iters) <= 0)
+    return ApplyAliasesResult{ProgramNode::makeLoop(std::move(rewritten)), {}};
+
+  std::unordered_map<std::string, std::string> firstAccess;
+  std::unordered_set<std::string> written;
+  collectVregAccesses(rewritten.body, analysis, firstAccess, written);
+  std::unordered_map<std::string, std::string> carriedAliases;
+  for (const auto &[logical, target] : aliases) {
+    auto first = firstAccess.find(logical);
+    if (first != firstAccess.end() && first->second == "read" && written.count(logical))
+      carriedAliases.emplace(logical, target);
+  }
+  if (!carriedAliases.empty()) {
+    std::vector<ProgramNode> renamed;
+    renamed.reserve(rewritten.body.size());
+    for (const ProgramNode &child : rewritten.body)
+      renamed.push_back(renameVregs(child, carriedAliases, analysis, stats));
+    rewritten.body = std::move(renamed);
+  }
+
+  std::unordered_map<std::string, std::string> remainingAliases = aliases;
+  for (const auto &[logical, _] : carriedAliases)
+    remainingAliases.erase(logical);
+  auto [body, ignoredKills] =
+      applyAliasesToNodes(rewritten.body, remainingAliases, analysis, stats);
+  (void)ignoredKills;
+  rewritten.body = std::move(body);
+  for (const auto &[logical, _] : carriedAliases)
+    written.erase(logical);
+  return ApplyAliasesResult{ProgramNode::makeLoop(std::move(rewritten)),
+                            std::move(written)};
+}
+
+std::pair<std::vector<ProgramNode>, std::unordered_set<std::string>>
+applyAliasesToNodes(
+    const std::vector<ProgramNode> &nodes,
+    const std::unordered_map<std::string, std::string> &aliases,
+    const ProgramAnalysis &analysis,
+    ProgramVregLiveRangeNormalizationStats &stats) {
+  std::vector<ProgramNode> out;
+  out.reserve(nodes.size());
+  std::unordered_map<std::string, std::string> activeAliases = aliases;
+  std::unordered_set<std::string> killed;
+  for (const ProgramNode &node : nodes) {
+    ApplyAliasesResult result =
+        applyAliasesToNode(node, activeAliases, analysis, stats);
+    out.push_back(std::move(result.node));
+    for (const std::string &name : result.killedAliases) {
+      activeAliases.erase(name);
+      killed.insert(name);
+    }
+  }
+  return {std::move(out), std::move(killed)};
+}
+
+NormalizeNodesResult normalizeNodes(
     const std::vector<ProgramNode> &program,
     const ProgramAnalysis &analysis,
     ProgramVregLiveRangeNormalizationStats &stats,
     std::unordered_map<std::string, ValueInfo> *values) {
   std::vector<ProgramNode> out;
   out.reserve(program.size());
+  std::unordered_map<std::string, std::string> activeAliases;
   for (const ProgramNode &node : program) {
-    if (node.kind != ProgramNode::Kind::Loop || !node.loop) {
-      out.push_back(node);
+    ApplyAliasesResult applied =
+        applyAliasesToNode(node, activeAliases, analysis, stats);
+    if (applied.node.kind != ProgramNode::Kind::Loop || !applied.node.loop) {
+      out.push_back(std::move(applied.node));
+      for (const std::string &name : applied.killedAliases)
+        activeAliases.erase(name);
       continue;
     }
 
+    const ProgramNode &loopNode = applied.node;
     const bool flatInstBody =
-        std::all_of(node.loop->body.begin(), node.loop->body.end(),
+        std::all_of(loopNode.loop->body.begin(), loopNode.loop->body.end(),
                     [](const ProgramNode &op) {
-          return op.kind == ProgramNode::Kind::Inst;
-        });
-    ProgramLoopNode rewritten = *node.loop;
+                      return op.kind == ProgramNode::Kind::Inst;
+                    });
+    ProgramLoopNode rewritten = *loopNode.loop;
+    const int64_t iters = analysis.resolveBound(rewritten.iters);
+    if (iters <= 0) {
+      out.push_back(ProgramNode::makeLoop(std::move(rewritten)));
+      continue;
+    }
+    std::unordered_map<std::string, std::string> childAliases;
     if (flatInstBody) {
-      rewritten.body =
-          normalizeFlatLoopVregs(rewritten.body, analysis, stats, values);
+      FlatNormalizeResult result = normalizeFlatLoopVregs(
+          rewritten.body, analysis, stats, values, iters > 1);
+      rewritten.body = std::move(result.nodes);
+      childAliases = std::move(result.exitAliases);
     } else {
-      rewritten.body = normalizeNodes(rewritten.body, analysis, stats, values);
+      NormalizeNodesResult result =
+          normalizeNodes(rewritten.body, analysis, stats, values);
+      rewritten.body = std::move(result.nodes);
+      childAliases = std::move(result.exitAliases);
     }
     out.push_back(ProgramNode::makeLoop(std::move(rewritten)));
+    for (const std::string &name : applied.killedAliases)
+      activeAliases.erase(name);
+    for (const auto &[logical, slot] : childAliases)
+      activeAliases[logical] = slot;
   }
-  return out;
+  return NormalizeNodesResult{std::move(out), std::move(activeAliases)};
 }
 
 } // namespace
@@ -282,7 +510,7 @@ std::vector<ProgramNode> normalizeProgramVregLiveRanges(
     ProgramVregLiveRangeNormalizationStats *stats) {
   ProgramVregLiveRangeNormalizationStats localStats;
   ProgramAnalysis analysis(params, values);
-  auto normalized = normalizeNodes(program, analysis, localStats, nullptr);
+  auto normalized = normalizeNodes(program, analysis, localStats, nullptr).nodes;
   if (stats != nullptr)
     *stats = localStats;
   return normalized;
@@ -293,8 +521,8 @@ void normalizeProgramVregLiveRanges(
     ProgramVregLiveRangeNormalizationStats *stats) {
   ProgramVregLiveRangeNormalizationStats localStats;
   ProgramAnalysis analysis(vfInfo.params, vfInfo.values);
-  vfInfo.body =
-      normalizeNodes(vfInfo.body, analysis, localStats, &vfInfo.values);
+  vfInfo.body = normalizeNodes(vfInfo.body, analysis, localStats,
+                               &vfInfo.values).nodes;
   if (stats != nullptr)
     *stats = localStats;
 }

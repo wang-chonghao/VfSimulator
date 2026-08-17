@@ -37,6 +37,7 @@ struct IsaDefaults {
 
 struct UarchConfig {
   int64_t issuePorts = 0;
+  bool threePortsMode = false;
   int64_t loadPorts = 0;
   int64_t storePorts = 0;
   int64_t iduWindowWidth = 0;
@@ -67,6 +68,9 @@ struct UarchConfig {
   int64_t oooToLsqDelay = 0;
   int64_t exqRecvDelay = 0;
   int64_t shqToExqPortPerCycle = 0;
+  std::string shqExqDispatchPolicy = "fu_round_robin_fifo";
+  int64_t exu0ReserveLookahead = 0;
+  int64_t exu0ReserveMinCount = 1;
   int64_t computeInflightCap = 0;
   int64_t exqIssueInflightCapPerPort = 0;
   bool exqCapacityCountsInflight = false;

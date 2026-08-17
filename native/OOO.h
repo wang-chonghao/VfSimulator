@@ -109,6 +109,13 @@ public:
   int getRobSize() const noexcept { return static_cast<int>(rob_.size()); }
   int getLsqSize() const noexcept { return static_cast<int>(lsq_.size()); }
   int getShqSize() const noexcept { return static_cast<int>(shq_.size()); }
+  std::optional<int> getExuPortForInst(int64_t instId) const;
+  std::optional<std::string> getPregSrcForInst(int64_t instId,
+                                               size_t index) const;
+  std::optional<std::string> getPregDstForInst(int64_t instId,
+                                               size_t index) const;
+  std::vector<int> getEligibleExuPorts(const std::string &op,
+                                       const std::string &form) const;
   bool hasPendingLsuBefore(int64_t streamSeq, const std::string &opClass) const;
   virtual std::unordered_map<std::string, int> updateIduVisibility(int64_t cycle);
 
@@ -130,6 +137,7 @@ protected:
   bool enableIsuQueueModel_ = false;
   int loadPorts_ = 2;
   int issuePorts_ = 2;
+  bool threePortsMode_ = false;
   int storePorts_ = 1;
   int shqDepth_ = 58;
   int lsqDepth_ = 24;
@@ -170,6 +178,10 @@ protected:
   bool exqCapacityCountsInflight_ = false;
   int exqDepth_ = 26;
   int shqToExqPortPerCycle_ = 1;
+  std::string shqExqDispatchPolicy_ = "fu_round_robin_fifo";
+  int exu0ReserveLookahead_ = 0;
+  int exu0ReserveMinCount_ = 1;
+  std::unordered_map<std::string, int> shqExqRrPtrByFu_{{"ALU", 0}, {"SFU", 0}};
   int exqIssueInflightCapPerPort_ = 0;
   int computeInflightCap_ = 0;
   int shqReleaseDelay_ = 1;
@@ -233,6 +245,11 @@ protected:
   int64_t predictExqIssueCycle(int port, const std::string &fuType,
                                const std::string &op, const std::string &form,
                                int64_t recvCycle) const;
+  bool useFuRoundRobinFifo() const;
+  bool useExu0Reserve() const;
+  bool hasExu0OnlyPressure(size_t startIndex) const;
+  int selectFuRoundRobinPort(const std::string &fuType,
+                             const std::vector<int> &candidates);
   void scheduleShqRelease(int64_t cycle, int count = 1);
   void runShqReleaseEvents(int64_t cycle);
 
