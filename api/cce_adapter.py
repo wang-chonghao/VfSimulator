@@ -4,7 +4,7 @@ import ast
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Mapping, Optional, Sequence
 
 from api.input_symbols import (
     compact_dtype,
@@ -36,6 +36,12 @@ _FUNC_RE = re.compile(
 )
 _PRAGMA_UNROLL_RE = re.compile(r"#\s*pragma\s+unroll\s*\(\s*(\d+)\s*\)")
 _VECTOR_DECL_STMT_RE = re.compile(r"^\s*vector_([A-Za-z0-9_]+)\s+([^;]+)\s*$")
+_LOCAL_SCALAR_DECL_RE = re.compile(
+    r"^\s*(?:(?:const|constexpr|volatile|static)\s+)*"
+    r"(?P<dtype>u?int(?:8|16|32|64)_t|size_t|unsigned(?:\s+(?:short|int|long))?|"
+    r"signed(?:\s+(?:short|int|long))?|short|int|long|float|double|half)"
+    r"\s+(?P<declarations>.+?)\s*;\s*$"
+)
 _CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\((.*)\)\s*;", re.DOTALL)
 
 
@@ -126,6 +132,10 @@ class _VFScopeParser:
         self.scalar_names = {
             name for name, storage in scope.param_storage.items() if storage == "Scalar"
         }
+        self.offset_scalar_names = set(self.scalar_names)
+        self.local_scalar_dtypes: Dict[str, str] = {}
+        self.local_scalar_initializers: Dict[str, str] = {}
+        self._record_function_scope_scalar_declarations(scope.declaration_source)
 
     def parse(self) -> List[VFNode]:
         return self._parse_block(self.scope.source, frozenset())
@@ -137,11 +147,19 @@ class _VFScopeParser:
     ) -> List[VFNode]:
         saved_dtypes = dict(self.register_dtypes)
         saved_names = set(self.register_names)
+        saved_scalar_names = set(self.scalar_names)
+        saved_offset_scalar_names = set(self.offset_scalar_names)
+        saved_scalar_dtypes = dict(self.local_scalar_dtypes)
+        saved_scalar_initializers = dict(self.local_scalar_initializers)
         try:
             return self._parse_block_contents(text, induction_variables)
         finally:
             self.register_dtypes = saved_dtypes
             self.register_names = saved_names
+            self.scalar_names = saved_scalar_names
+            self.offset_scalar_names = saved_offset_scalar_names
+            self.local_scalar_dtypes = saved_scalar_dtypes
+            self.local_scalar_initializers = saved_scalar_initializers
 
     def _parse_block_contents(
         self,
@@ -209,13 +227,18 @@ class _VFScopeParser:
         if stmt.startswith("vector_"):
             self._record_vector_decl_statement(stmt)
             return None
+        if _LOCAL_SCALAR_DECL_RE.fullmatch(stmt):
+            self._record_local_scalar_decl_statement(stmt)
+            return None
         smem_bar = re.match(r"SMEM_BAR\s*\.\s*([A-Za-z_]\w*)\s*;", stmt, re.IGNORECASE)
         if smem_bar:
             return Membar(normalize_membar_type(smem_bar.group(1)))
 
         match = _CALL_RE.fullmatch(stmt)
         if not match:
-            return None
+            raise ValueError(
+                f"Unsupported CCE statement in __VEC_SCOPE__: {stmt}"
+            )
 
         callee = match.group(1)
         args = _split_args(match.group(2))
@@ -226,7 +249,9 @@ class _VFScopeParser:
             barrier = args[0] if args else None
             return Membar(normalize_membar_type(barrier))
         if not low.startswith("v"):
-            return None
+            raise ValueError(
+                f"Unsupported CCE statement in __VEC_SCOPE__: {stmt}"
+            )
 
         op = normalize_opcode(callee)
         spec = DEFAULT_INSTRUCTION_CATALOG.lookup(op)
@@ -352,12 +377,21 @@ class _VFScopeParser:
             )
         if kind == ArgumentKind.CONFIG:
             if operand_spec.name == "offset":
-                variable_names = set(induction_variables) | self.scalar_names
+                variable_names = (
+                    set(induction_variables) | self.offset_scalar_names
+                )
                 constant_names = set(self.loop_params)
                 if _is_affine_int_expression(
                     arg,
                     variable_names=variable_names,
                     constant_names=constant_names,
+                    symbol_expressions={
+                        name: initializer
+                        for name, initializer in self.local_scalar_initializers.items()
+                        if _is_integer_scalar_dtype(
+                            self.local_scalar_dtypes.get(name, "")
+                        )
+                    },
                 ):
                     return None
                 raise ValueError(
@@ -425,6 +459,40 @@ class _VFScopeParser:
             if name:
                 self.register_dtypes[name] = form
                 self.register_names.add(name)
+
+    def _record_function_scope_scalar_declarations(self, source: str) -> None:
+        for segment in source.split(";"):
+            stmt = segment.strip()
+            if not stmt:
+                continue
+            candidate = f"{stmt};"
+            if _LOCAL_SCALAR_DECL_RE.fullmatch(candidate):
+                self._record_local_scalar_decl_statement(candidate)
+
+    def _record_local_scalar_decl_statement(
+        self,
+        stmt: str,
+    ) -> None:
+        match = _LOCAL_SCALAR_DECL_RE.fullmatch(stmt)
+        if not match:
+            raise ValueError(f"Unsupported local scalar declaration: {stmt}")
+        dtype = match.group("dtype")
+        for raw_declaration in _split_args(match.group("declarations")):
+            declaration = re.fullmatch(
+                r"([A-Za-z_]\w*)\s*(?:=\s*(.+))?",
+                raw_declaration.strip(),
+                re.DOTALL,
+            )
+            if not declaration:
+                raise ValueError(f"Unsupported local scalar declaration: {stmt}")
+            name, initializer = declaration.groups()
+            self.scalar_names.add(name)
+            self.offset_scalar_names.discard(name)
+            self.local_scalar_dtypes[name] = dtype
+            self.local_scalar_initializers.pop(name, None)
+            if initializer is None:
+                continue
+            self.local_scalar_initializers[name] = initializer.strip()
 
     def _loop_count_from_header(self, header: str) -> tuple[int, str]:
         parts = [part.strip() for part in header.split(";")]
@@ -605,6 +673,10 @@ def _is_numeric_scalar_literal(value: str) -> bool:
     ))
 
 
+def _is_integer_scalar_dtype(dtype: str) -> bool:
+    return dtype not in {"float", "double", "half"}
+
+
 def _is_config_token(value: str) -> bool:
     text = value.strip()
     return bool(
@@ -618,6 +690,7 @@ def _is_affine_int_expression(
     *,
     variable_names: set[str],
     constant_names: set[str] | None = None,
+    symbol_expressions: Mapping[str, str] | None = None,
 ) -> bool:
     try:
         tree = ast.parse(value.strip(), mode="eval")
@@ -625,24 +698,35 @@ def _is_affine_int_expression(
         return False
 
     constant_names = constant_names or set()
+    symbol_expressions = symbol_expressions or {}
 
-    def classify(node: ast.AST) -> tuple[bool, bool]:
+    def classify(node: ast.AST, resolving: frozenset[str]) -> tuple[bool, bool]:
         if isinstance(node, ast.Expression):
-            return classify(node.body)
+            return classify(node.body, resolving)
         if isinstance(node, ast.Constant):
             valid = isinstance(node.value, int) and not isinstance(node.value, bool)
             return valid, valid
         if isinstance(node, ast.Name):
             if node.id in constant_names:
                 return True, True
+            if node.id in symbol_expressions:
+                if node.id in resolving:
+                    return False, False
+                try:
+                    expression = ast.parse(
+                        symbol_expressions[node.id], mode="eval"
+                    )
+                except SyntaxError:
+                    return False, False
+                return classify(expression, resolving | {node.id})
             return node.id in variable_names, False
         if isinstance(node, ast.UnaryOp):
             if not isinstance(node.op, (ast.UAdd, ast.USub)):
                 return False, False
-            return classify(node.operand)
+            return classify(node.operand, resolving)
         if isinstance(node, ast.BinOp):
-            left_valid, left_constant = classify(node.left)
-            right_valid, right_constant = classify(node.right)
+            left_valid, left_constant = classify(node.left, resolving)
+            right_valid, right_constant = classify(node.right, resolving)
             if not left_valid or not right_valid:
                 return False, False
             if isinstance(node.op, (ast.Add, ast.Sub)):
@@ -654,7 +738,7 @@ def _is_affine_int_expression(
                 )
         return False, False
 
-    valid, _ = classify(tree)
+    valid, _ = classify(tree, frozenset())
     return valid
 
 

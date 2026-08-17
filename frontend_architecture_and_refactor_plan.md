@@ -889,7 +889,7 @@ Cycle 回归用于验证性能模型没有意外变化，但不能替代语义�
 10. 在前端重构前同步 Python/C++ 后端：native 已采用 ALU/SFU 独立 RR、EXU0 reserve 配置，并对齐 loop back-edge、loop exit alias、重定义 kill、零次 loop 和 `three_ports_mode` 语义。native SHQ 到 EXQ 只生成一次候选端口，再按 policy 选择 greedy 或 RR。
 11. 建立共享 `InstructionCatalog`：`configs/instruction_catalog.json` 是唯一手写语义目录，Python 直接加载，C++ 由生成表消费；已覆盖 alias、instruction class、semantic form、specialization、operand signature、可选参数和 CCE 配置值。
 12. CCE 已知指令统一通过 Catalog binder，严格检查参数数量、operand kind、predicate、配置值与 semantic form；Canonical Python/C++ validator 对已知 opcode 检查 Catalog class/form/signature，未知 opcode 保留显式语义输入和 ParamDB fallback。
-13. CCE block 使用按声明顺序生效的词法作用域符号表；Catalog `call_variants` 描述 POST_UPDATE 与关联参数 overload；offset MVP 拒绝变量乘变量，只接受 affine 整数表达式。
+13. CCE block 使用按声明顺序生效的词法作用域符号表，覆盖 vector、predicate 和局部 scalar；scalar initializer 延迟到实际作为 offset 使用时再递归校验，普通 scalar operand 和无关声明不受 affine 规则影响。离开 block 后局部定义失效。Catalog `call_variants` 描述 POST_UPDATE 与关联参数 overload；offset MVP 拒绝变量乘变量，只接受 affine 整数表达式。VF scope 中未登记语句必须携带原始文本报错，不能静默忽略。
 
 ### 19.2 当前迁移边界
 

@@ -1,5 +1,6 @@
 import unittest
 import json
+import re
 import tempfile
 from pathlib import Path
 
@@ -521,6 +522,170 @@ class VfInfoApiTest(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(ValueError, "invalid offset expression"):
                     parse_cce_vf_info(path, kernel_name="bad")
+
+    def test_cce_local_integer_affine_offsets(self):
+        source = """
+            void valid(__ubuf__ float *input) {
+              const uint32_t base = 1;
+              __VEC_SCOPE__ {
+                vector_f32 value;
+                for (int i = 0; i < 2; ++i) {
+                  uint32_t stride = 64;
+                  uint32_t off = stride * i + base;
+                  vlds(value, input, off, NORM);
+                }
+              }
+            }
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "local_affine.dsl"
+            path.write_text(source, encoding="utf-8")
+            vf_info = parse_cce_vf_info(path, kernel_name="valid")
+        self.assertEqual(vf_info.context[0].body[0].name, "VLDS")
+
+    def test_cce_local_scalar_offsets_obey_scope_and_affine_rules(self):
+        sources = {
+            "use_before_declaration": (
+                "invalid offset expression",
+                """
+                void bad(__ubuf__ float *input) {
+                  __VEC_SCOPE__ {
+                    vector_f32 value;
+                    vlds(value, input, off, NORM);
+                    uint32_t off = 64;
+                  }
+                }
+                """,
+            ),
+            "loop_local_used_outside": (
+                "invalid offset expression",
+                """
+                void bad(__ubuf__ float *input) {
+                  __VEC_SCOPE__ {
+                    vector_f32 value;
+                    for (int i = 0; i < 2; ++i) {
+                      uint32_t off = 64 * i;
+                      vlds(value, input, off, NORM);
+                    }
+                    vlds(value, input, off, NORM);
+                  }
+                }
+                """,
+            ),
+            "non_affine_initializer": (
+                "invalid offset expression",
+                """
+                void bad(__ubuf__ float *input) {
+                  __VEC_SCOPE__ {
+                    vector_f32 value;
+                    for (int i = 0; i < 2; ++i) {
+                      uint32_t off = i * i;
+                      vlds(value, input, off, NORM);
+                    }
+                  }
+                }
+                """,
+            ),
+        }
+        for name, (message, source) in sources.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                path = Path(tmpdir) / "bad_local_scalar.dsl"
+                path.write_text(source, encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, message):
+                    parse_cce_vf_info(path, kernel_name="bad")
+
+    def test_cce_local_float_is_available_as_scalar_operand(self):
+        source = """
+            void valid() {
+              __VEC_SCOPE__ {
+                vector_f32 dst, src;
+                vector_bool mask = pset_b32(PAT_ALL);
+                float scale = 0.5f;
+                vadds(dst, src, scale, mask);
+              }
+            }
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "local_float.dsl"
+            path.write_text(source, encoding="utf-8")
+            vf_info = parse_cce_vf_info(path, kernel_name="valid")
+        self.assertEqual(vf_info.context[0].src, ["src", "scale"])
+
+    def test_cce_local_scalar_initializer_is_validated_only_for_offsets(self):
+        source = """
+            void valid() {
+              uint32_t tid = get_block_idx();
+              __VEC_SCOPE__ {
+                vector_f32 dst, src;
+                vector_bool mask = pset_b32(PAT_ALL);
+                vadds(dst, src, tid, mask);
+              }
+            }
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "delayed_scalar.dsl"
+            path.write_text(source, encoding="utf-8")
+            vf_info = parse_cce_vf_info(path, kernel_name="valid")
+        self.assertEqual(vf_info.context[0].src, ["src", "tid"])
+
+        offset_source = """
+            void bad(__ubuf__ float *input) {
+              uint32_t tid = get_block_idx();
+              __VEC_SCOPE__ {
+                vector_f32 value;
+                vlds(value, input, tid, NORM);
+              }
+            }
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "invalid_delayed_offset.dsl"
+            path.write_text(offset_source, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid offset expression"):
+                parse_cce_vf_info(path, kernel_name="bad")
+
+    def test_cce_rejects_unmodeled_scope_statements_with_source_text(self):
+        sources = {
+            "assignment": "off = 64 * i;",
+            "non_vector_call": "update_offset(off);",
+        }
+        for name, statement in sources.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                path = Path(tmpdir) / "unsupported_statement.dsl"
+                path.write_text(
+                    f"""
+                    void bad() {{
+                      __VEC_SCOPE__ {{
+                        uint32_t off = 0;
+                        for (int i = 0; i < 2; ++i) {{
+                          {statement}
+                        }}
+                      }}
+                    }}
+                    """,
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(
+                    ValueError,
+                    re.escape(statement),
+                ):
+                    parse_cce_vf_info(path, kernel_name="bad")
+
+    def test_cce_standalone_pset_remains_an_explicit_noop(self):
+        source = """
+            void valid() {
+              __VEC_SCOPE__ {
+                vector_f32 dst, lhs, rhs;
+                vector_bool mask = pset_b32(PAT_ALL);
+                pset_b32(PAT_ALL);
+                vadd(dst, lhs, rhs, mask);
+              }
+            }
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "pset_noop.dsl"
+            path.write_text(source, encoding="utf-8")
+            vf_info = parse_cce_vf_info(path, kernel_name="valid")
+        self.assertEqual([node.name for node in vf_info.context], ["VADD"])
 
     def test_cce_adapter_parses_mem_bar_call(self):
         source = """

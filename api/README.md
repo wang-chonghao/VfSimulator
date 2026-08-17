@@ -11,7 +11,7 @@
 
 CCE 中已登记的 load、store 和 compute 调用统一由 Catalog binder 按 argument index、方向和 kind 绑定。binder 同时检查参数数量、声明过的配置值和 semantic form；缺少必填 operand、携带额外参数，或把 UB、register、scalar、predicate 放入错误位置时会直接产生输入错误。未登记 opcode 暂时保留通用 vector-call 兼容路径，仍由 ParamDB 记录 timing fallback warning。
 
-CCE binder 使用词法作用域符号表：声明按源程序顺序生效，loop 内声明不会泄漏到外层。load/store 的普通寻址与 `POST_UPDATE`、`VDUP` 的 4/5 参数形式由 Catalog `call_variants` 声明，不通过忽略尾部参数兼容。offset MVP 只接受常量、变量、加减和“至少一侧为常量表达式”的乘法；变量相乘不属于 affine expression，会直接报错。
+CCE binder 使用词法作用域符号表：vector、predicate 和局部 scalar 声明按源程序顺序生效，loop 内声明不会泄漏到外层。局部 scalar 声明只记录名称、dtype 和 initializer；普通 scalar operand 不解析 initializer，只有实际作为 load/store offset 时才递归检查 affine 语义。因此与 VF 无关的 `get_block_idx()` 等初始化不会阻塞解析，也不需要函数特判。局部整数可以递归引用定义，例如 `stride = 64; off = stride * i`。load/store 的普通寻址与 `POST_UPDATE`、`VDUP` 的 4/5 参数形式由 Catalog `call_variants` 声明，不通过忽略尾部参数兼容。offset MVP 只接受常量、变量、加减和“至少一侧为常量表达式”的乘法；变量相乘不属于 affine expression，会在 offset 使用点报错。VF scope 内除显式登记的 `pset_*` 等 no-op 外，无法识别的语句会携带原始文本报错，不再静默忽略。
 
 Catalog 的 form 描述指令语义，不代表 timing 已覆盖。已知 opcode 的 canonical 输入必须匹配 Catalog 中的 instruction class、form 和 operand signature；未知 opcode 只要显式携带完整语义仍可通过 validator。`VPACK.b32` 的 `b32` 表示输入 lane 视角，逻辑寄存器仍可使用 `fp16/bf16` dtype，validator 不把 form 与每个 value dtype 强制等同。
 
