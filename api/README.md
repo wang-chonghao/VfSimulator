@@ -7,7 +7,9 @@
 - `api.frontend.CanonicalVfInfo`：版本化的目标输入契约。validator 不修改输入；Python 容器和 C++ 对象本身不承诺深度不可变。
 - `api.vf_info.VFInfo`：现有 CCE/legacy JSON adapter 和 Core 仍在使用的迁移期接口。
 
-指令语义目录位于 `api/frontend/instruction_catalog.py`。它集中声明 canonical opcode、alias、instruction class、已知 form、CCE 基础 operand signature 和 specialization；不包含 latency、forwarding、II 或 EXU 配置，也不是 timing 覆盖白名单。未知但语义明确的 opcode 仍可进入 ParamDB fallback。
+指令语义目录的唯一手写数据源是 `configs/instruction_catalog.json`，Python loader/validator 位于 `api/frontend/instruction_catalog.py`。它集中声明 canonical opcode、alias、instruction class、semantic form、CCE operand signature 和 specialization；不包含 latency、forwarding、II 或 EXU 配置，也不是 timing 覆盖白名单。未知但语义明确的 opcode 仍可进入 ParamDB fallback。
+
+CCE 中已登记的 load、store 和 compute 调用统一由 Catalog binder 按 argument index、方向和 kind 绑定。缺少必填 operand，或把 UB、register、scalar 放入错误位置时会直接产生输入错误，不再回退到遍历参数猜测。未登记 opcode 暂时保留通用 vector-call 兼容路径，仍由 ParamDB 记录 timing fallback warning。
 
 现有 frontend 入口包括：
 
@@ -32,9 +34,11 @@
 - 显式 dependency 只表达额外 memory/control ordering；DATA dependency 自动从 input value 的 producer 推导，不能重复声明。未知 opcode 只要给出明确 `instruction_class` 和完整 operand 语义即可通过 validator，timing 缺失仍由 ParamDB fallback 并记录 warning。
 - 所有整数和整数表达式必须可表示为 `int64_t`，scalar 浮点值必须有限，确保 Python 直接构造的对象能由 C++ 等价表示。
 - validator 位于 `api/frontend/validator.py`，只检查语义完整性；未知但语义明确的 opcode 可以通过，timing 覆盖由 ParamDB 处理。
-- `DEFAULT_INSTRUCTION_CATALOG.compare_timing_config()` 用于报告 Catalog 与 `configs/isa.json` 的 opcode/form 覆盖差异，防止语义目录和 timing 配置静默漂移。
+- `DEFAULT_INSTRUCTION_CATALOG.compare_timing_config()` 分别报告 semantic form 缺 timing、timing form 未声明语义、opcode 覆盖差异和 instruction class 冲突。前一类允许 ParamDB fallback，后三类属于需要修复的语义冲突。
 
 C++ 对应契约位于 `api/native/CanonicalVfInfo.h`，字段类型与 v1 JSON 契约一致，不包含 CCE parser 或 legacy JSON 推断。必填枚举默认值均为 `Unknown` 并由 validator 拒绝；递归 loop payload 以 `shared_ptr<const CanonicalLoop>` 表示，可共享但不能通过副本修改原 loop。
+
+C++ opcode Catalog 位于 `api/native/InstructionCatalog.*`，只读数据由 `tools/generate_instruction_catalog_cpp.py` 从共享 JSON 生成到 `api/native/generated/InstructionCatalogData.inc`。测试会校验生成结果未过期；`api/native/VfInfo.cpp` 不再手写 opcode alias 或 `VCVT` specialization。
 
 迁移期公共数据模型定义在 `vf_info.py`：
 

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
@@ -14,12 +16,37 @@ class FormRule(str, Enum):
     FIXED = "fixed"
 
 
+class OperandDirection(str, Enum):
+    INPUT = "input"
+    OUTPUT = "output"
+    IGNORE = "ignore"
+
+
+class ArgumentKind(str, Enum):
+    REGISTER = "register"
+    UB = "ub"
+    SCALAR = "scalar"
+    PREDICATE = "predicate"
+    CONFIG = "config"
+    REGISTER_OR_SCALAR = "register_or_scalar"
+
+
 @dataclass(frozen=True)
 class OperandSpec:
     name: str
     argument_index: int
+    direction: OperandDirection
     role: OperandRole
-    storage: StorageKind
+    kind: ArgumentKind
+    optional: bool = False
+
+    @property
+    def storage(self) -> StorageKind | None:
+        return {
+            ArgumentKind.REGISTER: StorageKind.REGISTER,
+            ArgumentKind.UB: StorageKind.UB,
+            ArgumentKind.SCALAR: StorageKind.SCALAR,
+        }.get(self.kind)
 
 
 @dataclass(frozen=True)
@@ -28,10 +55,13 @@ class InstructionSpec:
     instruction_class: InstructionClass
     aliases: tuple[str, ...] = ()
     forms: frozenset[str] = frozenset()
+    signature: str = ""
     operands: tuple[OperandSpec, ...] = ()
     form_rule: FormRule = FormRule.OPERAND_DTYPE
     fixed_form: str | None = None
-    specializations: Mapping[str, str] = MappingProxyType({})
+    specializations: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
     virtual: bool = False
     timing_optional: bool = False
 
@@ -40,114 +70,27 @@ class InstructionSpec:
 class CatalogTimingDifference:
     catalog_without_timing: frozenset[str]
     timing_without_catalog: frozenset[str]
-    forms_without_timing: Mapping[str, frozenset[str]]
+    semantic_forms_without_timing: Mapping[str, frozenset[str]]
+    timing_forms_without_semantics: Mapping[str, frozenset[str]]
+    instruction_class_mismatches: Mapping[str, tuple[str, str]]
 
     @property
     def is_empty(self) -> bool:
         return not (
             self.catalog_without_timing
             or self.timing_without_catalog
-            or self.forms_without_timing
+            or self.semantic_forms_without_timing
+            or self.timing_forms_without_semantics
+            or self.instruction_class_mismatches
         )
 
-
-_COMPUTE_SIGNATURE = (
-    OperandSpec("dst", 0, OperandRole.DESTINATION, StorageKind.REGISTER),
-    OperandSpec("src", 1, OperandRole.SOURCE, StorageKind.REGISTER),
-)
-_LOAD_SIGNATURE = (
-    OperandSpec("dst", 0, OperandRole.DESTINATION, StorageKind.REGISTER),
-    OperandSpec("memory", 1, OperandRole.MEMORY, StorageKind.UB),
-)
-_STORE_SIGNATURE = (
-    OperandSpec("src", 0, OperandRole.SOURCE, StorageKind.REGISTER),
-    OperandSpec("memory", 1, OperandRole.MEMORY, StorageKind.UB),
-)
-_FP_FORMS = frozenset({"fp16", "fp32"})
-
-
-def _compute(
-    opcode: str,
-    *,
-    aliases: tuple[str, ...] = (),
-    forms: frozenset[str] = _FP_FORMS,
-    form_rule: FormRule = FormRule.OPERAND_DTYPE,
-    fixed_form: str | None = None,
-    specializations: Mapping[str, str] = MappingProxyType({}),
-    virtual: bool = False,
-) -> InstructionSpec:
-    return InstructionSpec(
-        opcode=opcode,
-        instruction_class=InstructionClass.COMPUTE,
-        aliases=aliases,
-        forms=forms,
-        operands=_COMPUTE_SIGNATURE,
-        form_rule=form_rule,
-        fixed_form=fixed_form,
-        specializations=specializations,
-        virtual=virtual,
-    )
-
-
-def _default_specs() -> tuple[InstructionSpec, ...]:
-    regular_compute = (
-        "VADDS", "VEXP", "VADD", "VMULS", "VDIV", "VABS", "VSUB",
-        "VMUL", "VMAXS", "VMINS", "VMAX", "VMIN", "VCMAX", "VCMIN",
-        "VCADD", "VDUP", "VAND", "VCGMAX", "VCMP_EQ", "VSEL", "VSHLS",
-        "VSHRS", "VBR",
-    )
-    specs = [_compute(opcode) for opcode in regular_compute]
-    specs.extend((
-        InstructionSpec(
-            "VLDS", InstructionClass.LOAD, ("VLD",), _FP_FORMS,
-            _LOAD_SIGNATURE,
-        ),
-        InstructionSpec(
-            "VSTS", InstructionClass.STORE, ("VST",),
-            frozenset({"bf16", "fp16", "fp32"}), _STORE_SIGNATURE,
-        ),
-        InstructionSpec(
-            "VSTUS", InstructionClass.STORE, (), frozenset(),
-            _STORE_SIGNATURE, timing_optional=True,
-        ),
-        InstructionSpec(
-            "VSTAS", InstructionClass.STORE, (), frozenset(),
-            _STORE_SIGNATURE, timing_optional=True,
-        ),
-        _compute(
-            "VCVT",
-            forms=frozenset(),
-            form_rule=FormRule.CONVERSION,
-            specializations=MappingProxyType({
-                "f32_to_f16": "VCVT_F32_TO_F16",
-                "f32_to_bf16": "VCVT_F32_TO_BF16",
-                "f16_to_f32": "VCVT_F16_TO_F32",
-                "f32_to_s32": "VCVT_F32_TO_S32",
-                "s32_to_f32": "VCVT_S32_TO_F32",
-            }),
-            virtual=True,
-        ),
-        _compute("VCVT_F16_TO_F32", forms=frozenset({"f16_to_f32"}),
-                 form_rule=FormRule.FIXED, fixed_form="f16_to_f32"),
-        _compute("VCVT_F32_TO_F16", forms=frozenset({"f32_to_f16"}),
-                 form_rule=FormRule.FIXED, fixed_form="f32_to_f16"),
-        _compute("VCVT_F32_TO_BF16", forms=frozenset({"f32_to_bf16"}),
-                 form_rule=FormRule.FIXED, fixed_form="f32_to_bf16"),
-        _compute("VCVT_F32_TO_S32", forms=frozenset({"f32_to_s32"}),
-                 form_rule=FormRule.FIXED, fixed_form="f32_to_s32"),
-        _compute("VCVT_S32_TO_F32", forms=frozenset({"s32_to_f32"}),
-                 form_rule=FormRule.FIXED, fixed_form="s32_to_f32"),
-        _compute("VPACK", forms=frozenset({"b32"}), form_rule=FormRule.FIXED,
-                 fixed_form="b32"),
-        InstructionSpec(
-            "VSSTB", InstructionClass.STORE, (), frozenset({"b16"}),
-            _STORE_SIGNATURE, FormRule.FIXED, "b16",
-        ),
-        _compute("VEXPDIF", forms=frozenset({"fp32"})),
-        _compute("VMULSCVT", forms=frozenset({"f32_to_f16"}),
-                 form_rule=FormRule.CONVERSION),
-    ))
-    return tuple(specs)
+    @property
+    def has_semantic_conflicts(self) -> bool:
+        return bool(
+            self.timing_without_catalog
+            or self.timing_forms_without_semantics
+            or self.instruction_class_mismatches
+        )
 
 
 class InstructionCatalog:
@@ -155,9 +98,10 @@ class InstructionCatalog:
         by_opcode: dict[str, InstructionSpec] = {}
         aliases: dict[str, str] = {}
         for spec in specs:
-            opcode = spec.opcode.upper()
-            if opcode != spec.opcode or opcode in by_opcode:
-                raise ValueError(f"Invalid or duplicate canonical opcode: {spec.opcode}")
+            self._validate_spec(spec)
+            opcode = spec.opcode
+            if opcode in by_opcode:
+                raise ValueError(f"Duplicate canonical opcode: {opcode}")
             by_opcode[opcode] = spec
             for alias in (opcode, *spec.aliases):
                 key = alias.strip().lower()
@@ -165,8 +109,97 @@ class InstructionCatalog:
                 if not key or (previous is not None and previous != opcode):
                     raise ValueError(f"Conflicting opcode alias: {alias}")
                 aliases[key] = opcode
+
+        for spec in by_opcode.values():
+            for form, target in spec.specializations.items():
+                if not form or target not in by_opcode:
+                    raise ValueError(
+                        f"Invalid specialization {spec.opcode}.{form} -> {target}"
+                    )
+
         self._by_opcode = MappingProxyType(by_opcode)
         self._aliases = MappingProxyType(aliases)
+
+    @staticmethod
+    def _validate_spec(spec: InstructionSpec) -> None:
+        if not spec.opcode or spec.opcode != spec.opcode.upper():
+            raise ValueError(f"Canonical opcode must be non-empty uppercase: {spec.opcode}")
+        if not isinstance(spec.instruction_class, InstructionClass):
+            raise ValueError(f"Invalid instruction class for {spec.opcode}")
+        if not isinstance(spec.form_rule, FormRule):
+            raise ValueError(f"Invalid form rule for {spec.opcode}")
+        if spec.form_rule == FormRule.FIXED:
+            if not spec.fixed_form or spec.fixed_form not in spec.forms:
+                raise ValueError(
+                    f"Fixed-form instruction {spec.opcode} must declare fixed_form in forms"
+                )
+        elif spec.fixed_form is not None:
+            raise ValueError(f"Non-fixed instruction {spec.opcode} cannot set fixed_form")
+
+        indexes: set[int] = set()
+        for operand in spec.operands:
+            if (
+                isinstance(operand.argument_index, bool)
+                or not isinstance(operand.argument_index, int)
+                or operand.argument_index < 0
+                or operand.argument_index in indexes
+            ):
+                raise ValueError(f"Invalid argument index in {spec.opcode}")
+            indexes.add(operand.argument_index)
+            if not operand.name or not isinstance(operand.direction, OperandDirection):
+                raise ValueError(f"Invalid operand declaration in {spec.opcode}")
+            if not isinstance(operand.role, OperandRole) or not isinstance(
+                operand.kind, ArgumentKind
+            ):
+                raise ValueError(f"Invalid operand enum in {spec.opcode}")
+            if operand.direction == OperandDirection.OUTPUT and operand.role not in {
+                OperandRole.DESTINATION,
+                OperandRole.MEMORY,
+            }:
+                raise ValueError(f"Output role mismatch in {spec.opcode}")
+            if operand.direction == OperandDirection.INPUT and operand.role not in {
+                OperandRole.SOURCE,
+                OperandRole.SCALAR,
+                OperandRole.MEMORY,
+            }:
+                raise ValueError(f"Input role mismatch in {spec.opcode}")
+            if operand.direction == OperandDirection.IGNORE and operand.role not in {
+                OperandRole.PREDICATE,
+                OperandRole.CONFIG,
+            }:
+                raise ValueError(f"Ignored operand role mismatch in {spec.opcode}")
+        if indexes and indexes != set(range(max(indexes) + 1)):
+            raise ValueError(f"Argument indexes must be contiguous in {spec.opcode}")
+
+        tracked = [
+            operand
+            for operand in spec.operands
+            if operand.direction != OperandDirection.IGNORE
+        ]
+        memory_inputs = [
+            operand for operand in tracked
+            if operand.kind == ArgumentKind.UB
+            and operand.direction == OperandDirection.INPUT
+        ]
+        memory_outputs = [
+            operand for operand in tracked
+            if operand.kind == ArgumentKind.UB
+            and operand.direction == OperandDirection.OUTPUT
+        ]
+        register_outputs = [
+            operand for operand in tracked
+            if operand.kind == ArgumentKind.REGISTER
+            and operand.direction == OperandDirection.OUTPUT
+        ]
+        if spec.instruction_class == InstructionClass.LOAD:
+            if len(memory_inputs) != 1 or memory_outputs or len(register_outputs) != 1:
+                raise ValueError(f"Invalid load signature for {spec.opcode}")
+        elif spec.instruction_class == InstructionClass.STORE:
+            if memory_inputs or len(memory_outputs) != 1 or register_outputs:
+                raise ValueError(f"Invalid store signature for {spec.opcode}")
+        elif spec.instruction_class == InstructionClass.COMPUTE:
+            if memory_inputs or memory_outputs or len(register_outputs) != 1:
+                raise ValueError(f"Invalid compute signature for {spec.opcode}")
 
     @property
     def specs(self) -> Mapping[str, InstructionSpec]:
@@ -177,8 +210,7 @@ class InstructionCatalog:
         return self._aliases
 
     def lookup(self, value: Any) -> InstructionSpec | None:
-        opcode = self.canonical_opcode(value)
-        return self._by_opcode.get(opcode)
+        return self._by_opcode.get(self.canonical_opcode(value))
 
     def canonical_opcode(self, value: Any) -> str:
         text = str(getattr(value, "value", value)).strip()
@@ -197,38 +229,133 @@ class InstructionCatalog:
         instructions = payload.get("instructions", {})
         if not isinstance(instructions, Mapping):
             raise ValueError("ISA timing config must contain an instructions mapping")
-        normalized_instructions = {
-            str(op).upper(): spec for op, spec in instructions.items()
-        }
-        timing_ops = set(normalized_instructions)
+        normalized = {str(op).upper(): value for op, value in instructions.items()}
+        timing_ops = set(normalized)
         required_ops = {
             op for op, spec in self._by_opcode.items()
             if not spec.virtual and not spec.timing_optional
         }
-        forms_without_timing: dict[str, frozenset[str]] = {}
-        for opcode in required_ops & timing_ops:
-            timing_spec = normalized_instructions[opcode]
+        missing_forms: dict[str, frozenset[str]] = {}
+        extra_forms: dict[str, frozenset[str]] = {}
+        class_mismatches: dict[str, tuple[str, str]] = {}
+        for opcode in set(self._by_opcode) & timing_ops:
+            timing_spec = normalized[opcode]
             if not isinstance(timing_spec, Mapping):
                 raise ValueError(f"ISA timing entry {opcode} must be a mapping")
+            semantic_spec = self._by_opcode[opcode]
             timing_forms = set((timing_spec.get("forms") or {}).keys())
-            missing = self._by_opcode[opcode].forms - timing_forms
+            missing = semantic_spec.forms - timing_forms
+            extra = timing_forms - semantic_spec.forms
             if missing:
-                forms_without_timing[opcode] = frozenset(missing)
+                missing_forms[opcode] = frozenset(missing)
+            if extra:
+                extra_forms[opcode] = frozenset(extra)
+            timing_class = str(timing_spec.get("op_class", "")).lower()
+            if timing_class and timing_class != semantic_spec.instruction_class.value:
+                class_mismatches[opcode] = (
+                    semantic_spec.instruction_class.value,
+                    timing_class,
+                )
         return CatalogTimingDifference(
             catalog_without_timing=frozenset(required_ops - timing_ops),
             timing_without_catalog=frozenset(timing_ops - set(self._by_opcode)),
-            forms_without_timing=MappingProxyType(forms_without_timing),
+            semantic_forms_without_timing=MappingProxyType(missing_forms),
+            timing_forms_without_semantics=MappingProxyType(extra_forms),
+            instruction_class_mismatches=MappingProxyType(class_mismatches),
         )
 
 
-DEFAULT_INSTRUCTION_CATALOG = InstructionCatalog(_default_specs())
+def _enum(enum_type, value: Any, path: str):
+    try:
+        return enum_type(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid {path}: {value}") from exc
+
+
+def instruction_catalog_from_dict(payload: Mapping[str, Any]) -> InstructionCatalog:
+    if payload.get("schema_version") != 1:
+        raise ValueError("Unsupported instruction catalog schema_version")
+    raw_signatures = payload.get("signatures")
+    raw_instructions = payload.get("instructions")
+    if not isinstance(raw_signatures, Mapping) or not isinstance(
+        raw_instructions, Mapping
+    ):
+        raise ValueError("Instruction catalog requires signatures and instructions")
+
+    signatures: dict[str, tuple[OperandSpec, ...]] = {}
+    for name, raw_operands in raw_signatures.items():
+        if not isinstance(name, str) or not isinstance(raw_operands, list):
+            raise ValueError("Invalid signature declaration")
+        operands = []
+        for raw in raw_operands:
+            if not isinstance(raw, Mapping):
+                raise ValueError(f"Invalid operand in signature {name}")
+            operands.append(OperandSpec(
+                name=str(raw.get("name", "")),
+                argument_index=raw.get("argument_index"),
+                direction=_enum(
+                    OperandDirection, raw.get("direction"), f"{name}.direction"
+                ),
+                role=_enum(OperandRole, raw.get("role"), f"{name}.role"),
+                kind=_enum(ArgumentKind, raw.get("kind"), f"{name}.kind"),
+                optional=raw.get("optional", False) is True,
+            ))
+        signatures[name] = tuple(operands)
+
+    specs = []
+    for opcode, raw in raw_instructions.items():
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"Invalid instruction declaration: {opcode}")
+        signature = str(raw.get("signature", ""))
+        if signature not in signatures:
+            raise ValueError(f"Unknown signature {signature} for {opcode}")
+        specs.append(InstructionSpec(
+            opcode=str(opcode),
+            instruction_class=_enum(
+                InstructionClass, raw.get("class"), f"{opcode}.class"
+            ),
+            aliases=tuple(str(value) for value in raw.get("aliases", ())),
+            forms=frozenset(str(value) for value in raw.get("forms", ())),
+            signature=signature,
+            operands=signatures[signature],
+            form_rule=_enum(
+                FormRule,
+                raw.get("form_rule", FormRule.OPERAND_DTYPE.value),
+                f"{opcode}.form_rule",
+            ),
+            fixed_form=(
+                str(raw["fixed_form"]) if raw.get("fixed_form") is not None else None
+            ),
+            specializations=MappingProxyType({
+                str(form): str(target)
+                for form, target in raw.get("specializations", {}).items()
+            }),
+            virtual=raw.get("virtual", False) is True,
+            timing_optional=raw.get("timing_optional", False) is True,
+        ))
+    return InstructionCatalog(specs)
+
+
+def load_instruction_catalog(path: str | Path) -> InstructionCatalog:
+    return instruction_catalog_from_dict(json.loads(Path(path).read_text()))
+
+
+DEFAULT_CATALOG_PATH = (
+    Path(__file__).resolve().parents[2] / "configs" / "instruction_catalog.json"
+)
+DEFAULT_INSTRUCTION_CATALOG = load_instruction_catalog(DEFAULT_CATALOG_PATH)
 
 
 __all__ = [
+    "ArgumentKind",
     "CatalogTimingDifference",
+    "DEFAULT_CATALOG_PATH",
     "DEFAULT_INSTRUCTION_CATALOG",
     "FormRule",
     "InstructionCatalog",
     "InstructionSpec",
+    "OperandDirection",
     "OperandSpec",
+    "instruction_catalog_from_dict",
+    "load_instruction_catalog",
 ]

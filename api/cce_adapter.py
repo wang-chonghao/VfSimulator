@@ -15,10 +15,12 @@ from api.input_symbols import (
     specialize_opcode,
 )
 from api.frontend.instruction_catalog import (
+    ArgumentKind,
     DEFAULT_INSTRUCTION_CATALOG,
     FormRule,
+    InstructionSpec,
+    OperandDirection,
 )
-from api.frontend.schema import InstructionClass
 from api.vf_info import (
     Membar,
     MemInfo,
@@ -202,37 +204,115 @@ class _VFScopeParser:
 
         op = normalize_opcode(callee)
         spec = DEFAULT_INSTRUCTION_CATALOG.lookup(op)
-        instruction_class = spec.instruction_class if spec else None
-        if instruction_class == InstructionClass.LOAD:
-            if len(args) < 2:
-                raise ValueError(f"{callee} expects at least dst and UB source")
-            dst = self._register_operand(args[0])
-            return VFInst(
-                name=op,
-                form=spec.fixed_form or dst.dtype,
-                dst=[dst],
-                src=[self._ub_operand(args[1])],
-            )
-        if instruction_class == InstructionClass.STORE:
-            if len(args) < 2:
-                raise ValueError(f"{callee} expects at least register source and UB dst")
-            src = self._register_operand(args[0])
-            return VFInst(
-                name=op,
-                form=spec.fixed_form or src.dtype,
-                src=[src],
-                dst=[self._ub_operand(args[1])],
-            )
-
-        if not args:
-            raise ValueError(f"{callee} expects at least one destination operand")
-        dst = [self._register_operand(args[0])]
-        src = [operand for arg in args[1:] if (operand := self._operand_for_arg(arg))]
+        if spec is None:
+            return self._bind_generic_compute_call(callee, op, args)
+        src, dst = self._bind_catalog_call(callee, spec, args)
         form = _infer_inst_form(op, dst, src)
         return VFInst(name=_specialize_op_for_form(op, form), form=form, src=src, dst=dst)
 
+    def _bind_catalog_call(
+        self,
+        callee: str,
+        spec: InstructionSpec,
+        args: Sequence[str],
+    ) -> tuple[List[MemInfo], List[MemInfo]]:
+        src: List[MemInfo] = []
+        dst: List[MemInfo] = []
+        for operand_spec in spec.operands:
+            index = operand_spec.argument_index
+            if index >= len(args):
+                if operand_spec.optional:
+                    continue
+                raise ValueError(
+                    f"{callee} is missing required argument {index} "
+                    f"({operand_spec.name})"
+                )
+            operand = self._bind_catalog_argument(
+                callee,
+                args[index],
+                operand_spec.kind,
+                index,
+            )
+            if operand is None or operand_spec.direction == OperandDirection.IGNORE:
+                continue
+            if operand_spec.direction == OperandDirection.INPUT:
+                src.append(operand)
+            else:
+                dst.append(operand)
+        return src, dst
+
+    def _bind_catalog_argument(
+        self,
+        callee: str,
+        arg: str,
+        kind: ArgumentKind,
+        index: int,
+    ) -> MemInfo | None:
+        name = _base_identifier(arg)
+        if kind == ArgumentKind.REGISTER:
+            if name not in self.register_names:
+                raise ValueError(
+                    f"{callee} argument {index} must be a declared vector register: {arg}"
+                )
+            return MemInfo(name, "Register", self.register_dtypes.get(name))
+        if kind == ArgumentKind.UB:
+            if name not in self.ub_names:
+                raise ValueError(
+                    f"{callee} argument {index} must be a declared UB object: {arg}"
+                )
+            return MemInfo(name, "UB")
+        if kind in {ArgumentKind.SCALAR, ArgumentKind.REGISTER_OR_SCALAR}:
+            if name in self.register_names:
+                if kind == ArgumentKind.SCALAR:
+                    raise ValueError(
+                        f"{callee} argument {index} must be scalar: {arg}"
+                    )
+                return MemInfo(name, "Register", self.register_dtypes.get(name))
+            if name in self.ub_names:
+                raise ValueError(
+                    f"{callee} argument {index} cannot use a UB object as scalar: {arg}"
+                )
+            if name in self.scalar_names:
+                return MemInfo(name, "Scalar")
+            if _is_numeric_scalar_literal(arg):
+                return None
+            raise ValueError(
+                f"{callee} argument {index} must be a declared scalar or literal: {arg}"
+            )
+        if kind == ArgumentKind.PREDICATE:
+            text = arg.strip().lower()
+            if (
+                "pset_" in text
+                or name.lower().startswith(("p", "pred", "pat"))
+                or self.register_dtypes.get(name) == "bool"
+            ):
+                return None
+            raise ValueError(
+                f"{callee} argument {index} must be a predicate: {arg}"
+            )
+        return None
+
+    def _bind_generic_compute_call(
+        self,
+        callee: str,
+        op: str,
+        args: Sequence[str],
+    ) -> VFInst:
+        if not args:
+            raise ValueError(f"{callee} expects at least one destination operand")
+        dst = [self._register_operand(args[0])]
+        src = [
+            operand
+            for arg in args[1:]
+            if (operand := self._operand_for_arg(arg))
+        ]
+        form = _infer_inst_form(op, dst, src)
+        return VFInst(name=op, form=form, src=src, dst=dst)
+
     def _register_operand(self, arg: str) -> MemInfo:
         name = _base_identifier(arg)
+        if name not in self.register_names:
+            raise ValueError(f"Expected declared vector register: {arg}")
         return MemInfo(name, "Register", self.register_dtypes.get(name))
 
     def _ub_operand(self, arg: str) -> MemInfo:
@@ -431,6 +511,15 @@ def _resolve_loop_step(step_expr: str, var: str, loop_params: Dict[str, int]) ->
 
 def _vector_dtype_to_form(dtype: str) -> str:
     return str(normalize_dtype(dtype, default=str(dtype).lower()))
+
+
+def _is_numeric_scalar_literal(value: str) -> bool:
+    text = value.strip()
+    text = re.sub(r"^[()]|[()]$", "", text).strip()
+    return bool(re.fullmatch(
+        r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?[fFlL]?",
+        text,
+    ))
 
 
 def _extract_vector_decls(source: str) -> Dict[str, str]:

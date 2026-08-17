@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "signatures": {
+    "unary": [
+      {"name": "dst", "argument_index": 0, "direction": "output", "role": "destination", "kind": "register"},
+      {"name": "src", "argument_index": 1, "direction": "input", "role": "source", "kind": "register"},
+      {"name": "predicate", "argument_index": 2, "direction": "ignore", "role": "predicate", "kind": "predicate"}
+    ],
+    "binary": [
+      {"name": "dst", "argument_index": 0, "direction": "output", "role": "destination", "kind": "register"},
+      {"name": "lhs", "argument_index": 1, "direction": "input", "role": "source", "kind": "register"},
+      {"name": "rhs", "argument_index": 2, "direction": "input", "role": "source", "kind": "register"},
+      {"name": "predicate", "argument_index": 3, "direction": "ignore", "role": "predicate", "kind": "predicate"}
+    ],
+    "scalar": [
+      {"name": "dst", "argument_index": 0, "direction": "output", "role": "destination", "kind": "register"},
+      {"name": "src", "argument_index": 1, "direction": "input", "role": "source", "kind": "register"},
+      {"name": "scalar", "argument_index": 2, "direction": "input", "role": "scalar", "kind": "scalar"},
+      {"name": "predicate", "argument_index": 3, "direction": "ignore", "role": "predicate", "kind": "predicate"}
+    ],
+    "reduction": [
+      {"name": "dst", "argument_index": 0, "direction": "output", "role": "destination", "kind": "register"},
+      {"name": "src", "argument_index": 1, "direction": "input", "role": "source", "kind": "register"},
+      {"name": "predicate", "argument_index": 2, "direction": "ignore", "role": "predicate", "kind": "predicate"},
+      {"name": "mode", "argument_index": 3, "direction": "ignore", "role": "config", "kind": "config"}
+    ],
+    "duplicate": [
+      {"name": "dst", "argument_index": 0, "direction": "output", "role": "destination", "kind": "register"},
+      {"name": "src", "argument_index": 1, "direction": "input", "role": "source", "kind": "register_or_scalar"},
+      {"name": "predicate", "argument_index": 2, "direction": "ignore", "role": "predicate", "kind": "predicate"},
+      {"name": "mode", "argument_index": 3, "direction": "ignore", "role": "config", "kind": "config"}
+    ],
+    "conversion": [
+      {"name": "dst", "argument_index": 0, "direction": "output", "role": "destination", "kind": "register"},
+      {"name": "src", "argument_index": 1, "direction": "input", "role": "source", "kind": "register"}
+    ],
+    "vcvt": [
+      {"name": "dst", "argument_index": 0, "direction": "output", "role": "destination", "kind": "register"},
+      {"name": "src", "argument_index": 1, "direction": "input", "role": "source", "kind": "register"},
+      {"name": "predicate", "argument_index": 2, "direction": "ignore", "role": "predicate", "kind": "predicate"},
+      {"name": "round", "argument_index": 3, "direction": "ignore", "role": "config", "kind": "config"},
+      {"name": "saturation", "argument_index": 4, "direction": "ignore", "role": "config", "kind": "config"},
+      {"name": "part", "argument_index": 5, "direction": "ignore", "role": "config", "kind": "config"}
+    ],
+    "pack": [
+      {"name": "dst", "argument_index": 0, "direction": "output", "role": "destination", "kind": "register"},
+      {"name": "src", "argument_index": 1, "direction": "input", "role": "source", "kind": "register"},
+      {"name": "part", "argument_index": 2, "direction": "ignore", "role": "config", "kind": "config"}
+    ],
+    "mulscvt": [
+      {"name": "dst", "argument_index": 0, "direction": "output", "role": "destination", "kind": "register"},
+      {"name": "src", "argument_index": 1, "direction": "input", "role": "source", "kind": "register"},
+      {"name": "scalar", "argument_index": 2, "direction": "input", "role": "scalar", "kind": "scalar"},
+      {"name": "predicate", "argument_index": 3, "direction": "ignore", "role": "predicate", "kind": "predicate"},
+      {"name": "part", "argument_index": 4, "direction": "ignore", "role": "config", "kind": "config"}
+    ],
+    "load": [
+      {"name": "dst", "argument_index": 0, "direction": "output", "role": "destination", "kind": "register"},
+      {"name": "memory", "argument_index": 1, "direction": "input", "role": "memory", "kind": "ub"},
+      {"name": "offset", "argument_index": 2, "direction": "ignore", "role": "config", "kind": "config"},
+      {"name": "mode", "argument_index": 3, "direction": "ignore", "role": "config", "kind": "config"}
+    ],
+    "store": [
+      {"name": "src", "argument_index": 0, "direction": "input", "role": "source", "kind": "register"},
+      {"name": "memory", "argument_index": 1, "direction": "output", "role": "memory", "kind": "ub"},
+      {"name": "offset", "argument_index": 2, "direction": "ignore", "role": "config", "kind": "config"},
+      {"name": "mode", "argument_index": 3, "direction": "ignore", "role": "config", "kind": "config"},
+      {"name": "predicate", "argument_index": 4, "direction": "ignore", "role": "predicate", "kind": "predicate"}
+    ]
+  },
+  "instructions": {
+    "VADDS": {"class": "compute", "signature": "scalar", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VEXP": {"class": "compute", "signature": "unary", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VADD": {"class": "compute", "signature": "binary", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VMULS": {"class": "compute", "signature": "scalar", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VDIV": {"class": "compute", "signature": "binary", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VABS": {"class": "compute", "signature": "unary", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VSUB": {"class": "compute", "signature": "binary", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VMUL": {"class": "compute", "signature": "binary", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VMAXS": {"class": "compute", "signature": "scalar", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VMINS": {"class": "compute", "signature": "scalar", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VMAX": {"class": "compute", "signature": "binary", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VMIN": {"class": "compute", "signature": "binary", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VCMAX": {"class": "compute", "signature": "reduction", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VCMIN": {"class": "compute", "signature": "reduction", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VCADD": {"class": "compute", "signature": "reduction", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VLDS": {"class": "load", "aliases": ["VLD"], "signature": "load", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VSTS": {"class": "store", "aliases": ["VST"], "signature": "store", "forms": ["fp16", "fp32", "bf16", "b16", "b32"]},
+    "VDUP": {"class": "compute", "signature": "duplicate", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VAND": {"class": "compute", "signature": "binary", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VCGMAX": {"class": "compute", "signature": "reduction", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VCMP_EQ": {"class": "compute", "signature": "binary", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VCVT": {"class": "compute", "signature": "vcvt", "form_rule": "conversion", "virtual": true, "specializations": {"f32_to_f16": "VCVT_F32_TO_F16", "f32_to_bf16": "VCVT_F32_TO_BF16", "f16_to_f32": "VCVT_F16_TO_F32", "f32_to_s32": "VCVT_F32_TO_S32", "s32_to_f32": "VCVT_S32_TO_F32"}},
+    "VCVT_F16_TO_F32": {"class": "compute", "signature": "vcvt", "form_rule": "fixed", "fixed_form": "f16_to_f32", "forms": ["f16_to_f32"]},
+    "VCVT_F32_TO_F16": {"class": "compute", "signature": "vcvt", "form_rule": "fixed", "fixed_form": "f32_to_f16", "forms": ["f32_to_f16"]},
+    "VCVT_F32_TO_BF16": {"class": "compute", "signature": "vcvt", "form_rule": "fixed", "fixed_form": "f32_to_bf16", "forms": ["f32_to_bf16"]},
+    "VCVT_F32_TO_S32": {"class": "compute", "signature": "vcvt", "form_rule": "fixed", "fixed_form": "f32_to_s32", "forms": ["f32_to_s32"]},
+    "VCVT_S32_TO_F32": {"class": "compute", "signature": "vcvt", "form_rule": "fixed", "fixed_form": "s32_to_f32", "forms": ["s32_to_f32"]},
+    "VSEL": {"class": "compute", "signature": "binary", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VSHLS": {"class": "compute", "signature": "scalar", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VSHRS": {"class": "compute", "signature": "scalar", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VBR": {"class": "compute", "signature": "duplicate", "forms": ["fp16", "fp32", "b16", "b32"]},
+    "VPACK": {"class": "compute", "signature": "pack", "form_rule": "fixed", "fixed_form": "b32", "forms": ["b32"]},
+    "VSSTB": {"class": "store", "signature": "store", "form_rule": "fixed", "fixed_form": "b16", "forms": ["b16"]},
+    "VEXPDIF": {"class": "compute", "signature": "binary", "forms": ["fp32", "b32"]},
+    "VMULSCVT": {"class": "compute", "signature": "mulscvt", "form_rule": "conversion", "forms": ["f32_to_f16"]},
+    "VSTUS": {"class": "store", "signature": "store", "timing_optional": true},
+    "VSTAS": {"class": "store", "signature": "store", "timing_optional": true}
+  }
+}

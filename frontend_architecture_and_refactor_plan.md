@@ -1,6 +1,6 @@
 # VfSim 前端架构与代码规范改造计划
 
-> 状态：阶段一契约与校验完成，阶段二 Python Catalog 开发中
+> 状态：阶段一契约与校验完成，阶段二 Catalog 主体完成、adapter 迁移继续
 > 适用代码：Python VfSim 前端、Python Core 入口、C++ VfInfo 入口  
 > 不包含：timing 参数标定、OoO 调度策略调优和具体算子精度对齐
 
@@ -708,7 +708,15 @@ Cycle 回归用于验证性能模型没有意外变化，但不能替代语义�
 5. 生成或加载 C++ Catalog 表。
 6. 增加 Catalog 与 `isa.json` 覆盖差异检查。
 
-当前完成：Python 声明式 Catalog 骨架、现有 ISA opcode/form 汇总、alias/class/signature/form rule、`VCVT` specialization，以及与 `isa.json` 的覆盖差异检查。`input_symbols.py` 和 CCE load/store/固定 form 分支已开始消费 Catalog；C++ 生成表和 CCE 全量 binder 仍待后续完成。
+当前完成：
+
+1. `configs/instruction_catalog.json` 作为跨语言唯一手写语义来源。
+2. Python Catalog loader、自校验、动态完整 `OpCode` 便利枚举和 alias/form specialization。
+3. unary、binary、scalar、reduction、conversion、load/store 等 CCE 签名族，以及已登记指令统一 call binder。
+4. semantic form 与 timing form 的双向差异、opcode 覆盖差异和 instruction class 冲突检查；semantic form 缺 timing 允许进入 ParamDB fallback。
+5. C++ 只读 Catalog 生成表，`VfInfo.cpp` 已删除手写 opcode alias 和 `VCVT` specialization。
+
+仍待完成：将 Catalog operand signature 用于直接构建完整 `CanonicalVfInfo` operand，补齐 Tilesim/legacy adapter 接入，并逐步删除未登记 opcode 的 CCE 通用猜测路径。
 
 退出条件：新增一条普通指令只需修改 Catalog 和 timing config，不需要修改 parser 控制流。
 

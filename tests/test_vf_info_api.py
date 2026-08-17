@@ -265,6 +265,40 @@ class VfInfoApiTest(unittest.TestCase):
         self.assertEqual(vexpdif.src, ["x0", "x0"])
         self.assertEqual(vexpdif.dst, ["exp0"])
 
+    def test_cce_catalog_binder_rejects_missing_or_misordered_operands(self):
+        sources = {
+            "missing_binary_source": """
+                void bad(__ubuf__ float *a) {
+                  __VEC_SCOPE__ {
+                    vector_f32 dst, lhs;
+                    vadd(dst, lhs);
+                  }
+                }
+            """,
+            "ub_used_as_register": """
+                void bad(__ubuf__ float *a) {
+                  __VEC_SCOPE__ {
+                    vector_f32 dst, rhs;
+                    vadd(dst, a, rhs, pset_b32(PAT_ALL));
+                  }
+                }
+            """,
+            "predicate_used_as_scalar": """
+                void bad(__ubuf__ float *a) {
+                  __VEC_SCOPE__ {
+                    vector_f32 dst, src;
+                    vadds(dst, src, pset_b32(PAT_ALL), 1.0f);
+                  }
+                }
+            """,
+        }
+        for name, source in sources.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                path = Path(tmpdir) / "bad.dsl"
+                path.write_text(source, encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    parse_cce_vf_info(path, kernel_name="bad")
+
     def test_cce_adapter_parses_mem_bar_call(self):
         source = """
         void barrier_vf(__ubuf__ float *a, __ubuf__ float *b) {

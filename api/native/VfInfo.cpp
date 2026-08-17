@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: CANN-1.0
 
 #include "api/native/VfInfo.h"
+#include "api/native/InstructionCatalog.h"
 
 #include <algorithm>
 #include <cctype>
 #include <stdexcept>
-#include <unordered_map>
 #include <utility>
 
 namespace vfsim {
@@ -61,47 +61,12 @@ std::string normalizeForm(const std::string &form) {
 }
 
 std::string normalizeOpcode(const std::string &op) {
-  const std::string text = lower(op);
-  static const std::unordered_map<std::string, std::string> aliases = {
-      {"vld", "VLDS"},
-      {"vlds", "VLDS"},
-      {"vst", "VSTS"},
-      {"vsts", "VSTS"},
-      {"vstus", "VSTUS"},
-      {"vstas", "VSTAS"},
-      {"vadd", "VADD"},
-      {"vadds", "VADDS"},
-      {"vmul", "VMUL"},
-      {"vmuls", "VMULS"},
-      {"vcvt", "VCVT"},
-      {"vcvt_f32_to_f16", "VCVT_F32_TO_F16"},
-      {"vcvt_f32_to_bf16", "VCVT_F32_TO_BF16"},
-      {"vcvt_f16_to_f32", "VCVT_F16_TO_F32"},
-      {"vcvt_f32_to_s32", "VCVT_F32_TO_S32"},
-      {"vcvt_s32_to_f32", "VCVT_S32_TO_F32"},
-      {"vpack", "VPACK"},
-      {"vsstb", "VSSTB"},
-  };
-  const auto it = aliases.find(text);
-  return it == aliases.end() ? upper(op) : it->second;
+  return defaultInstructionCatalog().canonicalOpcode(op);
 }
 
 std::string specializeOpcode(const std::string &op, const std::string &form) {
-  const std::string canonicalOp = normalizeOpcode(op);
-  if (canonicalOp != "VCVT")
-    return canonicalOp;
-  const std::string canonicalForm = normalizeForm(form);
-  if (canonicalForm == "f32_to_f16")
-    return "VCVT_F32_TO_F16";
-  if (canonicalForm == "f32_to_bf16")
-    return "VCVT_F32_TO_BF16";
-  if (canonicalForm == "f16_to_f32")
-    return "VCVT_F16_TO_F32";
-  if (canonicalForm == "f32_to_s32")
-    return "VCVT_F32_TO_S32";
-  if (canonicalForm == "s32_to_f32")
-    return "VCVT_S32_TO_F32";
-  return canonicalOp;
+  return defaultInstructionCatalog().specializeOpcode(
+      op, normalizeForm(form));
 }
 
 std::string normalizeMembarType(const std::string &barrier) {

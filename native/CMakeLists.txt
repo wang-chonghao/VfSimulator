@@ -21,6 +21,7 @@ option(VFSIM_ENABLE_MLIR_PLANNER "Build MLIR IR planner entry point" OFF)
 
 set(VFSIM_NATIVE_CORE_SOURCES
   ../api/native/CanonicalVfInfo.cpp
+  ../api/native/InstructionCatalog.cpp
   ../api/native/VfInfo.cpp
   ../api/native/JsonVfInfoAdapter.cpp
   Json.cpp

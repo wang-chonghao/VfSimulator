@@ -24,17 +24,23 @@ from api.frontend.schema import (
 from api.frontend.validator import validate_canonical_vf_info
 from api.frontend.serialization import canonical_vf_info_from_dict
 from api.frontend.instruction_catalog import (
+    ArgumentKind,
     CatalogTimingDifference,
+    DEFAULT_CATALOG_PATH,
     DEFAULT_INSTRUCTION_CATALOG,
     FormRule,
     InstructionCatalog,
     InstructionSpec,
+    OperandDirection,
     OperandSpec,
+    instruction_catalog_from_dict,
+    load_instruction_catalog,
 )
 
 __all__ = [
     "CANONICAL_VF_INFO_SCHEMA_VERSION",
     "AccessKind",
+    "ArgumentKind",
     "AffineExpression",
     "AffineTerm",
     "CanonicalInstruction",
@@ -45,6 +51,7 @@ __all__ = [
     "CanonicalValue",
     "CanonicalVfInfo",
     "CatalogTimingDifference",
+    "DEFAULT_CATALOG_PATH",
     "DEFAULT_INSTRUCTION_CATALOG",
     "DependencyKind",
     "DependencyRef",
@@ -57,6 +64,7 @@ __all__ = [
     "InstructionSpec",
     "LoopCarriedValue",
     "OperandRole",
+    "OperandDirection",
     "OperandSpec",
     "SourceLocation",
     "StorageKind",
@@ -64,4 +72,6 @@ __all__ = [
     "FormRule",
     "validate_canonical_vf_info",
     "canonical_vf_info_from_dict",
+    "instruction_catalog_from_dict",
+    "load_instruction_catalog",
 ]

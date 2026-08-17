@@ -31,25 +31,11 @@ class MembarType(_StrEnum):
     VLD_VST = "VLD_VST"
 
 
-class OpCode(_StrEnum):
-    VLDS = "VLDS"
-    VSTS = "VSTS"
-    VSTUS = "VSTUS"
-    VSTAS = "VSTAS"
-    VADD = "VADD"
-    VADDS = "VADDS"
-    VMUL = "VMUL"
-    VMULS = "VMULS"
-    VCVT = "VCVT"
-    VCVT_F32_TO_F16 = "VCVT_F32_TO_F16"
-    VCVT_F32_TO_BF16 = "VCVT_F32_TO_BF16"
-    VCVT_F16_TO_F32 = "VCVT_F16_TO_F32"
-    VCVT_F32_TO_S32 = "VCVT_F32_TO_S32"
-    VCVT_S32_TO_F32 = "VCVT_S32_TO_F32"
-    VPACK = "VPACK"
-    VSSTB = "VSSTB"
-    VEXPDIF = "VEXPDIF"
-    VMULSCVT = "VMULSCVT"
+OpCode = _StrEnum(
+    "OpCode",
+    {opcode: opcode for opcode in DEFAULT_INSTRUCTION_CATALOG.specs},
+    module=__name__,
+)
 
 
 DTYPE_ALIASES = {
@@ -91,7 +77,7 @@ DTYPE_TO_COMPACT = {
 
 OPCODE_ALIASES = dict(DEFAULT_INSTRUCTION_CATALOG.aliases)
 VCVT_SPECIALIZATIONS = dict(
-    DEFAULT_INSTRUCTION_CATALOG.specs[OpCode.VCVT.value].specializations
+    DEFAULT_INSTRUCTION_CATALOG.specs["VCVT"].specializations
 )
 
 STORAGE_ALIASES = {

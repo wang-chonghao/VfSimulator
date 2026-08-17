@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: CANN-1.0
 
 #include "api/native/CanonicalVfInfo.h"
+#include "api/native/InstructionCatalog.h"
 #include "api/native/VfInfo.h"
 #include "native/ParamDB.h"
 #include "native/Json.h"
@@ -48,6 +49,21 @@ bool hasDiagnostic(const CanonicalValidationResult &result,
 } // namespace
 
 int main() {
+  const auto &instructionCatalog = defaultInstructionCatalog();
+  if (instructionCatalog.canonicalOpcode("vld") != "VLDS" ||
+      instructionCatalog.canonicalOpcode("vexpdif") != "VEXPDIF" ||
+      instructionCatalog.specializeOpcode("vcvt", "f32_to_bf16") !=
+          "VCVT_F32_TO_BF16" ||
+      instructionCatalog.lookup("VSSTB") == nullptr ||
+      instructionCatalog.lookup("VSSTB")->instructionClass !=
+          CatalogInstructionClass::Store ||
+      !instructionCatalog.lookup("VADD")->forms.count("b16") ||
+      instructionCatalog.lookup("VADD")->signature != "binary" ||
+      instructionCatalog.lookup("VADD")->operands.size() != 4 ||
+      instructionCatalog.lookup("VADD")->operands[2].kind !=
+          CatalogArgumentKind::Register)
+    throw std::runtime_error("native generated instruction catalog mismatch");
+
   const auto sharedFixtureJson = json::parseFile(
       std::filesystem::path(VFSIM_SOURCE_ROOT) /
       "tests/fixtures/canonical_vf_info/v1_valid_loop.json");
