@@ -26,6 +26,26 @@ Timing form 兼容只由 `core/param_compat.py` 与 `native/ParamCompat.cpp` 维
 - `VFInfoLowerer().lower(vf_info)`：把公共 `VFInfo` lower 成当前 core simulator payload。
 - `CoreVfCostModel().predict_vf_cycles(vf_info)`：用当前 queue-level 主线模拟器运行 `VFInfo`。
 - `InputAPI.validate_canonical_vf_info(vf_info)`：只校验 `CanonicalVfInfo`，不修复、不查询 timing 参数，也不产生文件系统副作用。
+- `VfInfoBuilder` / `InputAPI.new_vf_info_builder()`：显式注册 storage object、value definition、instruction、loop 和 Membar，`build()` 校验后返回 `CanonicalVfInfo`；校验失败抛出携带结构化 diagnostics 的 `VfInfoValidationError`。
+
+Python 调用方可直接使用 builder，不需要拼接内部 dict：
+
+```python
+builder = InputAPI.new_vf_info_builder(params={"N": 4})
+builder.register_storage_object("ub.input", storage=StorageKind.UB)
+builder.register_value(
+    "input.0",
+    logical_id="input",
+    storage=StorageKind.UB,
+    dtype="fp32",
+    storage_object_id="ub.input",
+)
+with builder.loop("loop.0", induction=InductionVariable("i"), count="N"):
+    ...
+vf_info = builder.build()
+```
+
+builder 不推断 opcode、storage、dtype 或 producer，也不查询 timing。调用方必须提供 canonical 字段；重复 ID 会在注册时失败，跨节点和数据流错误由最终 validator 统一诊断。
 
 目标 canonical 数据模型定义在 `api/frontend/schema.py`：
 

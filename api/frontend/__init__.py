@@ -18,11 +18,13 @@ from api.frontend.schema import (
     LoopCarriedValue,
     MemoryAccess,
     OperandRole,
+    ScalarValue,
     SourceLocation,
     StorageKind,
 )
 from api.frontend.validator import validate_canonical_vf_info
 from api.frontend.serialization import canonical_vf_info_from_dict
+from api.frontend.builder import VfInfoBuilder, VfInfoValidationError
 from api.frontend.instruction_catalog import (
     ArgumentKind,
     CallVariant,
@@ -69,8 +71,11 @@ __all__ = [
     "OperandDirection",
     "OperandSpec",
     "SourceLocation",
+    "ScalarValue",
     "StorageKind",
     "ValidationResult",
+    "VfInfoBuilder",
+    "VfInfoValidationError",
     "FormRule",
     "validate_canonical_vf_info",
     "canonical_vf_info_from_dict",

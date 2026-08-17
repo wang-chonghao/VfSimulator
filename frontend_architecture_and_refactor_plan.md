@@ -890,9 +890,10 @@ Cycle 回归用于验证性能模型没有意外变化，但不能替代语义�
 11. 建立共享 `InstructionCatalog`：`configs/instruction_catalog.json` 是唯一手写语义目录，Python 直接加载，C++ 由生成表消费；已覆盖 alias、instruction class、semantic form、specialization、operand signature、可选参数和 CCE 配置值。
 12. CCE 已知指令统一通过 Catalog binder，严格检查参数数量、operand kind、predicate、配置值与 semantic form；Canonical Python/C++ validator 对已知 opcode 检查 Catalog class/form/signature，未知 opcode 保留显式语义输入和 ParamDB fallback。
 13. CCE block 使用按声明顺序生效的词法作用域符号表，覆盖 vector、predicate 和局部 scalar；scalar initializer 延迟到实际作为 offset 使用时再递归校验，普通 scalar operand 和无关声明不受 affine 规则影响。离开 block 后局部定义失效。Catalog `call_variants` 描述 POST_UPDATE 与关联参数 overload；offset MVP 拒绝变量乘变量，只接受 affine 整数表达式。VF scope 中未登记语句必须携带原始文本报错，不能静默忽略。
+14. 新增 Python `VfInfoBuilder`：显式注册 storage/value/node，支持嵌套 loop context、直接 loop body 和 Membar；重复 ID 早报错，`build()` 统一调用 canonical validator 并通过 `VfInfoValidationError` 暴露结构化 diagnostics。`InputAPI.new_vf_info_builder()` 是公开创建入口。
 
 ### 19.2 当前迁移边界
 
 现有 CCE 和 legacy JSON adapter 仍返回 `api.vf_info.VFInfo`，Core 仍通过 `VFInfoLowerer` 消费迁移期 payload。新的 `CanonicalVfInfo` 暂不隐式 lower 到旧 payload，避免丢失结构化 memory access、operand role 和 source location。
 
-阶段二的 `InstructionCatalog` 及 Python/C++ 共用语义表已经建立。当前 CCE binder 已消费 Catalog，但仍输出迁移期 `VFInfo`；下一步是让 CCE 与 legacy JSON adapter 直接生成 canonical 对象，再实现不丢失 definition、loop-carried 和结构化 memory access 的 Core lowering，最后删除旧 normalize/specialize 逻辑。在 canonical adapter 完成前，旧路径保持单一现有行为，不新增第二套隐式转换。
+阶段二的 `InstructionCatalog` 及 Python/C++ 共用语义表已经建立，Python canonical builder 也已提供。当前 CCE binder 已消费 Catalog，但仍输出迁移期 `VFInfo`；下一步是让 CCE 与 legacy JSON adapter 通过 builder 直接生成 canonical 对象，再实现不丢失 definition、loop-carried 和结构化 memory access 的 Core lowering，最后删除旧 normalize/specialize 逻辑。在 canonical adapter 完成前，旧路径保持单一现有行为，不新增第二套隐式转换。

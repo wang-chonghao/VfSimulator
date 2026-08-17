@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Mapping
 
 from api.cce_adapter import parse_cce_vf_info
-from api.frontend import CanonicalVfInfo, ValidationResult, validate_canonical_vf_info
+from api.frontend import (
+    CanonicalVfInfo,
+    ScalarValue,
+    ValidationResult,
+    VfInfoBuilder,
+    validate_canonical_vf_info,
+)
 from api.json_adapter import JsonVfInfoAdapter
 from api.vf_info import VFInfo
 
@@ -39,3 +45,14 @@ class InputAPI:
         """Validate the versioned frontend contract without mutating it."""
 
         return validate_canonical_vf_info(vf_info)
+
+    @staticmethod
+    def new_vf_info_builder(
+        *,
+        params: Mapping[str, int] | None = None,
+        uarch: Mapping[str, ScalarValue] | None = None,
+        source: Mapping[str, ScalarValue] | None = None,
+    ) -> VfInfoBuilder:
+        """Create an explicit builder for the versioned canonical contract."""
+
+        return VfInfoBuilder(params=params, uarch=uarch, source=source)
