@@ -6,6 +6,12 @@ from pathlib import Path
 from typing import Any, Dict
 
 from api.cce_adapter import parse_cce_vf_info
+from api.frontend import (
+    CanonicalVfInfo,
+    CoreLoweringPass,
+    VfInfoValidationError,
+    validate_canonical_vf_info,
+)
 from api.json_adapter import JsonVfInfoAdapter
 from api.vf_costmodel import VFInfo, VfCostModel, canonicalize_vf_info
 from api.vf_lowering import VFInfoLowerer
@@ -40,7 +46,24 @@ class CoreVfCostModel(VfCostModel):
         """Compatibility entry: adapt a JSON-shaped payload to VfInfo first."""
         return self.run_vf_info(JsonVfInfoAdapter.from_payload(payload))
 
-    def _run_lowered_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def predict_canonical_vf_cycles(self, vf_info: CanonicalVfInfo) -> int:
+        return int(self.run_canonical_vf_info(vf_info)["vf_end_cycle"])
+
+    def run_canonical_vf_info(self, vf_info: CanonicalVfInfo) -> Dict[str, Any]:
+        validation = validate_canonical_vf_info(vf_info)
+        if not validation.ok:
+            raise VfInfoValidationError(validation.errors)
+        lowering = CoreLoweringPass()
+        lowering.ensure_current_core_compatible(vf_info)
+        payload = lowering.lower(vf_info)
+        return self._run_lowered_payload(payload, canonical_input=True)
+
+    def _run_lowered_payload(
+        self,
+        payload: Dict[str, Any],
+        *,
+        canonical_input: bool = False,
+    ) -> Dict[str, Any]:
         base_dir = Path(self.base_dir)
         dtype = str(payload.get("dtype", self.dtype))
         params = payload.get("params", {}) or {}
@@ -53,17 +76,24 @@ class CoreVfCostModel(VfCostModel):
         values = payload.get("values", {}) or {}
 
         db = ParamDB(base_dir=str(base_dir))
-        program, values, norm_stats = normalize_program_vreg_live_ranges(
-            program,
-            values=values,
-            params=params,
-        )
-        program, canonicalization_stats = canonicalize_single_super_iteration_loops(
-            program,
-            params,
-            pdb=db,
-            dtype=dtype,
-        )
+        if canonical_input:
+            norm_stats = {"renamed_operands": 0, "reused_slots": 0}
+            canonicalization_stats = {
+                "expanded_loops": 0,
+                "expanded_instructions": 0,
+            }
+        else:
+            program, values, norm_stats = normalize_program_vreg_live_ranges(
+                program,
+                values=values,
+                params=params,
+            )
+            program, canonicalization_stats = canonicalize_single_super_iteration_loops(
+                program,
+                params,
+                pdb=db,
+                dtype=dtype,
+            )
         analyzer = ProgramAnalyzer(params, values=values)
         top_block_loop_bounds = analyzer.infer_top_block_loop_bounds(program)
         loop_bounds = top_block_loop_bounds.get(0, [])

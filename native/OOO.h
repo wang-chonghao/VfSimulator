@@ -43,7 +43,6 @@ struct Uop {
   std::optional<std::string> producerOpForStore;
   std::optional<std::string> producerFormForStore;
   std::optional<int64_t> producerStartForStore;
-  std::vector<int64_t> memDepInstIds;
   int64_t topBlockId = 0;
   std::vector<int64_t> iterStack;
   bool isLastInTopBlock = false;
@@ -193,8 +192,6 @@ protected:
   std::unordered_map<int64_t, int> visiblePregFreeEvents_;
   std::unordered_map<int64_t, int> visibleShqReleaseEvents_;
   std::unordered_map<int64_t, int> shqReleaseEvents_;
-  std::unordered_map<std::string, int64_t> memLastStoreInstId_;
-  std::unordered_map<int64_t, int64_t> completedDoneCycleByInstId_;
   int iduMailboxPregReleaseDelta_ = 0;
   int iduMailboxShqReleaseDelta_ = 0;
   int consumerReleaseStartOffset_ = 0;
@@ -215,7 +212,6 @@ protected:
   virtual std::string classifyOpClass(const std::string &op,
                                       const std::string &form) const;
   bool isRegisterValue(const std::string &name) const;
-  bool isUBValue(const std::string &name) const;
   int64_t computeReadyTimeForSrc(const ProducerInfo &producerInfo,
                                  const std::string &consumerOp,
                                  const std::string &consumerForm) const;

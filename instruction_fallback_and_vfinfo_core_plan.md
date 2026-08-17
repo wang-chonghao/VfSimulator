@@ -1100,7 +1100,7 @@ main.py / CoreVfCostModel
 
 将 `OoOCoreMainline` 仍依赖的通用逻辑迁出 `core/ooo.py`，拆成更明确的模块：
 
-- `core/uop.py`：`Uop`、`make_mem_key()`。
+- `core/uop.py`：`Uop`。UB 顺序只由显式 Membar 或未来的显式 dependency edge 控制，不再迁移已删除的地址 key helper。
 - `core/ooo_timing.py`：`_latency()`、`_get_ii()`、`_ready_time_for_src()`。
 - `core/ooo_readiness.py`：compute/load/store ready-cycle 计算。
 - `core/exu_scheduler.py`：EXU port 选择和 II 检查。

@@ -560,7 +560,7 @@ void verifyNativeLoadStoreDurationUsesOwnLatency() {
           "native store duration must use store op latency");
 }
 
-void verifyNativeSameAddressStoreLoadDependency(const ParamDB &db) {
+void verifyNativeNoImplicitUbStoreLoadDependency(const ParamDB &db) {
   VfInfo vfInfo;
   vfInfo.defaultDtype = "fp32";
   vfInfo.body = {makeLoopNode(
@@ -573,8 +573,8 @@ void verifyNativeSameAddressStoreLoadDependency(const ParamDB &db) {
   (void)runVfInfo(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
   const std::string starts = readText(outDir / "start_by_cycle.json");
   const std::string dones = readText(outDir / "done_by_cycle.json");
-  require(cycleForInstId(starts, 2) >= cycleForInstId(dones, 1),
-          "native same-address load must wait for prior store done");
+  require(cycleForInstId(starts, 2) < cycleForInstId(dones, 1),
+          "native load without Membar must not wait for prior same-UB store");
 }
 
 void verifyUnsupportedMembarWarning(const ParamDB &db) {
@@ -719,7 +719,7 @@ int main() {
     verifyExplicitMembarTiming(db);
     verifyMembarUsesDynamicStreamSequence(db);
     verifyNativeLoadStoreDurationUsesOwnLatency();
-    verifyNativeSameAddressStoreLoadDependency(db);
+    verifyNativeNoImplicitUbStoreLoadDependency(db);
     verifyUnsupportedMembarWarning(db);
     verifyNativeInputSymbolNormalization();
     verifyNativeUnknownVcvtFallsBack(db);

@@ -775,10 +775,11 @@ OoO 在 `accept(inst)` 时做寄存器重命名。
 
 ### 10.2 类 load 指令就绪
 
-类 load 指令的就绪主要看内存依赖：
+类 load 指令不根据 UB 名称、offset 或地址范围自动推导前序 store 依赖。UB 访问顺序必须由输入中的显式 `Membar` 表达：
 
-- 如果读的内存地址有前序 store，必须等前序 store 完成
-- 如果前面有显式 `Membar(VST_VLD)`，还需要满足控制单元给出的 store/load ordering gate
+- `Membar(VST_VLD)` 等待 barrier 前的 store 完成，并阻塞 barrier 后的 load 发射
+- 没有 Membar 时，即使 load/store 使用同一个 UB 对象，也不会自动建立 store 到 load 的依赖
+- canonical `DependencyRef` 的 memory/control edge 尚未接入 Core，当前会明确拒绝，不会静默忽略
 
 ### 10.3 类 store 指令就绪
 

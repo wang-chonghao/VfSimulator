@@ -26,6 +26,10 @@ from api.frontend.validator import validate_canonical_vf_info
 from api.frontend.serialization import canonical_vf_info_from_dict
 from api.frontend.builder import VfInfoBuilder, VfInfoValidationError
 from api.frontend.json_adapter import CanonicalJsonVfInfoAdapter
+from api.frontend.core_lowering import (
+    CanonicalCoreCompatibilityError,
+    CoreLoweringPass,
+)
 from api.frontend.instruction_catalog import (
     ArgumentKind,
     CallVariant,
@@ -48,6 +52,7 @@ __all__ = [
     "AffineExpression",
     "AffineTerm",
     "CanonicalInstruction",
+    "CanonicalCoreCompatibilityError",
     "CanonicalJsonVfInfoAdapter",
     "CanonicalLoop",
     "CanonicalMembar",
@@ -55,6 +60,7 @@ __all__ = [
     "CanonicalStorageObject",
     "CanonicalValue",
     "CanonicalVfInfo",
+    "CoreLoweringPass",
     "CatalogTimingDifference",
     "CallVariant",
     "DEFAULT_CATALOG_PATH",

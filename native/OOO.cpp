@@ -21,17 +21,6 @@
 namespace vfsim {
 namespace {
 
-std::string makeMemKey(const std::string &name, const std::vector<int64_t> &iterStack) {
-  std::string key = name;
-  key += "@";
-  for (size_t i = 0; i < iterStack.size(); ++i) {
-    if (i)
-      key += ",";
-    key += std::to_string(iterStack[i]);
-  }
-  return key;
-}
-
 std::string jsonEscape(const std::string &text) {
   std::string out;
   out.reserve(text.size() + 8);
@@ -268,10 +257,6 @@ bool OoOCore::isRegisterValue(const std::string &name) const {
   return valueStorage_.isRegister(name);
 }
 
-bool OoOCore::isUBValue(const std::string &name) const {
-  return valueStorage_.isUB(name);
-}
-
 int64_t OoOCore::computeReadyTimeForSrc(
     const ProducerInfo &producerInfo, const std::string &consumerOp,
     const std::string &consumerForm) const {
@@ -284,22 +269,7 @@ int64_t OoOCore::computeReadyTimeForSrc(
 }
 
 int64_t OoOCore::computeLoadReadyCycle(const Uop &u) const {
-  int64_t t = std::max<int64_t>(vfStartupCost_, u.lsqReadyCycle);
-  for (const auto predInstId : u.memDepInstIds) {
-    const Uop *pred = findRobUop(predInstId);
-    if (pred != nullptr && pred->state == "done" && pred->doneCycle.has_value()) {
-      t = std::max<int64_t>(t, pred->doneCycle.value());
-      continue;
-    }
-    const auto doneIt = completedDoneCycleByInstId_.find(predInstId);
-    if (doneIt != completedDoneCycleByInstId_.end()) {
-      t = std::max<int64_t>(t, doneIt->second);
-      continue;
-    }
-    if (pred == nullptr || pred->state != "done" || !pred->doneCycle.has_value())
-      return 1000000000;
-  }
-  return t;
+  return std::max<int64_t>(vfStartupCost_, u.lsqReadyCycle);
 }
 
 bool OoOCore::blockedByControlUnit(const Uop &u) const {
@@ -718,16 +688,6 @@ void OoOCoreMainline::accept(const DynamicInst &inst) {
   u.isLastInTopBlock = inst.isLastInTopBlock;
   u.streamSeq = inst.streamSeq;
 
-  if (isLoadOp(db_, u.op, u.form)) {
-    for (const auto &s : u.src) {
-      if (!isUBValue(s))
-        continue;
-      const auto it = memLastStoreInstId_.find(makeMemKey(s, u.iterStack));
-      if (it != memLastStoreInstId_.end())
-        u.memDepInstIds.push_back(it->second);
-    }
-  }
-
   for (const auto &preg : u.pregSrc) {
     if (preg) {
       pregConsumerCount_[*preg] += 1;
@@ -780,13 +740,6 @@ void OoOCoreMainline::accept(const DynamicInst &inst) {
   }
   rob_.push_back(u);
 
-  if (isStoreOp(db_, u.op, u.form)) {
-    for (const auto &d : u.dst) {
-      if (isUBValue(d))
-        memLastStoreInstId_[makeMemKey(d, u.iterStack)] = u.instId;
-    }
-  }
-
   for (const auto &oldPreg : u.pregOld) {
     if (oldPreg)
       (void)tryFreePreg(*oldPreg, cycle_);
@@ -810,7 +763,6 @@ void OoOCoreMainline::step() {
   for (auto &u : rob_) {
     if (u.state == "running" && u.doneCycle.has_value() && c >= *u.doneCycle) {
       u.state = "done";
-      completedDoneCycleByInstId_[u.instId] = *u.doneCycle;
       if (u.exuPort >= 0 && u.exuPort < static_cast<int>(exqInflight_.size()))
         exqInflight_[static_cast<size_t>(u.exuPort)] = std::max(0, exqInflight_[static_cast<size_t>(u.exuPort)] - 1);
       log("done", u);

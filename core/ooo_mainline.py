@@ -8,7 +8,7 @@ from collections import deque
 
 from core import isu
 from core.isa_traits import is_load_op, is_store_op, uses_lsq, uses_shared_shq_credit
-from core.ooo import OoOCore, Uop, make_mem_key
+from core.ooo import OoOCore, Uop
 
 
 @dataclass
@@ -336,13 +336,6 @@ class RenameController:
         )
         setattr(u, "preg_src_gen", preg_src_gen)
 
-        if is_load_op(op, self.core.db, form):
-            for s in srcs:
-                if self.core.is_mem(s):
-                    pred_uop = self.core.mem_last_store_uop.get(make_mem_key(s, iter_stack))
-                    if pred_uop is not None:
-                        u.mem_dep_uops.append(pred_uop)
-
         for pd in preg_dst:
             self.core.preg_pending.add(pd)
 
@@ -366,7 +359,6 @@ class RenameController:
         if is_store_op(op, self.core.db, form):
             for d in dsts:
                 if self.core.is_mem(d):
-                    self.core.mem_last_store_uop[make_mem_key(d, iter_stack)] = u
                     iter_key = self.core._top_iter_key_from_stack(top_block_id, iter_stack)
                     self.core.iter_outstanding_stores[iter_key] = (
                         self.core.iter_outstanding_stores.get(iter_key, 0) + 1

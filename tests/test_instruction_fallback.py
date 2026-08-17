@@ -920,6 +920,19 @@ class InstructionFallbackTest(unittest.TestCase):
         post_barrier_load_start = [item["cy"] for item in starts if item["op"] == "VLDS"][-1]
         self.assertGreaterEqual(post_barrier_load_start, store_done)
 
+    def test_same_ub_without_membar_does_not_create_implicit_dependency(self):
+        starts, dones = self._run_payload_logs(
+            [
+                {"type": "inst", "op": "VLDS", "form": "fp32", "src": ["memA"], "dst": ["v0"]},
+                {"type": "inst", "op": "VSTS", "form": "fp32", "src": ["v0"], "dst": ["memB"]},
+                {"type": "inst", "op": "VLDS", "form": "fp32", "src": ["memB"], "dst": ["v1"]},
+            ]
+        )
+
+        store_done = next(item["cy"] for item in dones if item["op"] == "VSTS")
+        following_load_start = [item["cy"] for item in starts if item["op"] == "VLDS"][-1]
+        self.assertLess(following_load_start, store_done)
+
     def test_vld_vst_membar_blocks_following_store_until_prior_load_done(self):
         starts, dones = self._run_payload_logs(
             [
