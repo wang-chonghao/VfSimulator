@@ -23,6 +23,14 @@ from api.frontend.schema import (
 )
 from api.frontend.validator import validate_canonical_vf_info
 from api.frontend.serialization import canonical_vf_info_from_dict
+from api.frontend.instruction_catalog import (
+    CatalogTimingDifference,
+    DEFAULT_INSTRUCTION_CATALOG,
+    FormRule,
+    InstructionCatalog,
+    InstructionSpec,
+    OperandSpec,
+)
 
 __all__ = [
     "CANONICAL_VF_INFO_SCHEMA_VERSION",
@@ -36,6 +44,8 @@ __all__ = [
     "CanonicalStorageObject",
     "CanonicalValue",
     "CanonicalVfInfo",
+    "CatalogTimingDifference",
+    "DEFAULT_INSTRUCTION_CATALOG",
     "DependencyKind",
     "DependencyRef",
     "Diagnostic",
@@ -43,11 +53,15 @@ __all__ = [
     "MemoryAccess",
     "InductionVariable",
     "InstructionClass",
+    "InstructionCatalog",
+    "InstructionSpec",
     "LoopCarriedValue",
     "OperandRole",
+    "OperandSpec",
     "SourceLocation",
     "StorageKind",
     "ValidationResult",
+    "FormRule",
     "validate_canonical_vf_info",
     "canonical_vf_info_from_dict",
 ]

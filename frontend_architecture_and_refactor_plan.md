@@ -1,6 +1,6 @@
 # VfSim 前端架构与代码规范改造计划
 
-> 状态：阶段一开发中
+> 状态：阶段一契约与校验完成，阶段二 Python Catalog 开发中
 > 适用代码：Python VfSim 前端、Python Core 入口、C++ VfInfo 入口  
 > 不包含：timing 参数标定、OoO 调度策略调优和具体算子精度对齐
 
@@ -689,6 +689,10 @@ Cycle 回归用于验证性能模型没有意外变化，但不能替代语义�
 4. 实现 C++ 等价 validator。
 5. 增加跨语言合法/非法 fixture。
 
+当前完成：schema v1、Python/C++ 等价数据类型与 validator、共享合法/非法 fixture，以及 producer、loop scope、class/access 和跨语言数值边界校验。
+
+迁移说明：现有 Core 入口仍保留 `VFInfo` 兼容路径，待 `CoreLoweringPass` 完成后再收紧为仅接收 canonical 对象，避免在 schema 阶段隐式丢失已有字段。
+
 退出条件：同一 fixture 在 Python/C++ 中得到一致校验结果；Core 入口只接受 canonical 对象。
 
 ### 阶段二：建立 InstructionCatalog
@@ -703,6 +707,8 @@ Cycle 回归用于验证性能模型没有意外变化，但不能替代语义�
 4. Python 接入 Catalog。
 5. 生成或加载 C++ Catalog 表。
 6. 增加 Catalog 与 `isa.json` 覆盖差异检查。
+
+当前完成：Python 声明式 Catalog 骨架、现有 ISA opcode/form 汇总、alias/class/signature/form rule、`VCVT` specialization，以及与 `isa.json` 的覆盖差异检查。`input_symbols.py` 和 CCE load/store/固定 form 分支已开始消费 Catalog；C++ 生成表和 CCE 全量 binder 仍待后续完成。
 
 退出条件：新增一条普通指令只需修改 Catalog 和 timing config，不需要修改 parser 控制流。
 

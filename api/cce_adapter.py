@@ -14,6 +14,11 @@ from api.input_symbols import (
     normalize_opcode,
     specialize_opcode,
 )
+from api.frontend.instruction_catalog import (
+    DEFAULT_INSTRUCTION_CATALOG,
+    FormRule,
+)
+from api.frontend.schema import InstructionClass
 from api.vf_info import (
     Membar,
     MemInfo,
@@ -32,8 +37,6 @@ _FUNC_RE = re.compile(
 _PRAGMA_UNROLL_RE = re.compile(r"#\s*pragma\s+unroll\s*\(\s*(\d+)\s*\)")
 _VECTOR_DECL_STMT_RE = re.compile(r"^\s*vector_([A-Za-z0-9_]+)\s+([^;]+)\s*$")
 _CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\((.*)\)\s*;", re.DOTALL)
-_LOAD_OPS = {"VLD", "VLDS"}
-_STORE_OPS = {"VST", "VSTS", "VSTUS", "VSTAS", "VSSTB"}
 
 
 @dataclass(frozen=True)
@@ -198,41 +201,25 @@ class _VFScopeParser:
             return None
 
         op = normalize_opcode(callee)
-        if op == "VPACK":
-            if len(args) < 2:
-                raise ValueError(f"{callee} expects at least dst and source register")
-            return VFInst(
-                name=op,
-                form="b32",
-                dst=[self._register_operand(args[0])],
-                src=[self._register_operand(args[1])],
-            )
-        if op == "VSSTB":
-            if len(args) < 2:
-                raise ValueError(f"{callee} expects at least register source and UB dst")
-            return VFInst(
-                name=op,
-                form="b16",
-                src=[self._register_operand(args[0])],
-                dst=[self._ub_operand(args[1])],
-            )
-        if op in _LOAD_OPS:
+        spec = DEFAULT_INSTRUCTION_CATALOG.lookup(op)
+        instruction_class = spec.instruction_class if spec else None
+        if instruction_class == InstructionClass.LOAD:
             if len(args) < 2:
                 raise ValueError(f"{callee} expects at least dst and UB source")
             dst = self._register_operand(args[0])
             return VFInst(
                 name=op,
-                form=dst.dtype,
+                form=spec.fixed_form or dst.dtype,
                 dst=[dst],
                 src=[self._ub_operand(args[1])],
             )
-        if op in _STORE_OPS:
+        if instruction_class == InstructionClass.STORE:
             if len(args) < 2:
                 raise ValueError(f"{callee} expects at least register source and UB dst")
             src = self._register_operand(args[0])
             return VFInst(
                 name=op,
-                form=src.dtype,
+                form=spec.fixed_form or src.dtype,
                 src=[src],
                 dst=[self._ub_operand(args[1])],
             )
@@ -467,21 +454,10 @@ def _infer_inst_form(op: str, dst: Sequence[MemInfo], src: Sequence[MemInfo]) ->
     op = normalize_opcode(op)
     src_dtype = next((operand.dtype for operand in src if operand.dtype), None)
     dst_dtype = next((operand.dtype for operand in dst if operand.dtype), None)
-    if op in {"VCVT_F32_TO_F16", "VCVT_F32_TO_BF16", "VCVT_F16_TO_F32", "VCVT_F32_TO_S32", "VCVT_S32_TO_F32"}:
-        explicit = {
-            "VCVT_F32_TO_F16": "f32_to_f16",
-            "VCVT_F32_TO_BF16": "f32_to_bf16",
-            "VCVT_F16_TO_F32": "f16_to_f32",
-            "VCVT_F32_TO_S32": "f32_to_s32",
-            "VCVT_S32_TO_F32": "s32_to_f32",
-        }
-        return explicit[op]
-    if op == "VCVT" and src_dtype and dst_dtype:
-        src_key = compact_dtype(src_dtype)
-        dst_key = compact_dtype(dst_dtype)
-        if src_key and dst_key:
-            return f"{src_key}_to_{dst_key}"
-    if op == "VMULSCVT" and src_dtype and dst_dtype:
+    spec = DEFAULT_INSTRUCTION_CATALOG.lookup(op)
+    if spec and spec.form_rule == FormRule.FIXED:
+        return spec.fixed_form
+    if spec and spec.form_rule == FormRule.CONVERSION and src_dtype and dst_dtype:
         src_key = compact_dtype(src_dtype)
         dst_key = compact_dtype(dst_dtype)
         if src_key and dst_key:

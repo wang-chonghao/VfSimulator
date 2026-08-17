@@ -3,6 +3,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
+from api.frontend.instruction_catalog import DEFAULT_INSTRUCTION_CATALOG
+
 
 class _StrEnum(str, Enum):
     def __str__(self) -> str:
@@ -87,34 +89,10 @@ DTYPE_TO_COMPACT = {
     DType.BOOL.value: "bool",
 }
 
-OPCODE_ALIASES = {
-    "vld": OpCode.VLDS,
-    "vlds": OpCode.VLDS,
-    "vst": OpCode.VSTS,
-    "vsts": OpCode.VSTS,
-    "vstus": OpCode.VSTUS,
-    "vstas": OpCode.VSTAS,
-    "vadd": OpCode.VADD,
-    "vadds": OpCode.VADDS,
-    "vmul": OpCode.VMUL,
-    "vmuls": OpCode.VMULS,
-    "vcvt": OpCode.VCVT,
-    "vcvt_f32_to_f16": OpCode.VCVT_F32_TO_F16,
-    "vcvt_f32_to_bf16": OpCode.VCVT_F32_TO_BF16,
-    "vcvt_f16_to_f32": OpCode.VCVT_F16_TO_F32,
-    "vcvt_f32_to_s32": OpCode.VCVT_F32_TO_S32,
-    "vcvt_s32_to_f32": OpCode.VCVT_S32_TO_F32,
-    "vpack": OpCode.VPACK,
-    "vsstb": OpCode.VSSTB,
-}
-
-VCVT_SPECIALIZATIONS = {
-    "f32_to_f16": OpCode.VCVT_F32_TO_F16,
-    "f32_to_bf16": OpCode.VCVT_F32_TO_BF16,
-    "f16_to_f32": OpCode.VCVT_F16_TO_F32,
-    "f32_to_s32": OpCode.VCVT_F32_TO_S32,
-    "s32_to_f32": OpCode.VCVT_S32_TO_F32,
-}
+OPCODE_ALIASES = dict(DEFAULT_INSTRUCTION_CATALOG.aliases)
+VCVT_SPECIALIZATIONS = dict(
+    DEFAULT_INSTRUCTION_CATALOG.specs[OpCode.VCVT.value].specializations
+)
 
 STORAGE_ALIASES = {
     "register": StorageKind.REGISTER,
@@ -170,11 +148,7 @@ def compact_dtype(value: Any | None) -> str | None:
 
 
 def normalize_opcode(value: Any) -> str:
-    text = _symbol_text(value).strip()
-    if not text:
-        return ""
-    normalized = OPCODE_ALIASES.get(text.lower())
-    return normalized.value if normalized is not None else text.upper()
+    return DEFAULT_INSTRUCTION_CATALOG.canonical_opcode(_symbol_text(value))
 
 
 def normalize_storage(value: Any) -> str:
@@ -196,11 +170,7 @@ def normalize_membar_type(value: Any | None, *, default: str = "VST_VLD") -> str
 def specialize_opcode(op: Any, form: Any | None) -> str:
     canonical_op = normalize_opcode(op)
     canonical_form = normalize_form(form) if form else None
-    if canonical_op == OpCode.VCVT.value and canonical_form:
-        specialized = VCVT_SPECIALIZATIONS.get(str(canonical_form))
-        if specialized is not None:
-            return specialized.value
-    return canonical_op
+    return DEFAULT_INSTRUCTION_CATALOG.specialize(canonical_op, canonical_form)
 
 
 __all__ = [

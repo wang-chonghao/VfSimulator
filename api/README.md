@@ -7,6 +7,8 @@
 - `api.frontend.CanonicalVfInfo`：版本化的目标输入契约。validator 不修改输入；Python 容器和 C++ 对象本身不承诺深度不可变。
 - `api.vf_info.VFInfo`：现有 CCE/legacy JSON adapter 和 Core 仍在使用的迁移期接口。
 
+指令语义目录位于 `api/frontend/instruction_catalog.py`。它集中声明 canonical opcode、alias、instruction class、已知 form、CCE 基础 operand signature 和 specialization；不包含 latency、forwarding、II 或 EXU 配置，也不是 timing 覆盖白名单。未知但语义明确的 opcode 仍可进入 ParamDB fallback。
+
 现有 frontend 入口包括：
 
 - `InputAPI.load_json_trace(path)`：把旧 JSON trace 加载为 `VFInfo`。
@@ -30,6 +32,7 @@
 - 显式 dependency 只表达额外 memory/control ordering；DATA dependency 自动从 input value 的 producer 推导，不能重复声明。未知 opcode 只要给出明确 `instruction_class` 和完整 operand 语义即可通过 validator，timing 缺失仍由 ParamDB fallback 并记录 warning。
 - 所有整数和整数表达式必须可表示为 `int64_t`，scalar 浮点值必须有限，确保 Python 直接构造的对象能由 C++ 等价表示。
 - validator 位于 `api/frontend/validator.py`，只检查语义完整性；未知但语义明确的 opcode 可以通过，timing 覆盖由 ParamDB 处理。
+- `DEFAULT_INSTRUCTION_CATALOG.compare_timing_config()` 用于报告 Catalog 与 `configs/isa.json` 的 opcode/form 覆盖差异，防止语义目录和 timing 配置静默漂移。
 
 C++ 对应契约位于 `api/native/CanonicalVfInfo.h`，字段类型与 v1 JSON 契约一致，不包含 CCE parser 或 legacy JSON 推断。必填枚举默认值均为 `Unknown` 并由 validator 拒绝；递归 loop payload 以 `shared_ptr<const CanonicalLoop>` 表示，可共享但不能通过副本修改原 loop。
 
