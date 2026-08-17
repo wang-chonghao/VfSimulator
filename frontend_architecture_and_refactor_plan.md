@@ -891,6 +891,7 @@ Cycle 回归用于验证性能模型没有意外变化，但不能替代语义�
 12. CCE 已知指令统一通过 Catalog binder，严格检查参数数量、operand kind、predicate、配置值与 semantic form；Canonical Python/C++ validator 对已知 opcode 检查 Catalog class/form/signature，未知 opcode 保留显式语义输入和 ParamDB fallback。
 13. CCE block 使用按声明顺序生效的词法作用域符号表，覆盖 vector、predicate 和局部 scalar；scalar initializer 延迟到实际作为 offset 使用时再递归校验，普通 scalar operand 和无关声明不受 affine 规则影响。离开 block 后局部定义失效。Catalog `call_variants` 描述 POST_UPDATE 与关联参数 overload；offset MVP 拒绝变量乘变量，只接受 affine 整数表达式。VF scope 中未登记语句必须携带原始文本报错，不能静默忽略。
 14. 新增 Python `VfInfoBuilder`：显式注册 storage/value/node，支持嵌套 loop context、直接 loop body 和 Membar；重复 ID 早报错，`build()` 统一调用 canonical validator 并通过 `VfInfoValidationError` 暴露结构化 diagnostics。`InputAPI.new_vf_info_builder()` 是公开创建入口。
+15. 新增 canonical JSON 正式入口：`CanonicalJsonVfInfoAdapter` / `InputAPI.load_canonical_json()` 在对象解码前直接消费共享 JSON Schema，严格拒绝任意层级的未知字段、缺失字段和非法类型，再执行 semantic validator；不执行 legacy 推断。`jsonschema` 是仅在首次使用该入口时加载的可选依赖，不能扩散到 builder、CCE、legacy JSON、Tilesim 或 Core 的 import 路径。JSON 语法、schema、payload 解码和语义校验失败均通过结构化 diagnostics 暴露。旧 `JsonVfInfoAdapter` 继续只负责迁移期 trace，两个入口不自动互相回退。
 
 ### 19.2 当前迁移边界
 

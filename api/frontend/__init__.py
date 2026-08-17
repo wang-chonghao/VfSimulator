@@ -25,6 +25,7 @@ from api.frontend.schema import (
 from api.frontend.validator import validate_canonical_vf_info
 from api.frontend.serialization import canonical_vf_info_from_dict
 from api.frontend.builder import VfInfoBuilder, VfInfoValidationError
+from api.frontend.json_adapter import CanonicalJsonVfInfoAdapter
 from api.frontend.instruction_catalog import (
     ArgumentKind,
     CallVariant,
@@ -47,6 +48,7 @@ __all__ = [
     "AffineExpression",
     "AffineTerm",
     "CanonicalInstruction",
+    "CanonicalJsonVfInfoAdapter",
     "CanonicalLoop",
     "CanonicalMembar",
     "CanonicalOperand",

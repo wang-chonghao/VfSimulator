@@ -6,6 +6,7 @@ from typing import Dict, Mapping
 from api.cce_adapter import parse_cce_vf_info
 from api.frontend import (
     CanonicalVfInfo,
+    CanonicalJsonVfInfoAdapter,
     ScalarValue,
     ValidationResult,
     VfInfoBuilder,
@@ -27,6 +28,12 @@ class InputAPI:
     @staticmethod
     def load_json_trace(path: str | Path) -> VFInfo:
         return JsonVfInfoAdapter.load(path)
+
+    @staticmethod
+    def load_canonical_json(path: str | Path) -> CanonicalVfInfo:
+        """Load and validate a versioned CanonicalVfInfo JSON document."""
+
+        return CanonicalJsonVfInfoAdapter.load(path)
 
     @staticmethod
     def load_cce_file(

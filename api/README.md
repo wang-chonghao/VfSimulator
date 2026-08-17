@@ -20,6 +20,7 @@ Timing form 兼容只由 `core/param_compat.py` 与 `native/ParamCompat.cpp` 维
 现有 frontend 入口包括：
 
 - `InputAPI.load_json_trace(path)`：把旧 JSON trace 加载为 `VFInfo`。
+- `InputAPI.load_canonical_json(path)`：加载并校验 `schema_version=1` 的 canonical JSON；对象解码前直接用 `canonical_vf_info_v1.schema.json` 拒绝未知字段、缺失字段和非法类型，再执行 semantic validator。不执行 legacy 名称、dtype 或 storage 推断，失败时抛出携带结构化 diagnostics 的 `VfInfoValidationError`。
 - `InputAPI.load_cce_file(path, kernel_name=None, loop_params=None)`：解析 CCE/DSL 文件，并从一个 `__VEC_SCOPE__` kernel 提取 `VFInfo`。
 - `JsonVfInfoAdapter.from_payload(payload)`：适配内存中的 JSON-shaped payload。
 - `parse_cce_vf_info(path, kernel_name=None, loop_params=None)`：直接 CCE parser 入口。
@@ -46,6 +47,8 @@ vf_info = builder.build()
 ```
 
 builder 不推断 opcode、storage、dtype 或 producer，也不查询 timing。调用方必须提供 canonical 字段；重复 ID 会在注册时失败，跨节点和数据流错误由最终 validator 统一诊断。
+
+canonical JSON 文件入口使用可选依赖 `jsonschema` 直接执行共享 schema；需要该入口时安装 `python3 -m pip install jsonschema`。依赖在首次调用 `load_canonical_json()` 时延迟加载，缺少它不会影响 `VfInfoBuilder`、CCE、legacy JSON、Tilesim adapter 或核心预测入口。
 
 目标 canonical 数据模型定义在 `api/frontend/schema.py`：
 
