@@ -913,6 +913,7 @@ Canonical validator 使用节点级诊断位置作用域：校验 instruction、
 17. 统一 Python/C++ Core 的依赖契约：只自动推导寄存器 producer-consumer 依赖，删除基于 `(UB 名称, iter_stack)` 的隐式 store-to-load edge。UB 顺序只由显式 Membar 控制；canonical memory/control `DependencyRef` 在动态 Uop edge lowering 实现前明确拒绝。canonical cost-model 固定执行 `validate -> compatibility -> lower -> Core`。
 18. 建立 C++ canonical Core 入口：`runCanonicalVfInfo()` 直接消费 `CanonicalVfInfo`，由 `CanonicalProgramLowering` 展开 definition、loop-carried binding、动态 iteration identity 和 value lifetime，不经过旧 `VfInfo` lowering/normalization/canonicalization。共享普通 loop 与 loop-carried fixture 的 cycle 已与 Python 对齐。
 19. CCE 寄存器赋值使用零周期 `VFAlias`，由 `ValueVersioningPass` 快照赋值点 definition，不再维护永久字符串 alias；带 cast 的 UB pointer alias 和 alias chain 统一保留稳定 storage object。Catalog CONFIG 只有显式 `allow_integer_expression` 时接受整数编码。C++ canonical 与 Python 一致拒绝 non-innermost `unroll>1`。
+20. canonical `uarch` override 使用共享字段类型与目标范围 schema；`canonical_dynamic_instruction_limit` 明确为 Python-only。C++ validator 拒绝 Python-only 和未知字段，resolver 对未消费字段再次报错，并由 native 测试双向校验 schema 的 C++ 字段集合与 resolver 字段集合，避免新增配置只校验但不生效。
 
 ### 19.2 当前迁移边界
 

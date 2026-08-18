@@ -194,8 +194,19 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
       continue;
     }
     const auto expected = uarchOverrideFieldType(name);
-    if (!expected)
+    if (!expected) {
+      error("unsupported_uarch_field",
+            "C++ canonical frontend does not support unknown uarch field",
+            "uarch." + name, std::nullopt, {{"field", name}});
       continue;
+    }
+    if (!uarchOverrideFieldSupportsTarget(name, UarchOverrideTarget::Cpp)) {
+      error("unsupported_uarch_target",
+            "uarch field is not supported by the C++ target",
+            "uarch." + name, std::nullopt,
+            {{"field", name}, {"target", "cpp"}});
+      continue;
+    }
     const bool matches =
         (*expected == UarchOverrideFieldType::Integer &&
          std::holds_alternative<int64_t>(value)) ||

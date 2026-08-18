@@ -55,6 +55,7 @@ _LOCAL_UB_POINTER_DECL_RE = re.compile(
 _REGISTER_ALIAS_ASSIGN_RE = re.compile(
     r"^\s*(?P<dst>[A-Za-z_]\w*)\s*=\s*(?P<src>[A-Za-z_]\w*)\s*;\s*$"
 )
+_VOID_USE_RE = re.compile(r"^\s*\(\s*void\s*\)\s*[A-Za-z_]\w*\s*;\s*$")
 _CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\((.*)\)\s*;", re.DOTALL)
 
 
@@ -299,6 +300,8 @@ class _VFScopeParser:
         if _LOCAL_UB_POINTER_DECL_RE.fullmatch(stmt):
             self._record_local_ub_pointer_decl_statement(stmt)
             return None
+        if _VOID_USE_RE.fullmatch(stmt):
+            return None
         register_alias = _REGISTER_ALIAS_ASSIGN_RE.fullmatch(stmt)
         if register_alias:
             dst = register_alias.group("dst")
@@ -515,12 +518,13 @@ class _VFScopeParser:
                 raise ValueError(
                     f"{callee} argument {index} has invalid offset expression: {arg}"
                 )
+            integer_constants = self._resolved_integer_scalar_constants()
             if (
                 operand_spec.allowed_values
                 and arg.strip() not in operand_spec.allowed_values
                 and not (
                     operand_spec.allow_integer_expression
-                    and _eval_int_expr(arg.strip(), self.loop_params) is not None
+                    and _eval_int_expr(arg.strip(), integer_constants) is not None
                 )
             ):
                 raise ValueError(
@@ -530,7 +534,7 @@ class _VFScopeParser:
                 _is_config_token(arg)
                 or (
                     operand_spec.allow_integer_expression
-                    and _eval_int_expr(arg.strip(), self.loop_params) is not None
+                    and _eval_int_expr(arg.strip(), integer_constants) is not None
                 )
             ):
                 return None
@@ -538,6 +542,26 @@ class _VFScopeParser:
                 f"{callee} argument {index} must be a configuration token: {arg}"
             )
         return None
+
+    def _resolved_integer_scalar_constants(self) -> Dict[str, int]:
+        resolved = dict(self.loop_params)
+        pending = {
+            name: initializer
+            for name, initializer in self.local_scalar_initializers.items()
+            if _is_integer_scalar_dtype(self.local_scalar_dtypes.get(name, ""))
+        }
+        while pending:
+            progressed = False
+            for name, initializer in list(pending.items()):
+                value = _eval_int_expr(initializer, resolved)
+                if value is None:
+                    continue
+                resolved[name] = value
+                del pending[name]
+                progressed = True
+            if not progressed:
+                break
+        return resolved
 
     def _bind_generic_compute_call(
         self,
@@ -875,6 +899,7 @@ def _resolve_count_expr(expr: str, loop_params: Dict[str, int]) -> int:
 
 
 def _eval_int_expr(expr: str, names: Dict[str, int]) -> int | None:
+    expr = re.sub(r"(?<=\d)[uUlL]+\b", "", expr.strip())
     try:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError:

@@ -28,7 +28,10 @@ from api.frontend import (
     canonical_vf_info_from_dict,
     validate_canonical_vf_info,
 )
-from api.frontend.uarch_validation import validate_uarch_overrides
+from api.frontend.uarch_validation import (
+    UARCH_FIELD_SPECS,
+    validate_uarch_overrides,
+)
 
 
 class CanonicalVfInfoValidatorTest(unittest.TestCase):
@@ -471,6 +474,17 @@ class CanonicalVfInfoValidatorTest(unittest.TestCase):
                     {item.code for item in result.errors},
                     {"uarch_field_type_mismatch"},
                 )
+
+    def test_dynamic_instruction_limit_is_explicitly_python_only(self):
+        self.assertEqual(
+            UARCH_FIELD_SPECS["canonical_dynamic_instruction_limit"]["targets"],
+            ["python"],
+        )
+        self.assertTrue(
+            validate_uarch_overrides(
+                {"canonical_dynamic_instruction_limit": 100}
+            ).ok
+        )
 
     def test_membar_and_loop_parameter_validation(self):
         invalid = self._contract((

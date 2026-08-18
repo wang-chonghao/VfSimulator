@@ -14,6 +14,8 @@ namespace {
 struct GeneratedUarchField {
   const char *name;
   const char *type;
+  bool supportsPython;
+  bool supportsCpp;
 };
 
 #include "api/native/generated/UarchOverrideSchemaData.inc"
@@ -57,6 +59,30 @@ uarchOverrideFieldType(const std::string &name) {
 
 bool isDeprecatedUarchOverrideField(const std::string &name) {
   return deprecatedFields().count(name) != 0;
+}
+
+bool uarchOverrideFieldSupportsTarget(const std::string &name,
+                                      UarchOverrideTarget target) {
+  for (const auto &field : kGeneratedUarchFields) {
+    if (name != field.name)
+      continue;
+    return target == UarchOverrideTarget::Python ? field.supportsPython
+                                                  : field.supportsCpp;
+  }
+  return false;
+}
+
+std::set<std::string>
+uarchOverrideFieldsForTarget(UarchOverrideTarget target) {
+  std::set<std::string> result;
+  for (const auto &field : kGeneratedUarchFields) {
+    const bool supported = target == UarchOverrideTarget::Python
+                               ? field.supportsPython
+                               : field.supportsCpp;
+    if (supported)
+      result.emplace(field.name);
+  }
+  return result;
 }
 
 const char *uarchOverrideFieldTypeName(UarchOverrideFieldType type) {

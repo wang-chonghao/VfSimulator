@@ -3,7 +3,9 @@
 
 #include "api/native/CanonicalVfInfo.h"
 #include "api/native/InstructionCatalog.h"
+#include "api/native/UarchOverrideSchema.h"
 #include "api/native/VfInfo.h"
+#include "native/CanonicalProgramLowering.h"
 #include "native/ParamDB.h"
 #include "native/Json.h"
 #include "native/CanonicalVfInfoFixtureDecoder.h"
@@ -68,9 +70,12 @@ int main() {
           CatalogInstructionClass::Store ||
       !instructionCatalog.lookup("VADD")->forms.count("b16") ||
       instructionCatalog.lookup("VADD")->signature != "binary" ||
-      instructionCatalog.lookup("VADD")->operands.size() != 4 ||
+      instructionCatalog.lookup("VADD")->operands.size() != 5 ||
       instructionCatalog.lookup("VADD")->operands[2].kind !=
           CatalogArgumentKind::Register ||
+      !instructionCatalog.lookup("VADD")->operands[4].optional ||
+      instructionCatalog.lookup("VADD")->operands[4].allowedValues.count(
+          "MODE_ZEROING") != 1 ||
       instructionCatalog.lookup("VLDS")->operands[3].allowedValues.count(
           "NORM") != 1 ||
       instructionCatalog.lookup("VLDS")->callVariants.size() != 2 ||
@@ -214,6 +219,22 @@ int main() {
       throw std::runtime_error(
           "native validator accepted wrong uarch field type: " + name);
   }
+  CanonicalVfInfo pythonOnlyUarchContract = canonicalContract;
+  pythonOnlyUarchContract.uarch["canonical_dynamic_instruction_limit"] =
+      int64_t{100};
+  if (!hasDiagnostic(validateCanonicalVfInfo(pythonOnlyUarchContract),
+                     "unsupported_uarch_target"))
+    throw std::runtime_error(
+        "native validator accepted Python-only uarch override");
+  CanonicalVfInfo unknownUarchContract = canonicalContract;
+  unknownUarchContract.uarch["unknown_uarch_field"] = int64_t{1};
+  if (!hasDiagnostic(validateCanonicalVfInfo(unknownUarchContract),
+                     "unsupported_uarch_field"))
+    throw std::runtime_error("native validator accepted unknown uarch override");
+  if (cppResolvedUarchOverrideFields() !=
+      uarchOverrideFieldsForTarget(UarchOverrideTarget::Cpp))
+    throw std::runtime_error(
+        "C++ uarch resolver fields differ from shared schema target fields");
 
   CanonicalVfInfo nonInnermostUnrollContract;
   CanonicalLoop outerLoop;

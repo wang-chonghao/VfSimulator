@@ -14,7 +14,10 @@ from api.frontend.diagnostics import (
 
 _SCHEMA_PATH = Path(__file__).resolve().parents[2] / "configs/uarch_override_schema.json"
 _SCHEMA = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
-UARCH_FIELD_TYPES = dict(_SCHEMA["fields"])
+UARCH_FIELD_SPECS = dict(_SCHEMA["fields"])
+UARCH_FIELD_TYPES = {
+    name: spec["type"] for name, spec in UARCH_FIELD_SPECS.items()
+}
 DEPRECATED_UARCH_FIELDS = frozenset(_SCHEMA.get("deprecated_fields", ()))
 _INT64_MIN = -(2**63)
 _INT64_MAX = 2**63 - 1
@@ -105,6 +108,7 @@ def validate_uarch_overrides(uarch: Any) -> ValidationResult:
 
 __all__ = [
     "DEPRECATED_UARCH_FIELDS",
+    "UARCH_FIELD_SPECS",
     "UARCH_FIELD_TYPES",
     "validate_uarch_overrides",
 ]

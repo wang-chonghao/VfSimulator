@@ -422,6 +422,72 @@ private:
   }
 };
 
+const std::unordered_map<std::string, int64_t UarchConfig::*> &
+integerUarchOverrideFields() {
+  static const std::unordered_map<std::string, int64_t UarchConfig::*> fields{
+      {"issue_ports", &UarchConfig::issuePorts},
+      {"load_ports", &UarchConfig::loadPorts},
+      {"store_ports", &UarchConfig::storePorts},
+      {"IDU_window_width", &UarchConfig::iduWindowWidth},
+      {"IDU_issue_width", &UarchConfig::iduIssueWidth},
+      {"LDQ_width", &UarchConfig::ldqWidth},
+      {"vreg_num", &UarchConfig::vregNum},
+      {"shq_depth", &UarchConfig::shqDepth},
+      {"exq_depth", &UarchConfig::exqDepth},
+      {"shq_release_delay", &UarchConfig::shqReleaseDelay},
+      {"idu_visible_preg_delay", &UarchConfig::iduVisiblePregDelay},
+      {"idu_visible_shq_delay", &UarchConfig::iduVisibleShqDelay},
+      {"idu_to_ooo_delay", &UarchConfig::iduToOooDelay},
+      {"vloop_to_dispatch_delay", &UarchConfig::vloopToDispatchDelay},
+      {"idu_dispatch_start_advance", &UarchConfig::iduDispatchStartAdvance},
+      {"initial_top_block_vloop_start_cycle",
+       &UarchConfig::initialTopBlockVloopStartCycle},
+      {"nested_vloop_initial_start_gap",
+       &UarchConfig::nestedVloopInitialStartGap},
+      {"loop1_min_feedback_gap", &UarchConfig::loop1MinFeedbackGap},
+      {"innermost_iter_dispatch_stride",
+       &UarchConfig::innermostIterDispatchStride},
+      {"consumer_release_start_offset",
+       &UarchConfig::consumerReleaseStartOffset},
+      {"ooo_to_shq_delay", &UarchConfig::oooToShqDelay},
+      {"ooo_to_lsq_delay", &UarchConfig::oooToLsqDelay},
+      {"exq_recv_delay", &UarchConfig::exqRecvDelay},
+      {"shq_to_exq_port_per_cycle", &UarchConfig::shqToExqPortPerCycle},
+      {"exu0_reserve_lookahead", &UarchConfig::exu0ReserveLookahead},
+      {"exu0_reserve_min_count", &UarchConfig::exu0ReserveMinCount},
+      {"compute_inflight_cap", &UarchConfig::computeInflightCap},
+      {"exq_issue_inflight_cap_per_port",
+       &UarchConfig::exqIssueInflightCapPerPort},
+  };
+  return fields;
+}
+
+const std::unordered_map<std::string, bool UarchConfig::*> &
+booleanUarchOverrideFields() {
+  static const std::unordered_map<std::string, bool UarchConfig::*> fields{
+      {"three_ports_mode", &UarchConfig::threePortsMode},
+      {"enable_isu_queue_model", &UarchConfig::enableIsuQueueModel},
+      {"admit_blocked_to_exq", &UarchConfig::admitBlockedToExq},
+      {"enable_shq_credit_model", &UarchConfig::enableShqCreditModel},
+      {"enable_credit_visibility_delay",
+       &UarchConfig::enableCreditVisibilityDelay},
+      {"global_shq_preg_gate", &UarchConfig::globalShqPregGate},
+      {"use_explicit_idu_credit_bank",
+       &UarchConfig::useExplicitIduCreditBank},
+      {"exq_capacity_counts_inflight",
+       &UarchConfig::exqCapacityCountsInflight},
+      {"enforce_same_cycle_src_hazard",
+       &UarchConfig::enforceSameCycleSrcHazard},
+      {"enable_cross_fu_ii", &UarchConfig::enableCrossFuIi},
+  };
+  return fields;
+}
+
+const std::set<std::string> &stringUarchOverrideFields() {
+  static const std::set<std::string> fields{"shq_exq_dispatch_policy"};
+  return fields;
+}
+
 } // namespace
 
 CanonicalRuntimeProgram lowerCanonicalProgram(const CanonicalVfInfo &vfInfo,
@@ -432,64 +498,16 @@ CanonicalRuntimeProgram lowerCanonicalProgram(const CanonicalVfInfo &vfInfo,
 UarchConfig resolveCanonicalUarch(const CanonicalVfInfo &vfInfo,
                                   const UarchConfig &defaults) {
   UarchConfig resolved = defaults;
-  static const std::unordered_map<std::string, int64_t UarchConfig::*>
-      integerFields{
-          {"issue_ports", &UarchConfig::issuePorts},
-          {"load_ports", &UarchConfig::loadPorts},
-          {"store_ports", &UarchConfig::storePorts},
-          {"IDU_window_width", &UarchConfig::iduWindowWidth},
-          {"IDU_issue_width", &UarchConfig::iduIssueWidth},
-          {"LDQ_width", &UarchConfig::ldqWidth},
-          {"vreg_num", &UarchConfig::vregNum},
-          {"shq_depth", &UarchConfig::shqDepth},
-          {"exq_depth", &UarchConfig::exqDepth},
-          {"shq_release_delay", &UarchConfig::shqReleaseDelay},
-          {"idu_visible_preg_delay", &UarchConfig::iduVisiblePregDelay},
-          {"idu_visible_shq_delay", &UarchConfig::iduVisibleShqDelay},
-          {"idu_to_ooo_delay", &UarchConfig::iduToOooDelay},
-          {"vloop_to_dispatch_delay", &UarchConfig::vloopToDispatchDelay},
-          {"idu_dispatch_start_advance", &UarchConfig::iduDispatchStartAdvance},
-          {"initial_top_block_vloop_start_cycle",
-           &UarchConfig::initialTopBlockVloopStartCycle},
-          {"nested_vloop_initial_start_gap",
-           &UarchConfig::nestedVloopInitialStartGap},
-          {"loop1_min_feedback_gap", &UarchConfig::loop1MinFeedbackGap},
-          {"innermost_iter_dispatch_stride",
-           &UarchConfig::innermostIterDispatchStride},
-          {"consumer_release_start_offset",
-           &UarchConfig::consumerReleaseStartOffset},
-          {"ooo_to_shq_delay", &UarchConfig::oooToShqDelay},
-          {"ooo_to_lsq_delay", &UarchConfig::oooToLsqDelay},
-          {"exq_recv_delay", &UarchConfig::exqRecvDelay},
-          {"shq_to_exq_port_per_cycle", &UarchConfig::shqToExqPortPerCycle},
-          {"exu0_reserve_lookahead", &UarchConfig::exu0ReserveLookahead},
-          {"exu0_reserve_min_count", &UarchConfig::exu0ReserveMinCount},
-          {"compute_inflight_cap", &UarchConfig::computeInflightCap},
-          {"exq_issue_inflight_cap_per_port",
-           &UarchConfig::exqIssueInflightCapPerPort},
-      };
-  static const std::unordered_map<std::string, bool UarchConfig::*>
-      booleanFields{
-          {"three_ports_mode", &UarchConfig::threePortsMode},
-          {"enable_isu_queue_model", &UarchConfig::enableIsuQueueModel},
-          {"admit_blocked_to_exq", &UarchConfig::admitBlockedToExq},
-          {"enable_shq_credit_model", &UarchConfig::enableShqCreditModel},
-          {"enable_credit_visibility_delay",
-           &UarchConfig::enableCreditVisibilityDelay},
-          {"global_shq_preg_gate", &UarchConfig::globalShqPregGate},
-          {"use_explicit_idu_credit_bank",
-           &UarchConfig::useExplicitIduCreditBank},
-          {"exq_capacity_counts_inflight",
-           &UarchConfig::exqCapacityCountsInflight},
-          {"enforce_same_cycle_src_hazard",
-           &UarchConfig::enforceSameCycleSrcHazard},
-          {"enable_cross_fu_ii", &UarchConfig::enableCrossFuIi},
-      };
+  const auto &integerFields = integerUarchOverrideFields();
+  const auto &booleanFields = booleanUarchOverrideFields();
 
   for (const auto &[name, value] : vfInfo.uarch) {
     if (isDeprecatedUarchOverrideField(name))
       throw std::runtime_error(
           "Canonical uarch override " + name + " is deprecated");
+    if (!uarchOverrideFieldSupportsTarget(name, UarchOverrideTarget::Cpp))
+      throw std::runtime_error("Canonical uarch override " + name +
+                               " is not supported by the C++ target");
     if (const auto found = integerFields.find(name); found != integerFields.end()) {
       resolved.*(found->second) = integerOverride(value, name);
       continue;
@@ -498,10 +516,21 @@ UarchConfig resolveCanonicalUarch(const CanonicalVfInfo &vfInfo,
       resolved.*(found->second) = booleanOverride(value, name);
       continue;
     }
-    if (name == "shq_exq_dispatch_policy")
+    if (stringUarchOverrideFields().count(name))
       resolved.shqExqDispatchPolicy = stringOverride(value, name);
+    else
+      throw std::runtime_error("C++ uarch schema/resolver mismatch for " + name);
   }
   return resolved;
+}
+
+std::set<std::string> cppResolvedUarchOverrideFields() {
+  std::set<std::string> result = stringUarchOverrideFields();
+  for (const auto &[name, unused] : integerUarchOverrideFields())
+    result.emplace(name);
+  for (const auto &[name, unused] : booleanUarchOverrideFields())
+    result.emplace(name);
+  return result;
 }
 
 } // namespace vfsim

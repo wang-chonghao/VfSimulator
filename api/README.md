@@ -74,7 +74,7 @@ C++ 对应契约位于 `api/native/CanonicalVfInfo.h`，字段类型与 v1 JSON 
 
 C++ canonical 预测入口位于 `native/SimulatorRunner.h`。`CanonicalProgramLowering` 使用 definition ID、每层动态 iteration path 和 loop-carried binding 生成动态指令，贯穿 `staticInstructionId`、`streamSeq` 及 value last-use/keep 标记，并应用 canonical 中已知的 `UarchConfig` override。该入口不调用旧 `lowerVfInfoValueIds()`、`normalizeProgramVregLiveRanges()` 或 `canonicalizeSingleSuperIterationLoops()`；旧 `runVfInfo()` 只为主程序、legacy JSON 和对比回归保留。含 Membar 的 innermost unroll 会保守回退为 1，并记录 `membar_unroll_disabled`。
 
-canonical `uarch` override 的字段类型由 `configs/uarch_override_schema.json` 统一定义。Python 直接读取该 schema，C++ 只读表由 `tools/generate_uarch_override_schema_cpp.py` 生成；已登记的 integer、boolean、string 字段不执行隐式类型转换，未知扩展字段仍需满足通用 JSON scalar 约束。
+canonical `uarch` override 的字段类型和适用目标由 `configs/uarch_override_schema.json` 统一定义。Python 直接读取该 schema，C++ 只读表由 `tools/generate_uarch_override_schema_cpp.py` 生成；已登记的 integer、boolean、string 字段不执行隐式类型转换。`canonical_dynamic_instruction_limit` 是 Python IFU 迁移期保护，因此明确标记为 Python-only；C++ 对 Python-only 或未知字段返回结构化错误，不会校验通过后静默忽略。native 测试双向比较 schema 的 C++ 字段集合与实际 resolver 字段集合。
 
 C++ opcode Catalog 位于 `api/native/InstructionCatalog.*`，只读数据由 `tools/generate_instruction_catalog_cpp.py` 从共享 JSON 生成到 `api/native/generated/InstructionCatalogData.inc`。测试会校验生成结果未过期；`api/native/VfInfo.cpp` 不再手写 opcode alias 或 `VCVT` specialization。
 

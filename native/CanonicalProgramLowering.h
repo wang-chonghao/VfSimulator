@@ -9,6 +9,7 @@
 #include "native/IFU.h"
 
 #include <unordered_map>
+#include <set>
 #include <vector>
 
 namespace vfsim {
@@ -26,6 +27,7 @@ CanonicalRuntimeProgram lowerCanonicalProgram(const CanonicalVfInfo &vfInfo,
                                                const ParamDB *db = nullptr);
 UarchConfig resolveCanonicalUarch(const CanonicalVfInfo &vfInfo,
                                   const UarchConfig &defaults);
+std::set<std::string> cppResolvedUarchOverrideFields();
 
 } // namespace vfsim
 

@@ -281,11 +281,12 @@ class VfInfoApiTest(unittest.TestCase):
     def test_cce_adapter_parses_vpack_and_vsstb_cast_operands(self):
         source = """
         void softmax_vf(__ubuf__ half *nz_buffer_Ptr) {
+          constexpr uint64_t kVsstbConfig = ((128 + 1) << 16) | 1u;
           __VEC_SCOPE__ {
             vector_f16 vreg_x_exp_even_f16;
             vector_bool preg_low_half = pset_b16(PAT_ALL);
             vpack((vector_u16 &)vreg_x_exp_even_f16, (vector_u32 &)vreg_x_exp_even_f16, LOWER);
-            vsstb(vreg_x_exp_even_f16, ((__ubuf__ half *&)nz_buffer_Ptr), VSSTB_CONFIG, preg_low_half, POST_UPDATE);
+            vsstb(vreg_x_exp_even_f16, ((__ubuf__ half *&)nz_buffer_Ptr), kVsstbConfig, preg_low_half, POST_UPDATE);
           }
         }
         """
@@ -346,6 +347,26 @@ class VfInfoApiTest(unittest.TestCase):
 
         self.assertEqual(vf_info.context[0].name, "VMULSCVT")
         self.assertEqual(vf_info.context[0].form, "f32_to_f16")
+
+    def test_cce_adapter_accepts_binary_mode_operand(self):
+        source = """
+        void binary_mode_vf() {
+          __VEC_SCOPE__ {
+            vector_f32 dst, lhs, rhs;
+            vector_bool pred = pset_b32(PAT_ALL);
+            (void)lhs;
+            vmax(dst, lhs, rhs, pred, MODE_ZEROING);
+          }
+        }
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "binary_mode.dsl"
+            path.write_text(source, encoding="utf-8")
+            vf_info = InputAPI.load_cce_file(path, kernel_name="binary_mode_vf")
+
+        self.assertEqual(vf_info.context[0].name, "VMAX")
+        self.assertEqual(vf_info.context[0].src, ["lhs", "rhs"])
+        self.assertEqual(vf_info.context[0].dst, ["dst"])
 
     def test_cce_adapter_registers_first_vector_decl_inside_loop(self):
         source = """

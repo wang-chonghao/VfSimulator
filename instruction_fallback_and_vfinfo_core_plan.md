@@ -195,7 +195,9 @@ softmax `macro_instr_ir_layout` 上，CA model 参考值为 u1=713、u4=594。
 - loop 出口别名需要有 kill 语义：如果 loop 后某个普通 sibling 重新定义了同名逻辑
   vreg，例如 `VADD ... -> V5`，则后续 `VSTS V5` 应读取新定义的 `V5`，不能继续使用
   旧的 loop exit alias。
-- 修复 loop-carried alias 后，结果更新为：
+- 当时在 loop-carried 修复尚未完整的中间工作区记录了下表。该结果后来被误写成
+  可复现基线；原始日志位于 `/tmp/vfsim_min1_cap8/min1_cap7`，但其依赖图仍然错误，
+  因此只能作为历史实验记录，不能用于精度校准：
 
 | 策略 | u1 | u4 |
 |---|---:|---:|
@@ -205,11 +207,17 @@ softmax `macro_instr_ir_layout` 上，CA model 参考值为 u1=713、u4=594。
 | greedy, cap=7 | 626 | 645 |
 | `fu_round_robin_exu0_reserve`, `lookahead=8`, `min_count=2`, cap=8 | 628 | 592 |
 
-- u4 对 `exq_issue_inflight_cap_per_port` 极敏感：cap 从 7 改到 8 会让 u4 从 651
-  降到 592，接近 CA model；但 u1 会从 685 降到 628，明显过快。
-- 因此后续不应简单把 cap 全局改为 8。更可能需要把当前“每端口总 inflight cap”
-  拆成更接近硬件的维度，例如按 FU/pipe 类型统计，或只对真正占用同一 completion
-  资源的指令计数。
+- 旧日志中，max reduction 的 `VMAX maxN, maxN, vrow -> maxN` 被错误归一化为
+  `VMAX ..., vrow -> vrow`，四个独立 accumulator 被合并；u1 sum loop 的
+  `VADD x, sum -> sum` 也被改为 `VADD V6, V5 -> V6`，随后下一轮 `VLDS -> V6`
+  覆盖了前一轮 sum，loop-carried 依赖断开。因此旧 `min1/cap7` 的 `715/664` 不是
+  合法程序依赖图上的预测。
+- 完成“loop-carried 目的版本保留入口槽位，且该槽位不能被临时值复用”的修复后，
+  当前提交与前端重构前 checkpoint `a04f8b1` 对同一 CCE 均稳定复现
+  `u1=705、u2=665、u4=670`。当前日志中 max0..max3 分别保留在 `V0..V3`，u1 sum
+  保留在 `V5` 并形成逐迭代回边。
+- 因此基于旧错误依赖图得到的 cap 敏感性数值不能继续作为参数选择依据。是否调整
+  `exq_issue_inflight_cap_per_port`，必须在当前正确依赖图上重新做独立实验。
 
 ## 当前问题
 
