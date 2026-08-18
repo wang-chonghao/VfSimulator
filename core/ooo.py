@@ -42,6 +42,8 @@ class Uop:
     stream_seq: int = -1
     static_instruction_id: Optional[str] = None
     iteration_path: List[Dict[str, Any]] = field(default_factory=list)
+    src_value_instances: List[Dict[str, Any]] = field(default_factory=list)
+    dst_value_instances: List[Dict[str, Any]] = field(default_factory=list)
     exu_port: Optional[int] = None
     shq_ready_cycle: int = 0
     lsq_ready_cycle: int = 0
@@ -68,7 +70,7 @@ class OoOCore:
 
         # rename
         self.freelist: Deque[str] = deque([f"p{i}" for i in range(self.preg_num)])
-        self.RAT: Dict[str, str] = {}
+        self.RAT: Dict[Any, str] = {}
         self.next_dynamic_preg_id: int = self.preg_num
 
         # queues
@@ -106,7 +108,6 @@ class OoOCore:
         self.debug = bool(uarch.get("debug", False))
 
         self.preg_pending = set()
-        self.load_done_latency = int(uarch.get("load_done_latency", 9))
         self.ooo_to_shq_delay = int(uarch.get("ooo_to_shq_delay", 1))
         self.ooo_to_lsq_delay = int(uarch.get("ooo_to_lsq_delay", 1))
         self.enforce_same_cycle_src_hazard = bool(uarch.get("enforce_same_cycle_src_hazard", True))
@@ -141,6 +142,8 @@ class OoOCore:
             "static_instruction_id": u.static_instruction_id,
             "iteration_path": u.iteration_path,
             "stream_seq": u.stream_seq,
+            "src_value_instances": u.src_value_instances,
+            "dst_value_instances": u.dst_value_instances,
             "op": u.op,
             "form": u.form,
             "state": u.state,
@@ -165,6 +168,8 @@ class OoOCore:
             "static_instruction_id": u.static_instruction_id,
             "iteration_path": u.iteration_path,
             "stream_seq": u.stream_seq,
+            "src_value_instances": u.src_value_instances,
+            "dst_value_instances": u.dst_value_instances,
             "op": u.op,
             "form": u.form,
             "dst": u.dst,
@@ -178,6 +183,8 @@ class OoOCore:
             "static_instruction_id": u.static_instruction_id,
             "iteration_path": u.iteration_path,
             "stream_seq": u.stream_seq,
+            "src_value_instances": u.src_value_instances,
+            "dst_value_instances": u.dst_value_instances,
             "op": u.op,
             "form": u.form,
             "dst": u.dst,
@@ -253,9 +260,6 @@ class OoOCore:
                 cur_form=cur_form,
             )
         )
-
-    def _data_store_cost(self, producer_op: str, producer_form: Optional[str] = None) -> int:
-        return int(self._inst_params(producer_op, form=producer_form).get("data_store_cost", 1))
 
     def _get_fu_type(self, op: str, form: Optional[str] = None) -> str:
         try:

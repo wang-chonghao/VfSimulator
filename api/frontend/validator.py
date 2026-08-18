@@ -25,6 +25,7 @@ from api.frontend.schema import (
     SourceLocation,
     StorageKind,
 )
+from api.frontend.uarch_validation import validate_uarch_overrides
 
 
 _SUPPORTED_MEMBAR_TYPES = frozenset({"VST_VLD", "VLD_VST"})
@@ -47,19 +48,32 @@ class _NodeInfo:
     scope: tuple[str, ...]
     order: int
     kind: str
+    location: SourceLocation | None
 
 
 def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
     diagnostics: list[Diagnostic] = []
     registered_node_ids: set[str] = set()
-    dependency_refs: list[tuple[DependencyRef, str, str]] = []
+    dependency_refs: list[
+        tuple[DependencyRef, str, str, SourceLocation | None]
+    ] = []
     node_info: dict[str, _NodeInfo] = {}
     produced_definitions: dict[str, list[str]] = {}
     next_order = 0
+    current_node_location: SourceLocation | None = None
 
     def error(code: str, message: str, *, location=None, **context: Any) -> None:
+        effective_location = (
+            location if location is not None else current_node_location
+        )
         diagnostics.append(
-            Diagnostic(code, DiagnosticSeverity.ERROR, message, location, context)
+            Diagnostic(
+                code,
+                DiagnosticSeverity.ERROR,
+                message,
+                effective_location,
+                context,
+            )
         )
 
     def validate_int64(
@@ -129,7 +143,7 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
             else:
                 next_order += 1
                 continue
-            info = _NodeInfo(scope, next_order, kind)
+            info = _NodeInfo(scope, next_order, kind, node.source_location)
             next_order += 1
             node_info.setdefault(node_id, info)
             if isinstance(node, CanonicalLoop):
@@ -155,7 +169,7 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
             f"params.{name}",
             code="invalid_parameter_value",
         )
-    validate_scalar_map(vf_info.uarch, "uarch")
+    diagnostics.extend(validate_uarch_overrides(vf_info.uarch).diagnostics)
     validate_scalar_map(vf_info.source, "source")
 
     for object_id, storage_object in vf_info.storage_objects.items():
@@ -283,7 +297,14 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
                         "Dependency producer must precede the consumer in a visible scope",
                         path=dependency_path,
                     )
-            dependency_refs.append((dependency, consumer_id, dependency_path))
+            dependency_refs.append(
+                (
+                    dependency,
+                    consumer_id,
+                    dependency_path,
+                    current_node_location,
+                )
+            )
 
     def validate_operand(
         operand: CanonicalOperand,
@@ -387,9 +408,29 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
             return False
         return True
 
+    def definition_visible_before_loop(value, loop_info: _NodeInfo | None) -> bool:
+        if value.producer_node_id is None:
+            return True
+        producer = node_info.get(value.producer_node_id)
+        if producer is None or loop_info is None:
+            return False
+        return bool(
+            producer.order < loop_info.order
+            and loop_info.scope[: len(producer.scope)] == producer.scope
+            and not (
+                producer.kind == "loop"
+                and len(loop_info.scope) > len(producer.scope)
+                and loop_info.scope[len(producer.scope)]
+                == value.producer_node_id
+            )
+        )
+
     def validate_nodes(nodes, path: str, induction_variables: set[str]) -> None:
+        nonlocal current_node_location
         for index, node in enumerate(nodes):
             node_path = f"{path}[{index}]"
+            previous_location = current_node_location
+            current_node_location = getattr(node, "source_location", None)
             if isinstance(node, CanonicalInstruction):
                 register_node_id(node.instruction_id, node_path, node.source_location)
                 validate_location(node.source_location, f"{node_path}.source_location")
@@ -588,6 +629,7 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
                         actual_outputs, expected_outputs, "outputs"
                     )
                 validate_dependencies(node.dependencies, node.instruction_id, f"{node_path}.dependencies")
+                current_node_location = previous_location
                 continue
 
             if isinstance(node, CanonicalLoop):
@@ -622,8 +664,15 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
                         error("unknown_loop_carried_value", "Unknown loop-carried definition", path=carried_path)
                         continue
                     assert entry is not None and back_edge is not None and exit_value is not None
-                    if any(value.logical_id != carried.logical_id for value in definitions):
-                        error("loop_carried_logical_id_mismatch", "Logical IDs must match", path=carried_path)
+                    if (
+                        entry.logical_id != carried.logical_id
+                        or exit_value.logical_id != carried.logical_id
+                    ):
+                        error(
+                            "loop_carried_logical_id_mismatch",
+                            "Loop entry and exit logical IDs must match the carried state",
+                            path=carried_path,
+                        )
                     metadata = {
                         (value.storage, value.dtype, value.shape, value.storage_object_id)
                         for value in definitions
@@ -631,32 +680,27 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
                     if len(metadata) != 1:
                         error("loop_carried_type_mismatch", "Loop-carried value metadata must match", path=carried_path)
                     if entry.producer_node_id is not None:
-                        producer = node_info.get(entry.producer_node_id)
-                        entry_visible = bool(
-                            producer
-                            and loop_info
-                            and producer.order < loop_info.order
-                            and loop_info.scope[: len(producer.scope)] == producer.scope
-                            and not (
-                                producer.kind == "loop"
-                                and len(loop_info.scope) > len(producer.scope)
-                                and loop_info.scope[len(producer.scope)]
-                                == entry.producer_node_id
-                            )
-                        )
-                        if not entry_visible:
+                        if not definition_visible_before_loop(entry, loop_info):
                             error("loop_entry_not_visible", "Loop entry is not visible before loop", path=carried_path)
                     if carried.back_edge_value_id != carried.entry_value_id:
                         producer = node_info.get(back_edge.producer_node_id or "")
-                        in_body = bool(producer and producer.scope == loop_scope)
-                        if not in_body:
-                            error("loop_back_edge_out_of_scope", "Back-edge must be produced in loop body", path=carried_path)
+                        visible_at_loop_tail = bool(
+                            (producer and producer.scope == loop_scope)
+                            or definition_visible_before_loop(back_edge, loop_info)
+                        )
+                        if not visible_at_loop_tail:
+                            error(
+                                "loop_back_edge_out_of_scope",
+                                "Back-edge definition must be visible at loop tail",
+                                path=carried_path,
+                            )
                     if exit_value.producer_node_id != node.loop_id:
                         error("loop_exit_producer_mismatch", "Loop exit must be produced by loop node", path=carried_path)
                     produced_definitions.setdefault(node.loop_id, []).append(
                         carried.exit_value_id
                     )
                 validate_nodes(node.body, f"{node_path}.body", induction_variables | {variable_id})
+                current_node_location = previous_location
                 continue
 
             if isinstance(node, CanonicalMembar):
@@ -665,9 +709,11 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
                 if node.barrier not in _SUPPORTED_MEMBAR_TYPES:
                     error("unsupported_membar_type", "Unsupported Membar type", path=node_path)
                 validate_dependencies(node.dependencies, node.instruction_id, f"{node_path}.dependencies")
+                current_node_location = previous_location
                 continue
 
             error("unsupported_canonical_node", "Unsupported canonical node", path=node_path)
+            current_node_location = previous_location
 
     validate_nodes(vf_info.context, "context", set())
 
@@ -679,6 +725,7 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
             error(
                 "unknown_value_producer",
                 "Value references unknown producer node",
+                location=value.source_location,
                 definition_id=definition_id,
                 producer_node_id=value.producer_node_id,
             )
@@ -687,6 +734,7 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
             error(
                 "invalid_value_producer_kind",
                 "Membar cannot produce a value definition",
+                location=producer.location,
                 definition_id=definition_id,
                 producer_node_id=value.producer_node_id,
             )
@@ -698,6 +746,7 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
             error(
                 "producer_definition_not_emitted",
                 "Producer node does not emit the claimed value definition",
+                location=producer.location,
                 definition_id=definition_id,
                 producer_node_id=value.producer_node_id,
             )
@@ -705,14 +754,16 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
             error(
                 "definition_emitted_multiple_times",
                 "Producer node emits the same definition more than once",
+                location=producer.location,
                 definition_id=definition_id,
                 producer_node_id=value.producer_node_id,
             )
-    for dependency, consumer_id, path in dependency_refs:
+    for dependency, consumer_id, path, consumer_location in dependency_refs:
         if dependency.producer_node_id not in node_info:
             error(
                 "unknown_dependency_producer",
                 "Dependency references unknown producer node",
+                location=consumer_location,
                 path=path,
                 consumer_id=consumer_id,
                 producer_node_id=dependency.producer_node_id,

@@ -151,9 +151,24 @@ class CoreLoweringPass:
                         )
                     continue
                 unroll = resolve(node.unroll)
-                if unroll != 1:
+                count = resolve(node.count)
+                has_nested_loop = any(
+                    isinstance(child, CanonicalLoop) for child in node.body
+                )
+                if unroll is not None and unroll > 1 and has_nested_loop:
                     issues.append(
-                        f"loop {node.loop_id} has unsupported unroll={node.unroll}"
+                        f"non-innermost loop {node.loop_id} cannot use "
+                        f"unroll={node.unroll}"
+                    )
+                if (
+                    unroll is not None
+                    and unroll > 1
+                    and count is not None
+                    and count % unroll != 0
+                ):
+                    issues.append(
+                        f"loop {node.loop_id} count={node.count} is not divisible "
+                        f"by unroll={node.unroll}"
                     )
                 visit(node.body)
 

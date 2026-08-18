@@ -281,14 +281,9 @@ STORE done_cycle = store_start + STORE 指令自身 isa.json latency
 - 不再读取 producer 的 `data_store_cost` 来决定 store 执行时长。
 - 不再读取 consumer 或其它指令的 `data_load_cost` 来决定 load 执行时长。
 
-当前代码还不符合这个规则：
-
-- load 当前使用 `uarch.load_done_latency`。
-- store 当前使用 producer op/form 的 `data_store_cost`。
-
-这会导致配置含义冲突，也会让 `VLDS -> VSTS` 这类路径因为
-`VLDS.data_store_cost = 0` 出现不合理 store duration。这个问题必须在默认指令
-fallback 前修掉。
+Python 与 C++ 主线均已采用这一规则。旧的独立 load duration 配置和 producer
+`data_store_cost` store duration 路径已经移除，`VLDS -> VSTS` 不再受生产者历史
+字段影响。
 
 ### startup/drain 字段和 forwarding 表语义重复
 
@@ -390,7 +385,7 @@ VFInfo
 
 - `OoO` load 启动后，`done_cycle = start_cycle + isa_latency(load_op, form)`。
 - `OoO` store 启动后，`done_cycle = start_cycle + isa_latency(store_op, form)`。
-- 删除或停用主线中的 `uarch.load_done_latency` 活跃路径。
+- 独立的 uarch load duration 配置已经删除。
 - 删除或停用主线中的 producer `data_store_cost` store duration 路径。
 - `data_load_cost` / `data_store_cost` 不再作为主线执行时长来源。
 - `pipeline_startup_cost` / `pipeline_drain_cost` 不再作为主线 ready timing 来源。
@@ -399,7 +394,7 @@ VFInfo
 
 - `core/ooo_mainline.py` 的 load issue 路径。
 - `core/ooo_mainline.py` 的 store issue 路径。
-- `core/ooo.py` 中 `_data_store_cost()` 相关调用。
+- `core/ooo.py` 中历史 `_data_store_cost()` 调用已停用；无引用 helper 已删除。
 - `configs/isa.json` 字段说明和后续清理计划。
 
 需要新增或更新测试：
@@ -819,7 +814,7 @@ if vreg_capacity_warnings or instruction_fallback_warnings:
 - 未知计算指令 -> `COMPUTE` 告警。
 - 明显 LSU op 缺配置 -> `unknown_lsu_op` 告警或保守报错，具体取决于策略开关。
 
-`core/ooo.py` 的 `_inst_params()`、`_latency()`、`_data_store_cost()`、`_get_fu_type()`、
+`core/ooo.py` 的 `_inst_params()`、`_latency()`、`_get_fu_type()`、
 `_eligible_exu_ports()` 都应从同一份 resolved params 读取。
 
 在 `ParamDB` 内部维护结构化告警聚合：
@@ -1059,7 +1054,6 @@ main.py / CoreVfCostModel
 - `configs/isa.json` 中的 `data_store_cost`
 - `configs/isa.json` 中的 `pipeline_startup_cost`
 - `configs/isa.json` 中的 `pipeline_drain_cost`
-- `configs/uarch.json` 中的 `load_done_latency`
 
 当前主线规则应保持为：
 
@@ -1073,13 +1067,11 @@ main.py / CoreVfCostModel
 
 #### 步骤一：标记历史字段为 ignored/deprecated
 
-先不物理删除配置字段。增加配置校验或启动期扫描：
+对仍留在 `isa.json` 中的历史字段增加配置校验或启动期扫描：
 
 - 如果 `isa.json` form 中出现 `data_load_cost` / `data_store_cost` /
   `pipeline_startup_cost` / `pipeline_drain_cost`，记录
   `deprecated_isa_timing_field_ignored` 告警。
-- 如果 `uarch.json` 中出现 `load_done_latency`，记录
-  `deprecated_uarch_timing_field_ignored` 告警。
 - 告警写入 `model_warnings.json`，但不改变 cycle。
 
 告警 payload 建议包含：
@@ -1115,8 +1107,8 @@ main.py / CoreVfCostModel
 
 当 `OoOCoreMainline` 不再继承 `core/ooo.py` 中的历史类后：
 
-- 删除 `_data_store_cost()`。
-- 删除 `load_done_latency` 读取。
+- `_data_store_cost()` 无引用 helper 已删除。
+- 独立的 uarch load duration 读取已经删除。
 - `mem_bar_mode=strong` 历史路径已经删除，后续清理只需要确认没有外部 trace 仍依赖
   `mem_inter_*` 的隐式 barrier 语义。
 - 将 `core/ooo.py` 缩小为纯兼容 re-export，或直接删除。
@@ -1129,7 +1121,7 @@ main.py / CoreVfCostModel
 
 - 从 `configs/isa.json` 删除 `data_load_cost` / `data_store_cost` /
   `pipeline_startup_cost` / `pipeline_drain_cost`。
-- 从 `configs/uarch.json` 删除 `load_done_latency`。
+- 独立的 uarch load duration 字段已经从 Python、C++ 和配置中删除。
 - 如需保留历史校准材料，移动到 `docs/` 或 `configs/legacy/`，并明确
   “不参与主线预测”。
 
@@ -1140,7 +1132,6 @@ main.py / CoreVfCostModel
 - 修改 `data_store_cost` 不影响 store done cycle。
 - 修改 `data_load_cost` 不影响 load done cycle。
 - 修改 `pipeline_startup_cost` / `pipeline_drain_cost` 不影响 ready timing。
-- 修改 `load_done_latency` 不影响 load done cycle。
 - deprecated 字段存在时会写 `model_warnings.json`。
 - 删除历史字段后，现有 VF case cycle 不变。
 

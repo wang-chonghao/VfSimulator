@@ -26,6 +26,7 @@ struct GeneratedOperand {
   const char *role;
   const char *kind;
   bool optional;
+  bool allowIntegerExpression;
 };
 struct GeneratedAllowedValue {
   const char *opcode;
@@ -127,6 +128,7 @@ InstructionCatalog::InstructionCatalog() {
     operand.role = entry.role;
     operand.kind = parseArgumentKind(entry.kind);
     operand.optional = entry.optional;
+    operand.allowIntegerExpression = entry.allowIntegerExpression;
     specs_.at(entry.opcode).operands.push_back(std::move(operand));
   }
   for (const auto &entry : kGeneratedAllowedValues) {

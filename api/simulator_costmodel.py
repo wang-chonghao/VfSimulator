@@ -40,7 +40,10 @@ class CoreVfCostModel(VfCostModel):
     def run_vf_info(self, vf_info: VFInfo) -> Dict[str, Any]:
         canonical = canonicalize_vf_info(vf_info)
         payload = VFInfoLowerer().lower(canonical)
-        return self._run_lowered_payload(payload)
+        return self._run_lowered_payload(
+            payload,
+            canonical_input=bool(payload.get("canonical_input")),
+        )
 
     def run_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Compatibility entry: adapt a JSON-shaped payload to VfInfo first."""
@@ -99,13 +102,23 @@ class CoreVfCostModel(VfCostModel):
         loop_bounds = top_block_loop_bounds.get(0, [])
         linear = Flattener(params).flatten(program)
 
-        ifu = IFUUnroll(linear, params, pdb=db, dtype=dtype)
         uarch = dict(db.get_uarch())
         trace_uarch = payload.get("uarch", {}) or {}
         if not isinstance(trace_uarch, dict):
             raise RuntimeError("payload key 'uarch' must be a dict when provided")
         uarch.update(trace_uarch)
         uarch = self._mainline_uarch(uarch)
+
+        ifu = IFUUnroll(
+            linear,
+            params,
+            pdb=db,
+            dtype=dtype,
+            structured_value_identity=canonical_input,
+            structured_dynamic_instruction_limit=int(
+                uarch.get("canonical_dynamic_instruction_limit", 20_000)
+            ),
+        )
 
         idu = IDU(
             uarch,

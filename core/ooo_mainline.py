@@ -275,6 +275,41 @@ class RenameController:
             if isinstance(raw_iteration_path, list)
             else []
         )
+        raw_src_instances = inst.get("src_value_instances", [])
+        src_value_instances = (
+            [dict(item) for item in raw_src_instances if isinstance(item, dict)]
+            if isinstance(raw_src_instances, list)
+            else []
+        )
+        raw_dst_instances = inst.get("dst_value_instances", [])
+        dst_value_instances = (
+            [dict(item) for item in raw_dst_instances if isinstance(item, dict)]
+            if isinstance(raw_dst_instances, list)
+            else []
+        )
+        raw_src_release = inst.get("src_value_instance_release", [])
+        src_value_instance_release = (
+            [bool(item) for item in raw_src_release]
+            if isinstance(raw_src_release, list)
+            else []
+        )
+        raw_dst_keep = inst.get("dst_value_instance_keep", [])
+        dst_value_instance_keep = (
+            [bool(item) for item in raw_dst_keep]
+            if isinstance(raw_dst_keep, list)
+            else []
+        )
+
+        def rat_key(instance: Dict[str, Any] | None, fallback: Any) -> Any:
+            if not instance:
+                return fallback
+            path = instance.get("iteration_path", [])
+            frozen_path = tuple(
+                (str(item.get("loop_id", "")), int(item.get("iteration", 0)))
+                for item in path
+                if isinstance(item, dict)
+            )
+            return (str(instance.get("definition_id", fallback)), frozen_path)
 
         srcs = inst.get("src", [])
         dsts = inst.get("dst", [])
@@ -289,8 +324,26 @@ class RenameController:
 
         preg_src: List[str | None] = []
         preg_src_gen: List[Optional[int]] = []
-        for s in srcs:
-            preg = self.core.RAT.get(s) if self.core.is_vreg(s) else None
+        released_rat_pregs: List[str] = []
+        for index, s in enumerate(srcs):
+            instance = (
+                src_value_instances[index]
+                if index < len(src_value_instances)
+                else None
+            )
+            source_key = rat_key(instance, s)
+            preg = None
+            if self.core.is_vreg(s):
+                preg = self.core.RAT.get(source_key)
+                if preg is None and instance is not None:
+                    preg = self.core.RAT.get(s)
+                if (
+                    index < len(src_value_instance_release)
+                    and src_value_instance_release[index]
+                ):
+                    released = self.core.RAT.pop(source_key, None)
+                    if released is not None:
+                        released_rat_pregs.append(released)
             preg_src.append(preg)
             if preg is None:
                 preg_src_gen.append(None)
@@ -306,7 +359,7 @@ class RenameController:
         preg_dst: List[str] = []
         preg_old: List[str | None] = []
         preg_alloc_count = 0
-        for d in dsts:
+        for index, d in enumerate(dsts):
             if not self.core.is_vreg(d):
                 continue
             if self.core.theoretical_limit_mode:
@@ -314,8 +367,20 @@ class RenameController:
                 self.core.next_dynamic_preg_id += 1
             else:
                 new_p = self.core.freelist.popleft()
-            old_p = self.core.RAT.get(d)
-            self.core.RAT[d] = new_p
+            instance = (
+                dst_value_instances[index]
+                if index < len(dst_value_instances)
+                else None
+            )
+            destination_key = rat_key(instance, d)
+            old_p = self.core.RAT.get(destination_key)
+            keep_mapping = (
+                dst_value_instance_keep[index]
+                if index < len(dst_value_instance_keep)
+                else True
+            )
+            if keep_mapping:
+                self.core.RAT[destination_key] = new_p
             preg_dst.append(new_p)
             preg_old.append(old_p)
             preg_alloc_count += 1
@@ -344,6 +409,8 @@ class RenameController:
             stream_seq=stream_seq,
             static_instruction_id=static_instruction_id,
             iteration_path=iteration_path,
+            src_value_instances=src_value_instances,
+            dst_value_instances=dst_value_instances,
         )
         setattr(u, "preg_src_gen", preg_src_gen)
 
@@ -376,6 +443,9 @@ class RenameController:
                     )
 
         self.core.ROB.append(u)
+
+        for released_preg in released_rat_pregs:
+            self.core.preg_lifecycle.try_free_preg(released_preg)
 
         for old_p in preg_old:
             if old_p is not None:

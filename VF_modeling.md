@@ -857,8 +857,8 @@ ISA `dispatch_exu` 取值：
 - 就绪后直接启动，不经过 SHQ / EXQ
 - 每拍最多启动 `load_ports` 条
 - 当前常见指令是 `VLDS`
-- 启动后 `done_cycle = start + load_done_latency`
-- `isa.json` 里也记录了 `VLDS.<form>.latency`，但当前主线 load 完成时间仍由 `uarch.load_done_latency` 控制
+- 启动后 `done_cycle = start + isa_latency(load_op, form)`
+- load 完成时间只使用该 load 指令自身在 `isa.json` 中的 `latency`
 
 ### 12.2 计算指令
 

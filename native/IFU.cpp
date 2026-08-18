@@ -61,6 +61,16 @@ IFU::IFU(const std::vector<LinearProgramNode> &linearNodes,
     totalTopBlocks_ = totalTopBlocks;
 }
 
+IFU::IFU(
+    std::vector<DynamicInst> expandedInstructions,
+    std::unordered_map<int, std::vector<int64_t>> topBlockLoopBounds,
+    int64_t totalTopBlocks)
+    : analysis_({}), totalTopBlocks_(std::max<int64_t>(1, totalTopBlocks)),
+      topBlockLoopBounds_(std::move(topBlockLoopBounds)), preexpanded_(true) {
+  for (auto &instruction : expandedInstructions)
+    pending_.push_back(std::move(instruction));
+}
+
 bool IFU::isInst(const LinearProgramNode &node) { return node.type == "inst"; }
 bool IFU::isMembar(const LinearProgramNode &node) { return node.type == "membar"; }
 bool IFU::isLoopBegin(const LinearProgramNode &node) { return node.type == "loop_begin"; }
@@ -159,6 +169,8 @@ void IFU::buildIndices() {
 }
 
 bool IFU::done() const {
+  if (preexpanded_)
+    return pending_.empty();
   return pc_ >= static_cast<int64_t>(nodes_.size()) && pending_.empty();
 }
 
@@ -446,6 +458,9 @@ std::optional<DynamicInst> IFU::nextInst() {
     pending_.pop_front();
     return out;
   }
+
+  if (preexpanded_)
+    return std::nullopt;
 
   while (pc_ < static_cast<int64_t>(nodes_.size())) {
     const auto &n = nodes_[static_cast<size_t>(pc_)];

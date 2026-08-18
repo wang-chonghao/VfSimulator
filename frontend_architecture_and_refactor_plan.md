@@ -283,9 +283,13 @@ schema_version = 1
 
 `loop_id`、普通 `instruction_id` 和 Membar `instruction_id` 共用一个全局 node ID 命名空间；`definition_id` 使用独立的 value definition 命名空间。每个输出必须引用由当前 instruction 产生的新 definition，输入不得引用当前 instruction 自己产生的 definition。
 
-loop accumulator 必须通过通用的数据流规则表达 loop entry、back-edge 和 loop exit。entry 必须在 loop 前可见，back-edge 必须来自 loop body 或明确沿用 entry，exit 必须由 loop node 产生，且三者 storage、dtype、shape 和 storage object 必须一致。不得在 normalizer 中按某种指令排列增加特殊 alias。
+loop accumulator 必须通过通用的数据流规则表达 loop entry、back-edge 和 loop exit。entry 必须在 loop 前可见；back-edge definition 必须在循环尾可见，可以来自当前 loop body 同层节点、嵌套 loop 暴露的 exit，或 loop entry 处已经可见的 invariant/carried entry；exit 必须由 loop node 产生，且三者 storage、dtype、shape 和 storage object 必须一致。不得在 normalizer 中按某种指令排列增加特殊 alias。
 
-producer 关系必须双向一致：instruction producer 必须且只能在自己的 outputs 中产生一次 definition；loop producer 必须通过对应 `carried_values.exit_value_id` 产生；Membar 不得作为 value producer。外层 loop 的 back-edge producer scope 必须严格等于该 loop body scope，嵌套 loop 内部 instruction 不能直接泄漏 definition，必须经由嵌套 loop exit。
+producer 关系必须双向一致：instruction producer 必须且只能在自己的 outputs 中产生一次 definition；loop producer 必须通过对应 `carried_values.exit_value_id` 产生；Membar 不得作为 value producer。嵌套 loop 内部 instruction 不能直接向外层 loop 泄漏 definition，必须经由嵌套 loop exit；循环后产生的 definition 也不能作为该循环的 back-edge。
+
+canonical `uarch` override 只允许仍有活跃语义的配置。已经物理删除的字段，例如
+`load_done_latency`，由 Python/C++ validator 统一返回
+`deprecated_uarch_field`，不得静默忽略或让调用方误以为 override 已生效。
 
 ### 6.5 存储类型
 
@@ -716,7 +720,7 @@ Cycle 回归用于验证性能模型没有意外变化，但不能替代语义�
 4. semantic form 与 timing form 的双向差异、opcode 覆盖差异和 instruction class 冲突检查；semantic form 缺 timing 允许进入 ParamDB fallback。
 5. C++ 只读 Catalog 生成表，`VfInfo.cpp` 已删除手写 opcode alias 和 `VCVT` specialization。
 
-仍待完成：将 Catalog operand signature 用于直接构建完整 `CanonicalVfInfo` operand，补齐 Tilesim/legacy adapter 接入，并逐步删除未登记 opcode 的 CCE 通用猜测路径。
+当前新增：Catalog binder 的结果会保留到迁移期逻辑 IR，`ValueVersioningPass` 据此构建 canonical operand；CCE 和 legacy JSON 已有显式 canonical 入口。Tilesim adapter 和未登记 opcode 的 CCE 通用猜测路径清理仍待完成。
 
 退出条件：新增一条普通指令只需修改 Catalog 和 timing config，不需要修改 parser 控制流。
 
@@ -735,6 +739,8 @@ Cycle 回归用于验证性能模型没有意外变化，但不能替代语义�
 
 退出条件：adapter 不查询 timing、不依赖 Core；所有输入都能追踪到来源位置。
 
+当前进展：CCE canonical 入口已保留 memory base、affine offset、access kind、induction 和 source location；legacy JSON canonical 入口与严格 canonical JSON 入口隔离。Tilesim 本轮按计划暂不接入。
+
 ### 阶段四：统一动态展开与值身份
 
 目标：删除基于字符串 lane 名称的依赖表达。
@@ -747,6 +753,12 @@ Cycle 回归用于验证性能模型没有意外变化，但不能替代语义�
 4. 增加跨 loop register/UB 身份和 `unroll=1` 回归。
 
 退出条件：unroll 只改变动态实例数量，不改变静态值和内存对象语义。
+
+当前进展：Python canonical 使用 `(definition_id, iteration_path)` 结构化 operand identity。IFU 按真实 lane 顺序建立依赖后，保持原静态指令分组发射顺序；canonical 路径不再生成 `_laneN` 名称。动态展开完成后统一统计值实例的最后使用并标注 RAT keep/release，覆盖直线代码、`unroll=1`、`unroll>1`、循环前后和嵌套循环，不在 unroll builder 中维护独立生命周期规则。IDU 物理寄存器 credit 与 OoO rename 共用 value storage 语义，不再通过名称前缀分类。非 innermost 和不可整除 unroll 明确拒绝，含 Membar 的 loop 保守回退为 1。
+
+当前统一 last-use 仍以完整 canonical 动态流预展开为过渡实现。为避免超大 int64 loop count 在 cycle 0 前导致无界内存分配，`canonical_dynamic_instruction_limit` 默认设为 20000，并允许通过 `uarch` override 显式调整。后续应将 carried binding 和 last-use 计数下沉为在线状态机，在保持相同 `(definition_id, iteration_path)` 语义的前提下恢复 IFU 流式展开；达到该目标后删除预展开上限。
+
+Canonical validator 使用节点级诊断位置作用域：校验 instruction、loop、membar 时，内部产生且未显式指定位置的诊断自动继承该节点的 `source_location`；延迟到全局收尾阶段检查的 producer/dependency 诊断保存对应 producer 或 consumer 的位置。前端异常必须保留该结构化位置，不得重新拼接成普通字符串。
 
 ### 阶段五：替换 vreg normalization
 
@@ -761,6 +773,8 @@ Cycle 回归用于验证性能模型没有意外变化，但不能替代语义�
 5. 删除 Python/C++ 不一致的旧实现。
 
 退出条件：loop 语义由数据流定义，新增 accumulator 形态不需要增加 opcode 或 case 判断。
+
+当前进展：Python `ValueVersioningPass` 已覆盖直线重定义、纯覆盖、accumulator、串行/嵌套 loop、entry/back-edge/exit 和 zero iteration；Python/C++ canonical 路径均跳过旧 normalization。旧 `VFInfo` 对比路径及其近似 normalization 暂时保留。
 
 ### 阶段六：收紧 C++ 入口
 
@@ -892,11 +906,13 @@ Cycle 回归用于验证性能模型没有意外变化，但不能替代语义�
 13. CCE block 使用按声明顺序生效的词法作用域符号表，覆盖 vector、predicate 和局部 scalar；scalar initializer 延迟到实际作为 offset 使用时再递归校验，普通 scalar operand 和无关声明不受 affine 规则影响。离开 block 后局部定义失效。Catalog `call_variants` 描述 POST_UPDATE 与关联参数 overload；offset MVP 拒绝变量乘变量，只接受 affine 整数表达式。VF scope 中未登记语句必须携带原始文本报错，不能静默忽略。
 14. 新增 Python `VfInfoBuilder`：显式注册 storage/value/node，支持嵌套 loop context、直接 loop body 和 Membar；重复 ID 早报错，`build()` 统一调用 canonical validator 并通过 `VfInfoValidationError` 暴露结构化 diagnostics。`InputAPI.new_vf_info_builder()` 是公开创建入口。
 15. 新增 canonical JSON 正式入口：`CanonicalJsonVfInfoAdapter` / `InputAPI.load_canonical_json()` 在对象解码前直接消费共享 JSON Schema，严格拒绝任意层级的未知字段、缺失字段和非法类型，再执行 semantic validator；不执行 legacy 推断。`jsonschema` 是仅在首次使用该入口时加载的可选依赖，不能扩散到 builder、CCE、legacy JSON、Tilesim 或 Core 的 import 路径。JSON 语法、schema、payload 解码和语义校验失败均通过结构化 diagnostics 暴露。旧 `JsonVfInfoAdapter` 继续只负责迁移期 trace，两个入口不自动互相回退。
-16. 建立 canonical 到 Python Core 的第一条显式纵向链路：`CoreLoweringPass` 保留 static instruction ID、definition ID、稳定 UB object、source location 和 affine memory metadata；canonical cost-model 入口跳过旧 vreg normalization 与 single-super-iteration 改写。IFU 已支持 `unroll=1` 的结构化 `iteration_path`、frame-local loop-carried entry/back-edge/exit 和 zero iteration；串行 sibling loop 与 nested loop 通过各自动态 frame 的 binding 解析，动态身份继续贯穿 IDU、Uop 和执行日志。每层 path 保留动态 iteration、induction variable 和按 start/step 计算的 induction value，非默认起点及正负步长不再被拒绝。`unroll>1` 和显式 dependency 在对应 Core 语义完成前明确拒绝，禁止静默丢失。
+16. 建立 canonical 到 Python Core 的显式纵向链路：`CoreLoweringPass` 保留 static instruction ID、definition ID、稳定 UB object、source location 和 affine memory metadata；canonical cost-model 入口跳过旧 vreg normalization 与 single-super-iteration 改写。IFU 支持 frame-local loop-carried、zero iteration、非默认 induction 和 innermost `unroll>1`；动态 operand identity 使用 definition ID 与 iteration path，继续贯穿 IDU、Uop 和日志。显式 dependency 在动态 edge lowering 完成前仍明确拒绝。
 17. 统一 Python/C++ Core 的依赖契约：只自动推导寄存器 producer-consumer 依赖，删除基于 `(UB 名称, iter_stack)` 的隐式 store-to-load edge。UB 顺序只由显式 Membar 控制；canonical memory/control `DependencyRef` 在动态 Uop edge lowering 实现前明确拒绝。canonical cost-model 固定执行 `validate -> compatibility -> lower -> Core`。
+18. 建立 C++ canonical Core 入口：`runCanonicalVfInfo()` 直接消费 `CanonicalVfInfo`，由 `CanonicalProgramLowering` 展开 definition、loop-carried binding、动态 iteration identity 和 value lifetime，不经过旧 `VfInfo` lowering/normalization/canonicalization。共享普通 loop 与 loop-carried fixture 的 cycle 已与 Python 对齐。
+19. CCE 寄存器赋值使用零周期 `VFAlias`，由 `ValueVersioningPass` 快照赋值点 definition，不再维护永久字符串 alias；带 cast 的 UB pointer alias 和 alias chain 统一保留稳定 storage object。Catalog CONFIG 只有显式 `allow_integer_expression` 时接受整数编码。C++ canonical 与 Python 一致拒绝 non-innermost `unroll>1`。
 
 ### 19.2 当前迁移边界
 
-现有 CCE 和 legacy JSON adapter 仍返回 `api.vf_info.VFInfo`，Core 仍通过 `VFInfoLowerer` 消费迁移期 payload。新的 `CanonicalVfInfo` 暂不隐式 lower 到旧 payload，避免丢失结构化 memory access、operand role 和 source location。
+现有 CCE 和 legacy JSON 的兼容入口仍返回 `api.vf_info.VFInfo`，Core 可继续通过 `VFInfoLowerer` 消费迁移期 payload。两者同时提供显式 canonical 入口，经 `ValueVersioningPass` 生成 definition 后由 `CoreLoweringPass` 接入，不会隐式降级回旧 payload。
 
-阶段二的 `InstructionCatalog` 及 Python/C++ 共用语义表已经建立，Python canonical builder 也已提供。受限版 `CoreLoweringPass` 已能执行无显式 dependency、`unroll=1` 的 canonical 程序，包括非默认 induction、loop-carried 与 zero iteration，并在不支持的动态语义上明确报错。当前 CCE binder 仍输出迁移期 `VFInfo`；后续需要先建立通用 value versioning，再让 CCE/legacy adapter 直接生成 canonical definition，避免把复用的寄存器名称误当成单一定义。`unroll>1` 的动态 lane identity 继续作为独立后续项。待 canonical 主路径覆盖现有输入后，再删除旧 normalize/specialize 逻辑；迁移期间不新增第二套隐式转换。
+阶段二 Catalog、Python builder、通用 ValueVersioningPass、CCE/legacy canonical 入口以及 Python/C++ canonical Core 入口已建立。当前主要迁移边界是：Tilesim 暂未接入，显式 memory/control dependency 尚未 lower 为动态 Uop edge，旧 `VFInfo` 对比路径仍保留。旧路径仍有主程序和回归调用，因此本轮只删除全仓无引用 helper，不提前移除仍活跃的 normalize/兼容入口。

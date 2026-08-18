@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Mapping
 
-from api.cce_adapter import parse_cce_vf_info
+from api.cce_adapter import parse_cce_canonical_vf_info, parse_cce_vf_info
 from api.frontend import (
     CanonicalVfInfo,
     CanonicalJsonVfInfoAdapter,
@@ -12,7 +12,8 @@ from api.frontend import (
     VfInfoBuilder,
     validate_canonical_vf_info,
 )
-from api.json_adapter import JsonVfInfoAdapter
+from api.frontend.value_versioning import ValueVersioningPass
+from api.json_adapter import JsonVfInfoAdapter, LegacyCanonicalJsonAdapter
 from api.vf_info import VFInfo
 
 
@@ -20,14 +21,18 @@ class InputAPI:
     """
     Repository-level input boundary for simulator frontends.
 
-    CCE and legacy JSON loaders currently return migration-period ``VFInfo``.
-    Versioned ``CanonicalVfInfo`` is exposed through an explicit validation
-    boundary until the adapters and core lowering pass migrate to schema v1.
+    Migration-period ``VFInfo`` and versioned ``CanonicalVfInfo`` have explicit
+    entry points. No loader silently falls back between legacy and canonical
+    contracts.
     """
 
     @staticmethod
     def load_json_trace(path: str | Path) -> VFInfo:
         return JsonVfInfoAdapter.load(path)
+
+    @staticmethod
+    def load_legacy_json_canonical(path: str | Path) -> CanonicalVfInfo:
+        return LegacyCanonicalJsonAdapter.load(path)
 
     @staticmethod
     def load_canonical_json(path: str | Path) -> CanonicalVfInfo:
@@ -48,10 +53,32 @@ class InputAPI:
         )
 
     @staticmethod
+    def load_cce_canonical(
+        path: str | Path,
+        kernel_name: str | None = None,
+        loop_params: Dict[str, int] | None = None,
+    ) -> CanonicalVfInfo:
+        return parse_cce_canonical_vf_info(
+            path,
+            kernel_name=kernel_name,
+            loop_params=loop_params,
+        )
+
+    @staticmethod
     def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
         """Validate the versioned frontend contract without mutating it."""
 
         return validate_canonical_vf_info(vf_info)
+
+    @staticmethod
+    def to_canonical(
+        vf_info: VFInfo,
+        *,
+        source: Mapping[str, ScalarValue] | None = None,
+    ) -> CanonicalVfInfo:
+        """Version logical register names into canonical value definitions."""
+
+        return ValueVersioningPass().run(vf_info, source=source)
 
     @staticmethod
     def new_vf_info_builder(

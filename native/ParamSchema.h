@@ -63,7 +63,6 @@ struct UarchConfig {
   int64_t loop1MinFeedbackGap = 0;
   int64_t innermostIterDispatchStride = 0;
   int64_t consumerReleaseStartOffset = 0;
-  int64_t loadDoneLatency = 0;
   int64_t oooToShqDelay = 0;
   int64_t oooToLsqDelay = 0;
   int64_t exqRecvDelay = 0;

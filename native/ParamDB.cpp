@@ -283,7 +283,6 @@ ParamDB::ParamDB(std::filesystem::path baseDir)
     bundle_.uarch.innermostIterDispatchStride =
         readIntField(obj, "innermost_iter_dispatch_stride");
     bundle_.uarch.consumerReleaseStartOffset = readIntField(obj, "consumer_release_start_offset");
-    bundle_.uarch.loadDoneLatency = readIntField(obj, "load_done_latency");
     bundle_.uarch.oooToShqDelay = readIntField(obj, "ooo_to_shq_delay");
     bundle_.uarch.oooToLsqDelay = readIntField(obj, "ooo_to_lsq_delay");
     bundle_.uarch.exqRecvDelay = readIntField(obj, "exq_recv_delay");

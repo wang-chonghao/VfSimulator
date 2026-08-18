@@ -230,7 +230,6 @@ ParamDB makeDurationTestDb() {
         "ooo_to_shq_delay": 1,
         "ooo_to_lsq_delay": 1,
         "idu_to_ooo_delay": 0,
-        "load_done_latency": 99,
         "consumer_release_start_offset": 0,
         "enable_cross_fu_ii": true
       })JSON");

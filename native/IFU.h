@@ -30,6 +30,10 @@ struct DynamicInst {
   int64_t streamSeq = -1;
   std::vector<std::string> src;
   std::vector<std::string> dst;
+  std::vector<bool> srcValueRelease;
+  std::vector<bool> dstValueKeep;
+  std::string staticInstructionId;
+  std::vector<std::pair<std::string, int64_t>> iterationPath;
 
   std::vector<int64_t> loopStack;
   std::vector<int64_t> iterStack;
@@ -54,6 +58,10 @@ public:
       std::unordered_map<int, std::vector<int64_t>> topBlockLoopBounds = {},
       int64_t totalTopBlocks = 0,
       std::string dtype = "fp32");
+
+  IFU(std::vector<DynamicInst> expandedInstructions,
+      std::unordered_map<int, std::vector<int64_t>> topBlockLoopBounds,
+      int64_t totalTopBlocks);
 
   bool done() const;
   std::optional<DynamicInst> nextInst();
@@ -101,6 +109,7 @@ private:
   std::vector<LoopFrame> frames_;
   std::vector<std::pair<int64_t, std::vector<int64_t>>> vloopTrace_;
   std::unordered_map<int, std::vector<int64_t>> topBlockLoopBounds_;
+  bool preexpanded_ = false;
 
   void buildIndices();
   static bool containsAnyLoop(const std::vector<LinearProgramNode> &nodes);

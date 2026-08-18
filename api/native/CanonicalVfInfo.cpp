@@ -174,6 +174,10 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
     error("unsupported_schema_version", "Unsupported schema version",
           "schema_version");
   validateScalarMap(vfInfo.uarch, "uarch");
+  if (vfInfo.uarch.count("load_done_latency"))
+    error("deprecated_uarch_field",
+          "Deprecated uarch field is no longer accepted",
+          "uarch.load_done_latency");
   validateScalarMap(vfInfo.source, "source");
 
   std::unordered_map<std::string, NodeInfo> nodeInfo;
@@ -626,10 +630,10 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
           const CanonicalValue &back = backIt->second;
           const CanonicalValue &exit = exitIt->second;
           if (entry.logicalId != carried.logicalId ||
-              back.logicalId != carried.logicalId ||
               exit.logicalId != carried.logicalId)
             error("loop_carried_logical_id_mismatch",
-                  "Loop-carried logical IDs must match", carriedPath);
+                  "Loop entry and exit logical IDs must match the carried state",
+                  carriedPath);
           if (entry.storage != back.storage || entry.storage != exit.storage ||
               entry.dtype != back.dtype || entry.dtype != exit.dtype ||
               entry.shape != back.shape || entry.shape != exit.shape ||
@@ -655,9 +659,21 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
             auto producer = back.producerNodeId
                 ? nodeInfo.find(*back.producerNodeId)
                 : nodeInfo.end();
-            if (producer == nodeInfo.end() || producer->second.scope != loopScope)
+            const bool producedInBody =
+                producer != nodeInfo.end() && producer->second.scope == loopScope;
+            const bool visibleBeforeLoop = !back.producerNodeId ||
+                (producer != nodeInfo.end() && loopInfoIt != nodeInfo.end() &&
+                 producer->second.order < loopInfoIt->second.order &&
+                 scopePrefix(producer->second.scope, loopInfoIt->second.scope) &&
+                 !(producer->second.kind == "loop" &&
+                   loopInfoIt->second.scope.size() >
+                       producer->second.scope.size() &&
+                   loopInfoIt->second.scope[producer->second.scope.size()] ==
+                       *back.producerNodeId));
+            if (!producedInBody && !visibleBeforeLoop)
               error("loop_back_edge_out_of_scope",
-                    "Back-edge must be produced in loop body", carriedPath);
+                    "Back-edge definition must be visible at loop tail",
+                    carriedPath);
           }
           if (exit.producerNodeId != loop.loopId)
             error("loop_exit_producer_mismatch",

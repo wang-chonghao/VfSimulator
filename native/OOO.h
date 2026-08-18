@@ -47,6 +47,8 @@ struct Uop {
   std::vector<int64_t> iterStack;
   bool isLastInTopBlock = false;
   int64_t streamSeq = -1;
+  std::string staticInstructionId;
+  std::vector<std::pair<std::string, int64_t>> iterationPath;
   int exuPort = -1;
   int64_t shqReadyCycle = 0;
   int64_t lsqReadyCycle = 0;
@@ -85,6 +87,9 @@ struct HistoryRecord {
   std::vector<std::optional<std::string>> pregOld;
   std::optional<std::string> producerOpForStore;
   std::optional<int64_t> producerStartForStore;
+  std::string staticInstructionId;
+  std::vector<std::pair<std::string, int64_t>> iterationPath;
+  int64_t streamSeq = -1;
 };
 
 struct SimpleLogRecord {
@@ -93,6 +98,9 @@ struct SimpleLogRecord {
   std::string op;
   std::vector<std::string> dst;
   std::vector<std::string> src;
+  std::string staticInstructionId;
+  std::vector<std::pair<std::string, int64_t>> iterationPath;
+  int64_t streamSeq = -1;
 };
 
 class OoOCore {

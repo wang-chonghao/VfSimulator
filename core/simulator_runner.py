@@ -138,6 +138,7 @@ def run_simulation(
       }
     """
     value_storage = ValueStorageLookup(values)
+    idu.value_storage = value_storage
     pdb = getattr(ooo, "db", None)
     dtype = str(getattr(ooo, "dtype", "fp32"))
     control_unit = ControlUnit(pdb, dtype)

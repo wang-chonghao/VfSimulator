@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Literal, TypeAlias
 
+from api.frontend.schema import SourceLocation
 from api.input_symbols import (
     compact_dtype,
     normalize_dtype,
@@ -63,7 +64,16 @@ MemInfo = ValueInfo
 
 
 ValueRef: TypeAlias = "str | ValueInfo"
-VFNode: TypeAlias = "VFLoop | VFInst | Membar"
+VFNode: TypeAlias = "VFLoop | VFInst | VFAlias | Membar"
+
+
+@dataclass(frozen=True)
+class VFMemoryAccess:
+    value_id: str
+    access_kind: Literal["read", "write"]
+    offset: int | str = 0
+    span: int | None = None
+    mode: str | None = None
 
 
 @dataclass
@@ -72,15 +82,30 @@ class VFInst:
     src: list[ValueRef]
     dst: list[ValueRef]
     form: str | None = None
+    instruction_class: str | None = None
+    memory_accesses: tuple[VFMemoryAccess, ...] = ()
+    source_location: SourceLocation | None = None
+    attributes: dict[str, Any] = field(default_factory=dict)
+    supplemental_inputs: tuple[ValueRef, ...] = ()
 
     @property
     def op(self) -> str:
         return self.name
 
 
+@dataclass(frozen=True)
+class VFAlias:
+    """Zero-cycle source-language value binding captured before versioning."""
+
+    destination: ValueRef
+    source: ValueRef
+    source_location: SourceLocation | None = None
+
+
 @dataclass
 class Membar:
     type: str = "VST_VLD"
+    source_location: SourceLocation | None = None
 
 
 @dataclass
@@ -89,6 +114,10 @@ class VFLoop:
     unroll: int | str = 1
     body: list[VFNode] = field(default_factory=list)
     loop_id: str | None = None
+    induction_variable: str | None = None
+    induction_start: int | str = 0
+    induction_step: int | str = 1
+    source_location: SourceLocation | None = None
 
 
 @dataclass
@@ -184,12 +213,20 @@ def canonicalize_vf_info(vf_info: VFInfo) -> VFInfo:
             if isinstance(node, VFInst):
                 src_ids = [register(ref) for ref in node.src]
                 dst_ids = [register(ref) for ref in node.dst]
+                supplemental_input_ids = [
+                    register(ref) for ref in node.supplemental_inputs
+                ]
                 normalized.append(
                     VFInst(
                         normalize_opcode(node.name),
                         src_ids,
                         dst_ids,
                         normalize_form(node.form) if node.form else None,
+                        node.instruction_class,
+                        tuple(node.memory_accesses),
+                        node.source_location,
+                        dict(node.attributes),
+                        tuple(supplemental_input_ids),
                     )
                 )
             elif isinstance(node, VFLoop):
@@ -199,10 +236,24 @@ def canonicalize_vf_info(vf_info: VFInfo) -> VFInfo:
                         node.unroll,
                         normalize_nodes(node.body),
                         node.loop_id,
+                        node.induction_variable,
+                        node.induction_start,
+                        node.induction_step,
+                        node.source_location,
+                    )
+                )
+            elif isinstance(node, VFAlias):
+                normalized.append(
+                    VFAlias(
+                        destination=register(node.destination),
+                        source=register(node.source),
+                        source_location=node.source_location,
                     )
                 )
             elif isinstance(node, Membar):
-                normalized.append(Membar(normalize_membar_type(node.type)))
+                normalized.append(
+                    Membar(normalize_membar_type(node.type), node.source_location)
+                )
             else:
                 raise TypeError(f"Unsupported VFInfo node: {type(node).__name__}")
         return normalized
@@ -222,6 +273,10 @@ def canonicalize_vf_info(vf_info: VFInfo) -> VFInfo:
             src_dtype, dst_dtype = _dtype_from_conversion_form(node.form)
             simple_form = node.form if node.form and "_to_" not in node.form else None
             for value_id in node.src:
+                value = values[value_id]
+                dtype = value.dtype or src_dtype or simple_form or normalize_dtype(vf_info.default_dtype)
+                values[value_id] = replace(value, dtype=str(dtype))
+            for value_id in node.supplemental_inputs:
                 value = values[value_id]
                 dtype = value.dtype or src_dtype or simple_form or normalize_dtype(vf_info.default_dtype)
                 values[value_id] = replace(value, dtype=str(dtype))
@@ -263,7 +318,9 @@ __all__ = [
     "ValueStorageKind",
     "VFInfo",
     "VFInst",
+    "VFAlias",
     "VFLoop",
+    "VFMemoryAccess",
     "VFNode",
     "canonicalize_vf_info",
 ]

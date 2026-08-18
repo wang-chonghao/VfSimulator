@@ -234,22 +234,30 @@ def main():
     if program is None:
         raise RuntimeError("trace.json missing key 'program'")
     db = ParamDB(base_dir=base_dir)
-
-    program, values, norm_stats = normalize_program_vreg_live_ranges(
-        program,
-        values=values,
-        params=params,
-    )
-    print(
-        "[INFO] vreg live-range normalization = ON, changed_chains =",
-        int(norm_stats.get("changed_fields", norm_stats.get("changed_chains", 0))),
-    )
-    program, canonicalization_stats = canonicalize_single_super_iteration_loops(
-        program,
-        params,
-        pdb=db,
-        dtype=dtype,
-    )
+    canonical_input = bool(trace.get("canonical_input"))
+    if canonical_input:
+        norm_stats = {"renamed_operands": 0, "reused_slots": 0}
+        canonicalization_stats = {
+            "expanded_loops": 0,
+            "expanded_instructions": 0,
+        }
+        print("[INFO] canonical input: legacy vreg normalization = OFF")
+    else:
+        program, values, norm_stats = normalize_program_vreg_live_ranges(
+            program,
+            values=values,
+            params=params,
+        )
+        print(
+            "[INFO] vreg live-range normalization = ON, changed_chains =",
+            int(norm_stats.get("changed_fields", norm_stats.get("changed_chains", 0))),
+        )
+        program, canonicalization_stats = canonicalize_single_super_iteration_loops(
+            program,
+            params,
+            pdb=db,
+            dtype=dtype,
+        )
     print(
         "[INFO] single-super-iteration loops expanded =",
         int(canonicalization_stats["expanded_loops"]),
@@ -265,11 +273,20 @@ def main():
     loop_bounds = top_block_loop_bounds.get(0, [])
     linear = Flattener(params).flatten(program)
 
-    ifu = IFUUnroll(linear, params, pdb=db, dtype=dtype)
     trace_uarch = trace.get("uarch", {}) or {}
     if not isinstance(trace_uarch, dict):
         raise RuntimeError("trace.json key 'uarch' must be a dict when provided")
     uarch = build_uarch(db, trace_uarch, args)
+    ifu = IFUUnroll(
+        linear,
+        params,
+        pdb=db,
+        dtype=dtype,
+        structured_value_identity=canonical_input,
+        structured_dynamic_instruction_limit=int(
+            uarch.get("canonical_dynamic_instruction_limit", 20_000)
+        ),
+    )
 
     idu = IDU(
         uarch,

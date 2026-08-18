@@ -3,10 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
+from api.frontend.builder import VfInfoValidationError
+from api.frontend.uarch_validation import validate_uarch_overrides
 from api.vf_info import (
     Membar,
     ValueInfo,
     VFInfo,
+    VFAlias,
     VFInst,
     VFLoop,
     VFNode,
@@ -30,7 +33,16 @@ class VFInfoLowerer:
     _reserved_ub_names: set[str] = field(default_factory=set)
 
     def lower(self, vf_info: VFInfo, dtype: str | None = None) -> Dict[str, Any]:
+        uarch_validation = validate_uarch_overrides(vf_info.uarch)
+        if not uarch_validation.ok:
+            raise VfInfoValidationError(uarch_validation.errors)
         vf_info = canonicalize_vf_info(vf_info)
+        if self._contains_alias(vf_info.context):
+            from api.frontend.core_lowering import CoreLoweringPass
+            from api.frontend.value_versioning import ValueVersioningPass
+
+            canonical = ValueVersioningPass().run(vf_info)
+            return CoreLoweringPass().lower(canonical)
         self._register_names.clear()
         self._ub_names.clear()
         self._reserved_register_names = {
@@ -64,6 +76,14 @@ class VFInfoLowerer:
             },
         }
 
+    @classmethod
+    def _contains_alias(cls, body: List[VFNode]) -> bool:
+        return any(
+            isinstance(node, VFAlias)
+            or (isinstance(node, VFLoop) and cls._contains_alias(node.body))
+            for node in body
+        )
+
     def _lower_body(
         self,
         body: List[VFNode],
@@ -85,6 +105,26 @@ class VFInfoLowerer:
             }
             if node.form:
                 inst["form"] = str(node.form)
+            if node.instruction_class:
+                inst["instruction_class"] = str(node.instruction_class)
+            if node.memory_accesses:
+                inst["memory_accesses"] = [
+                    {
+                        "value_id": item.value_id,
+                        "access_kind": item.access_kind,
+                        "offset": item.offset,
+                        "span": item.span,
+                        "mode": item.mode,
+                    }
+                    for item in node.memory_accesses
+                ]
+            if node.source_location is not None:
+                inst["source_location"] = {
+                    "source": node.source_location.source,
+                    "line": node.source_location.line,
+                    "column": node.source_location.column,
+                    "path": node.source_location.path,
+                }
             return inst
         if isinstance(node, VFLoop):
             loop = {
@@ -95,6 +135,12 @@ class VFInfoLowerer:
             }
             if node.loop_id:
                 loop["name"] = str(node.loop_id)
+            if node.induction_variable:
+                loop["induction"] = {
+                    "variable_id": node.induction_variable,
+                    "start": node.induction_start,
+                    "step": node.induction_step,
+                }
             return loop
         if isinstance(node, Membar):
             return {

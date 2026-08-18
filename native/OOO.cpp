@@ -91,6 +91,20 @@ std::string joinJsonArray<std::optional<std::string>>(const std::vector<std::opt
   return oss.str();
 }
 
+std::string joinIterationPath(
+    const std::vector<std::pair<std::string, int64_t>> &path) {
+  std::ostringstream oss;
+  oss << "[";
+  for (size_t index = 0; index < path.size(); ++index) {
+    if (index)
+      oss << ", ";
+    oss << "{\"loop_id\":\"" << jsonEscape(path[index].first)
+        << "\",\"iteration\":" << path[index].second << "}";
+  }
+  oss << "]";
+  return oss.str();
+}
+
 } // namespace
 
 OoOCore::OoOCore(const UarchConfig &uarch, const ParamDB &db, std::string dtype,
@@ -371,7 +385,8 @@ void OoOCore::log(const std::string &event, const Uop &u) {
   history_.push_back(HistoryRecord{
       cycle_, event, u.instId, u.op, u.state, u.blockedReason, u.readyCycle, u.startCycle,
       u.doneCycle, u.src, u.dst, u.pregSrc, u.pregDst, u.pregOld,
-      u.producerOpForStore, u.producerStartForStore});
+      u.producerOpForStore, u.producerStartForStore, u.staticInstructionId,
+      u.iterationPath, u.streamSeq});
 }
 
 void OoOCore::logMembarBlocked(Uop &u) {
@@ -382,11 +397,16 @@ void OoOCore::logMembarBlocked(Uop &u) {
 }
 
 void OoOCore::logStartSimple(const Uop &u) {
-  startLogs_.push_back(SimpleLogRecord{cycle_, u.instId, u.op, u.dst, u.src});
+  startLogs_.push_back(SimpleLogRecord{cycle_, u.instId, u.op, u.dst, u.src,
+                                       u.staticInstructionId, u.iterationPath,
+                                       u.streamSeq});
 }
 
 void OoOCore::logDoneSimple(const Uop &u) {
-  doneLogs_.push_back(SimpleLogRecord{u.doneCycle.value_or(cycle_), u.instId, u.op, u.dst, u.src});
+  doneLogs_.push_back(SimpleLogRecord{u.doneCycle.value_or(cycle_), u.instId,
+                                      u.op, u.dst, u.src,
+                                      u.staticInstructionId, u.iterationPath,
+                                      u.streamSeq});
 }
 
 void OoOCore::dumpHistory(const std::string &path) const {
@@ -410,7 +430,10 @@ void OoOCore::dumpHistory(const std::string &path) const {
        << "\"preg_dst\":" << joinJsonArray(h.pregDst) << ","
        << "\"preg_old\":" << joinJsonArray(h.pregOld) << ","
        << "\"producer_op_for_store\":" << (h.producerOpForStore ? "\"" + jsonEscape(*h.producerOpForStore) + "\"" : "null") << ","
-       << "\"producer_start_for_store\":" << (h.producerStartForStore ? std::to_string(*h.producerStartForStore) : "null")
+       << "\"producer_start_for_store\":" << (h.producerStartForStore ? std::to_string(*h.producerStartForStore) : "null") << ","
+       << "\"static_instruction_id\":\"" << jsonEscape(h.staticInstructionId) << "\","
+       << "\"iteration_path\":" << joinIterationPath(h.iterationPath) << ","
+       << "\"stream_seq\":" << h.streamSeq
        << "}";
     if (i + 1 < history_.size())
       os << ",";
@@ -423,12 +446,18 @@ void OoOCore::dumpSimpleLogs(const std::string &startPath, const std::string &do
   std::ofstream s(startPath);
   for (const auto &r : startLogs_) {
     s << "{\"cy\":" << r.cy << ",\"inst_id\":" << r.instId << ",\"op\":\"" << jsonEscape(r.op)
-      << "\",\"dst\":" << joinJsonArray(r.dst) << ",\"src\":" << joinJsonArray(r.src) << "}\n";
+      << "\",\"dst\":" << joinJsonArray(r.dst) << ",\"src\":" << joinJsonArray(r.src)
+      << ",\"static_instruction_id\":\"" << jsonEscape(r.staticInstructionId) << "\""
+      << ",\"iteration_path\":" << joinIterationPath(r.iterationPath)
+      << ",\"stream_seq\":" << r.streamSeq << "}\n";
   }
   std::ofstream d(donePath);
   for (const auto &r : doneLogs_) {
     d << "{\"cy\":" << r.cy << ",\"inst_id\":" << r.instId << ",\"op\":\"" << jsonEscape(r.op)
-      << "\",\"dst\":" << joinJsonArray(r.dst) << ",\"src\":" << joinJsonArray(r.src) << "}\n";
+      << "\",\"dst\":" << joinJsonArray(r.dst) << ",\"src\":" << joinJsonArray(r.src)
+      << ",\"static_instruction_id\":\"" << jsonEscape(r.staticInstructionId) << "\""
+      << ",\"iteration_path\":" << joinIterationPath(r.iterationPath)
+      << ",\"stream_seq\":" << r.streamSeq << "}\n";
   }
 }
 
@@ -665,7 +694,9 @@ void OoOCoreMainline::accept(const DynamicInst &inst) {
   u.form = inst.form.empty() ? dtype_ : inst.form;
   u.src = inst.src;
   u.dst = inst.dst;
-  for (const auto &s : inst.src) {
+  std::vector<std::string> releasedRatPregs;
+  for (size_t sourceIndex = 0; sourceIndex < inst.src.size(); ++sourceIndex) {
+    const auto &s = inst.src[sourceIndex];
     if (!isRegisterValue(s)) {
       u.pregSrc.push_back(std::nullopt);
       u.pregSrcGen.push_back(std::nullopt);
@@ -681,12 +712,19 @@ void OoOCoreMainline::accept(const DynamicInst &inst) {
       u.pregSrcGen.push_back(genIt == pregGeneration_.end()
                                  ? std::optional<int64_t>{0}
                                  : std::optional<int64_t>{genIt->second});
+      if (sourceIndex < inst.srcValueRelease.size() &&
+          inst.srcValueRelease[sourceIndex]) {
+        releasedRatPregs.push_back(it->second);
+        rat_.erase(it);
+      }
     }
   }
   u.topBlockId = inst.topBlockId;
   u.iterStack = inst.iterStack;
   u.isLastInTopBlock = inst.isLastInTopBlock;
   u.streamSeq = inst.streamSeq;
+  u.staticInstructionId = inst.staticInstructionId;
+  u.iterationPath = inst.iterationPath;
 
   for (const auto &preg : u.pregSrc) {
     if (preg) {
@@ -696,7 +734,9 @@ void OoOCoreMainline::accept(const DynamicInst &inst) {
   }
 
   int allocCount = 0;
-  for (const auto &d : u.dst) {
+  for (size_t destinationIndex = 0; destinationIndex < u.dst.size();
+       ++destinationIndex) {
+    const auto &d = u.dst[destinationIndex];
     if (!isRegisterValue(d)) {
       u.pregDst.push_back(std::string{});
       continue;
@@ -712,7 +752,11 @@ void OoOCoreMainline::accept(const DynamicInst &inst) {
     auto rit = rat_.find(d);
     if (rit != rat_.end())
       oldPreg = rit->second;
-    rat_[d] = newPreg;
+    const bool keepMapping =
+        destinationIndex >= inst.dstValueKeep.size() ||
+        inst.dstValueKeep[destinationIndex];
+    if (keepMapping)
+      rat_[d] = newPreg;
     u.pregDst.push_back(newPreg);
     u.pregOld.push_back(oldPreg.empty() ? std::optional<std::string>{} : std::optional<std::string>{oldPreg});
     pregGeneration_[newPreg] += 1;
@@ -739,6 +783,9 @@ void OoOCoreMainline::accept(const DynamicInst &inst) {
     shq_.push_back(u);
   }
   rob_.push_back(u);
+
+  for (const auto &releasedPreg : releasedRatPregs)
+    (void)tryFreePreg(releasedPreg, cycle_);
 
   for (const auto &oldPreg : u.pregOld) {
     if (oldPreg)

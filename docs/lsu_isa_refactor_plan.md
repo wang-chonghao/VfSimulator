@@ -295,8 +295,8 @@ load/store 执行可以继续分开，因为资源不同：
 ```
 
 当前 Python 和 C++ native 主线已经统一为第一种口径：所有 load/store-like 指令
-使用指令自身 `latency`。`data_load_cost`、`data_store_cost` 和
-`load_done_latency` 不再作为主线执行时长来源，只能作为历史/校准参考字段保留。
+使用指令自身 `latency`。`data_load_cost`、`data_store_cost` 不再作为主线执行时长
+来源；旧 `load_done_latency` 配置已经端到端删除。
 
 ### 内存依赖和屏障
 
@@ -472,7 +472,7 @@ consumer.start_cycle + consumer_release_start_offset
 
 如果 `VLD` / `VST` 只是泛化 load/store 标签，应从活跃模型代码中移除：
 
-- load 执行时长已统一到 ISA load latency；应移除旧 `VLD_COST` / `load_done_latency` fallback 表述。
+- load 执行时长已统一到 ISA load latency；旧的独立 load duration 配置和 fallback 表述已经移除。
 - 注释从 `VLD/VST` 改成 load/store LSU 指令。
 - 只有在指真实 ISA op 时，才保留 `VLD`、`VST`、`VLDS`、`VSTS`、`VSTUS`、`VSTAS` 这些名称。
 

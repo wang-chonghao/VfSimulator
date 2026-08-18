@@ -32,6 +32,7 @@ set(VFSIM_NATIVE_CORE_SOURCES
   ProgramAnalysis.cpp
   ProgramCanonicalization.cpp
   ProgramVregLiveRangeNormalization.cpp
+  CanonicalProgramLowering.cpp
   ProgramFlatten.cpp
   IFU.cpp
   IDU.cpp

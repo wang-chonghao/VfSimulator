@@ -129,6 +129,54 @@ class CanonicalVfInfoValidatorTest(unittest.TestCase):
         self.assertTrue(result.ok, result.diagnostics)
         self.assertEqual(vf_info, before)
 
+    def test_node_diagnostics_inherit_source_location(self):
+        instruction_location = SourceLocation(
+            path="instruction.cce", line=12, column=3
+        )
+        loop_location = SourceLocation(path="loop.cce", line=20, column=5)
+        membar_location = SourceLocation(
+            path="membar.cce", line=30, column=7
+        )
+        invalid_instruction = CanonicalInstruction(
+            "inst.invalid",
+            "VADD",
+            InstructionClass.STORE,
+            "fp32",
+            source_location=instruction_location,
+        )
+        invalid_loop = CanonicalLoop(
+            "loop.invalid",
+            InductionVariable("i"),
+            -1,
+            1,
+            (),
+            (),
+            source_location=loop_location,
+        )
+        invalid_membar = CanonicalMembar(
+            "membar.invalid",
+            "UNKNOWN",
+            source_location=membar_location,
+        )
+
+        errors = validate_canonical_vf_info(
+            CanonicalVfInfo(
+                (invalid_instruction, invalid_loop, invalid_membar),
+                {},
+            )
+        ).errors
+        by_code = {item.code: item for item in errors}
+
+        self.assertEqual(
+            by_code["catalog_instruction_class_mismatch"].location,
+            instruction_location,
+        )
+        self.assertEqual(by_code["invalid_loop_count"].location, loop_location)
+        self.assertEqual(
+            by_code["unsupported_membar_type"].location,
+            membar_location,
+        )
+
     def test_explicit_data_dependency_is_not_a_supported_kind(self):
         vf_info = self._valid_vf_info()
         loop = vf_info.context[0]
@@ -376,6 +424,34 @@ class CanonicalVfInfoValidatorTest(unittest.TestCase):
         self.assertIn("invalid_int64", codes)
         self.assertIn("invalid_memory_span", codes)
         self.assertIn("invalid_dependency_operand_index", codes)
+
+    def test_deprecated_uarch_field_is_rejected(self):
+        vf_info = replace(
+            self._valid_vf_info(),
+            uarch={"load_done_latency": 99},
+        )
+
+        codes = {
+            item.code for item in validate_canonical_vf_info(vf_info).errors
+        }
+        self.assertIn("deprecated_uarch_field", codes)
+
+    def test_uarch_override_requires_cross_language_json_scalars(self):
+        vf_info = replace(
+            self._valid_vf_info(),
+            uarch={
+                1: 2,
+                "huge": 2**100,
+                "infinite": math.inf,
+                "container": [],
+            },  # type: ignore[dict-item]
+        )
+
+        errors = validate_canonical_vf_info(vf_info).errors
+        self.assertEqual(
+            sum(item.code == "invalid_scalar_attribute" for item in errors),
+            4,
+        )
 
     def test_membar_and_loop_parameter_validation(self):
         invalid = self._contract((

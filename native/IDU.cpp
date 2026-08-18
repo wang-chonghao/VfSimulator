@@ -353,6 +353,9 @@ std::vector<DynamicInst> IDU::dispatch(int64_t cycle, const IDUDispatchBudget &b
         shqQueueFree,
         lsqFree,
         shqFree,
+        inst.staticInstructionId,
+        inst.iterationPath,
+        inst.streamSeq,
     });
     updateLastDispatch(inst, cycle);
     triggerNextVloops(inst, cycle);

@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 from api.input_api import InputAPI
+from api.frontend.builder import VfInfoValidationError
 from api.cce_adapter import parse_cce_vf_info
 from api.input_symbols import (
     normalize_dtype,
@@ -14,7 +15,7 @@ from api.input_symbols import (
     specialize_opcode,
 )
 from api.simulator_costmodel import CoreVfCostModel
-from api.vf_info import Membar, ValueInfo, VFInfo, VFInst, VFLoop, canonicalize_vf_info
+from api.vf_info import Membar, VFAlias, ValueInfo, VFInfo, VFInst, VFLoop, canonicalize_vf_info
 from api.vf_lowering import VFInfoLowerer
 
 
@@ -22,6 +23,80 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class VfInfoApiTest(unittest.TestCase):
+    def _assert_uarch_rejected(self, callback, expected_code):
+        with self.assertRaises(VfInfoValidationError) as captured:
+            callback()
+        self.assertIn(
+            expected_code,
+            {item.code for item in captured.exception.diagnostics},
+        )
+
+    def test_public_vfinfo_without_alias_rejects_deprecated_uarch(self):
+        vf_info = VFInfo(context=[], uarch={"load_done_latency": 123})
+        self._assert_uarch_rejected(
+            lambda: VFInfoLowerer().lower(vf_info),
+            "deprecated_uarch_field",
+        )
+
+    def test_public_vfinfo_with_alias_rejects_deprecated_uarch(self):
+        vf_info = VFInfo(
+            context=[VFAlias("b", "a")],
+            values={
+                "a": ValueInfo("a", "Register", "fp32"),
+                "b": ValueInfo("b", "Register", "fp32"),
+            },
+            uarch={"load_done_latency": 123},
+        )
+        self._assert_uarch_rejected(
+            lambda: VFInfoLowerer().lower(vf_info),
+            "deprecated_uarch_field",
+        )
+
+    def test_legacy_json_rejects_deprecated_uarch(self):
+        payload = {
+            "dtype": "fp32",
+            "values": {},
+            "program": [],
+            "uarch": {"load_done_latency": 123},
+        }
+        self._assert_uarch_rejected(
+            lambda: CoreVfCostModel(base_dir=ROOT).run_payload(payload),
+            "deprecated_uarch_field",
+        )
+
+    def test_public_vfinfo_without_alias_rejects_invalid_uarch_scalar(self):
+        vf_info = VFInfo(context=[], uarch={"issue_ports": []})
+        self._assert_uarch_rejected(
+            lambda: VFInfoLowerer().lower(vf_info),
+            "invalid_scalar_attribute",
+        )
+
+    def test_public_vfinfo_with_alias_rejects_invalid_uarch_scalar(self):
+        vf_info = VFInfo(
+            context=[VFAlias("b", "a")],
+            values={
+                "a": ValueInfo("a", "Register", "fp32"),
+                "b": ValueInfo("b", "Register", "fp32"),
+            },
+            uarch={"issue_ports": []},
+        )
+        self._assert_uarch_rejected(
+            lambda: VFInfoLowerer().lower(vf_info),
+            "invalid_scalar_attribute",
+        )
+
+    def test_legacy_json_rejects_invalid_uarch_scalar(self):
+        payload = {
+            "dtype": "fp32",
+            "values": {},
+            "program": [],
+            "uarch": {"issue_ports": []},
+        }
+        self._assert_uarch_rejected(
+            lambda: CoreVfCostModel(base_dir=ROOT).run_payload(payload),
+            "invalid_scalar_attribute",
+        )
+
     def test_input_symbols_normalize_public_aliases(self):
         self.assertEqual(normalize_dtype("float32"), "fp32")
         self.assertEqual(normalize_dtype("fp64"), "fp64")
@@ -521,6 +596,29 @@ class VfInfoApiTest(unittest.TestCase):
                     encoding="utf-8",
                 )
                 with self.assertRaisesRegex(ValueError, "invalid offset expression"):
+                    parse_cce_vf_info(path, kernel_name="bad")
+
+    def test_cce_rejects_integer_encoding_for_symbolic_config_operands(self):
+        calls = (
+            "vlds(x, mem, 0, 123);",
+            "vexp(y, x, pred, 123);",
+        )
+        for call in calls:
+            with self.subTest(call=call), tempfile.TemporaryDirectory() as tmpdir:
+                path = Path(tmpdir) / "integer_config.dsl"
+                path.write_text(
+                    f"""
+                    void bad(__ubuf__ float *mem) {{
+                      __VEC_SCOPE__ {{
+                        vector_f32 x, y;
+                        vector_bool pred = pset_b32(PAT_ALL);
+                        {call}
+                      }}
+                    }}
+                    """,
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "unsupported configuration"):
                     parse_cce_vf_info(path, kernel_name="bad")
 
     def test_cce_local_integer_affine_offsets(self):

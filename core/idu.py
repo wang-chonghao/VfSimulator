@@ -11,6 +11,7 @@ from core.isa_traits import (
     uses_shared_shq_credit,
     uses_shq_queue,
 )
+from core.value_storage import ValueStorageLookup
 
 
 class IDU:
@@ -23,6 +24,7 @@ class IDU:
         total_top_blocks=1,
         top_block_loop_bounds=None,
         dtype="fp32",
+        values=None,
     ):
         self.window_width = uarch["IDU_window_width"]
         self.issue_width = uarch["IDU_issue_width"]
@@ -32,6 +34,7 @@ class IDU:
         )
         self.db = pdb
         self.dtype = str(dtype)
+        self.value_storage = ValueStorageLookup(values)
 
         defaults = self.db.get_defaults()
         self.vf_startup_cost = int(defaults.get("vf_startup_cost", 0))
@@ -472,7 +475,7 @@ class IDU:
             # -------------------------------------------------
             dst_count = 0
             for d in inst.get("dst", []):
-                if isinstance(d, str) and d[:1].lower() == "v":
+                if self.value_storage.is_register(d):
                     dst_count += 1
 
             if credits < dst_count:

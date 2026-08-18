@@ -19,12 +19,16 @@ from api.frontend.instruction_catalog import (
     InstructionSpec,
     OperandDirection,
 )
+from api.frontend.schema import SourceLocation
+from api.frontend.value_versioning import ValueVersioningPass
 from api.vf_info import (
     Membar,
     MemInfo,
     VFInfo,
+    VFAlias,
     VFInst,
     VFLoop,
+    VFMemoryAccess,
     VFNode,
     canonicalize_vf_info,
 )
@@ -42,6 +46,15 @@ _LOCAL_SCALAR_DECL_RE = re.compile(
     r"signed(?:\s+(?:short|int|long))?|short|int|long|float|double|half)"
     r"\s+(?P<declarations>.+?)\s*;\s*$"
 )
+_LOCAL_UB_POINTER_DECL_RE = re.compile(
+    r"^\s*(?:(?:const|volatile|static)\s+)*__ubuf__\s+"
+    r"[A-Za-z_]\w*\s*\*\s*(?P<name>[A-Za-z_]\w*)\s*=\s*"
+    r"(?P<initializer>.+?)\s*;\s*$",
+    re.DOTALL,
+)
+_REGISTER_ALIAS_ASSIGN_RE = re.compile(
+    r"^\s*(?P<dst>[A-Za-z_]\w*)\s*=\s*(?P<src>[A-Za-z_]\w*)\s*;\s*$"
+)
 _CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\((.*)\)\s*;", re.DOTALL)
 
 
@@ -54,6 +67,7 @@ class CCEVFScope:
     declaration_source: str
     params: Sequence[str]
     param_storage: Dict[str, str]
+    source_path: str
 
 
 def list_cce_vf_kernels(path: str | Path) -> List[str]:
@@ -92,6 +106,7 @@ def extract_cce_vf_scopes(path: str | Path) -> List[CCEVFScope]:
                 declaration_source=body[: vec_match.start()],
                 params=_parse_param_names(match.group("params")),
                 param_storage=_parse_param_storage(match.group("params")),
+                source_path=str(source_path),
             )
         )
 
@@ -117,7 +132,27 @@ def parse_cce_vf_info(
     resolved_loop_params = dict(loop_params or {})
     resolved_loop_params.update(_infer_call_argument_constants(source, scope))
     parser = _VFScopeParser(scope, resolved_loop_params)
-    return canonicalize_vf_info(VFInfo(context=parser.parse()))
+    return canonicalize_vf_info(
+        VFInfo(context=parser.parse(), params=resolved_loop_params)
+    )
+
+
+def parse_cce_canonical_vf_info(
+    path: str | Path,
+    kernel_name: str | None = None,
+    loop_params: Optional[Dict[str, int]] = None,
+):
+    """Parse CCE into versioned canonical definitions without timing lookup."""
+
+    vf_info = parse_cce_vf_info(
+        path,
+        kernel_name=kernel_name,
+        loop_params=loop_params,
+    )
+    return ValueVersioningPass().run(
+        vf_info,
+        source={"adapter": "cce", "path": str(Path(path))},
+    )
 
 
 class _VFScopeParser:
@@ -129,6 +164,9 @@ class _VFScopeParser:
         self.ub_names = {
             name for name, storage in scope.param_storage.items() if storage == "UB"
         }
+        self.ub_aliases: Dict[str, tuple[str, str]] = {
+            name: (name, "0") for name in self.ub_names
+        }
         self.scalar_names = {
             name for name, storage in scope.param_storage.items() if storage == "Scalar"
         }
@@ -138,12 +176,17 @@ class _VFScopeParser:
         self._record_function_scope_scalar_declarations(scope.declaration_source)
 
     def parse(self) -> List[VFNode]:
-        return self._parse_block(self.scope.source, frozenset())
+        return self._parse_block(
+            self.scope.source,
+            frozenset(),
+            self.scope.start_line,
+        )
 
     def _parse_block(
         self,
         text: str,
         induction_variables: frozenset[str],
+        base_line: int,
     ) -> List[VFNode]:
         saved_dtypes = dict(self.register_dtypes)
         saved_names = set(self.register_names)
@@ -151,8 +194,10 @@ class _VFScopeParser:
         saved_offset_scalar_names = set(self.offset_scalar_names)
         saved_scalar_dtypes = dict(self.local_scalar_dtypes)
         saved_scalar_initializers = dict(self.local_scalar_initializers)
+        saved_ub_names = set(self.ub_names)
+        saved_ub_aliases = dict(self.ub_aliases)
         try:
-            return self._parse_block_contents(text, induction_variables)
+            return self._parse_block_contents(text, induction_variables, base_line)
         finally:
             self.register_dtypes = saved_dtypes
             self.register_names = saved_names
@@ -160,11 +205,14 @@ class _VFScopeParser:
             self.offset_scalar_names = saved_offset_scalar_names
             self.local_scalar_dtypes = saved_scalar_dtypes
             self.local_scalar_initializers = saved_scalar_initializers
+            self.ub_names = saved_ub_names
+            self.ub_aliases = saved_ub_aliases
 
     def _parse_block_contents(
         self,
         text: str,
         induction_variables: frozenset[str],
+        base_line: int,
     ) -> List[VFNode]:
         nodes: List[VFNode] = []
         pos = 0
@@ -190,14 +238,27 @@ class _VFScopeParser:
                 if body_open < 0:
                     raise ValueError("Only braced for-loops are supported in __VEC_SCOPE__")
                 body_close = _find_matching_brace(text, body_open)
-                count, variable = self._loop_count_from_header(
+                count, variable, start, step = self._loop_count_from_header(
                     text[header_start + 1 : header_end]
                 )
                 body = self._parse_block(
                     text[body_open + 1 : body_close],
                     induction_variables | {variable},
+                    base_line + text[: body_open + 1].count("\n"),
                 )
-                nodes.append(VFLoop(count=count, unroll=pending_unroll, body=body))
+                nodes.append(
+                    VFLoop(
+                        count=count,
+                        unroll=pending_unroll,
+                        body=body,
+                        induction_variable=variable,
+                        induction_start=start,
+                        induction_step=step,
+                        source_location=self._source_location(
+                            base_line + text[:pos].count("\n")
+                        ),
+                    )
+                )
                 pending_unroll = 1
                 pos = body_close + 1
                 continue
@@ -210,7 +271,11 @@ class _VFScopeParser:
                 break
 
             stmt = text[pos : stmt_end + 1].strip()
-            node = self._parse_statement(stmt, induction_variables)
+            node = self._parse_statement(
+                stmt,
+                induction_variables,
+                base_line + text[:pos].count("\n"),
+            )
             if node is not None:
                 nodes.append(node)
             pos = stmt_end + 1
@@ -221,6 +286,7 @@ class _VFScopeParser:
         self,
         stmt: str,
         induction_variables: frozenset[str],
+        line: int,
     ) -> VFNode | None:
         if not stmt:
             return None
@@ -230,9 +296,28 @@ class _VFScopeParser:
         if _LOCAL_SCALAR_DECL_RE.fullmatch(stmt):
             self._record_local_scalar_decl_statement(stmt)
             return None
+        if _LOCAL_UB_POINTER_DECL_RE.fullmatch(stmt):
+            self._record_local_ub_pointer_decl_statement(stmt)
+            return None
+        register_alias = _REGISTER_ALIAS_ASSIGN_RE.fullmatch(stmt)
+        if register_alias:
+            dst = register_alias.group("dst")
+            src = register_alias.group("src")
+            if dst not in self.register_names or src not in self.register_names:
+                raise ValueError(
+                    f"Register alias assignment requires declared vector values: {stmt}"
+                )
+            return VFAlias(
+                destination=MemInfo(dst, "Register", self.register_dtypes.get(dst)),
+                source=MemInfo(src, "Register", self.register_dtypes.get(src)),
+                source_location=self._source_location(line),
+            )
         smem_bar = re.match(r"SMEM_BAR\s*\.\s*([A-Za-z_]\w*)\s*;", stmt, re.IGNORECASE)
         if smem_bar:
-            return Membar(normalize_membar_type(smem_bar.group(1)))
+            return Membar(
+                normalize_membar_type(smem_bar.group(1)),
+                self._source_location(line),
+            )
 
         match = _CALL_RE.fullmatch(stmt)
         if not match:
@@ -247,7 +332,10 @@ class _VFScopeParser:
             return None
         if low in {"mem_bar", "membar"} or "barrier" in low:
             barrier = args[0] if args else None
-            return Membar(normalize_membar_type(barrier))
+            return Membar(
+                normalize_membar_type(barrier),
+                self._source_location(line),
+            )
         if not low.startswith("v"):
             raise ValueError(
                 f"Unsupported CCE statement in __VEC_SCOPE__: {stmt}"
@@ -256,7 +344,9 @@ class _VFScopeParser:
         op = normalize_opcode(callee)
         spec = DEFAULT_INSTRUCTION_CATALOG.lookup(op)
         if spec is None:
-            return self._bind_generic_compute_call(callee, op, args)
+            return self._bind_generic_compute_call(
+                callee, op, args, self._source_location(line)
+            )
         src, dst = self._bind_catalog_call(
             callee, spec, args, induction_variables
         )
@@ -269,6 +359,18 @@ class _VFScopeParser:
             form=resolved_form,
             src=src,
             dst=dst,
+            instruction_class=spec.instruction_class.value,
+            memory_accesses=self._memory_accesses_for_call(spec, args),
+            source_location=self._source_location(line),
+            supplemental_inputs=tuple(
+                MemInfo(args[operand.argument_index].strip(), "Scalar")
+                for operand in spec.operands
+                if operand.direction == OperandDirection.INPUT
+                and operand.kind
+                in {ArgumentKind.SCALAR, ArgumentKind.REGISTER_OR_SCALAR}
+                and operand.argument_index < len(args)
+                and _is_numeric_scalar_literal(args[operand.argument_index])
+            ),
         )
 
     def _bind_catalog_call(
@@ -340,20 +442,29 @@ class _VFScopeParser:
                 raise ValueError(
                     f"{callee} argument {index} must be a declared vector register: {arg}"
                 )
-            return MemInfo(name, "Register", self.register_dtypes.get(name))
+            return MemInfo(
+                name,
+                "Register",
+                self.register_dtypes.get(name),
+            )
         if kind == ArgumentKind.UB:
-            if name not in self.ub_names:
+            ub_reference = self._parse_ub_reference(arg)
+            if ub_reference is None:
                 raise ValueError(
                     f"{callee} argument {index} must be a declared UB object: {arg}"
                 )
-            return MemInfo(name, "UB")
+            return MemInfo(ub_reference[0], "UB")
         if kind in {ArgumentKind.SCALAR, ArgumentKind.REGISTER_OR_SCALAR}:
             if name in self.register_names:
                 if kind == ArgumentKind.SCALAR:
                     raise ValueError(
                         f"{callee} argument {index} must be scalar: {arg}"
                     )
-                return MemInfo(name, "Register", self.register_dtypes.get(name))
+                return MemInfo(
+                    name,
+                    "Register",
+                    self.register_dtypes.get(name),
+                )
             if name in self.ub_names:
                 raise ValueError(
                     f"{callee} argument {index} cannot use a UB object as scalar: {arg}"
@@ -376,13 +487,20 @@ class _VFScopeParser:
                 f"{callee} argument {index} must be a predicate: {arg}"
             )
         if kind == ArgumentKind.CONFIG:
-            if operand_spec.name == "offset":
+            if (
+                operand_spec.name == "offset"
+                and operand_spec.allow_integer_expression
+            ):
                 variable_names = (
                     set(induction_variables) | self.offset_scalar_names
                 )
                 constant_names = set(self.loop_params)
+                vag_match = re.fullmatch(
+                    r"vag_b(?:16|32)\s*\((.*)\)", arg.strip(), re.DOTALL
+                )
+                candidate = vag_match.group(1) if vag_match else arg
                 if _is_affine_int_expression(
-                    arg,
+                    candidate,
                     variable_names=variable_names,
                     constant_names=constant_names,
                     symbol_expressions={
@@ -400,11 +518,21 @@ class _VFScopeParser:
             if (
                 operand_spec.allowed_values
                 and arg.strip() not in operand_spec.allowed_values
+                and not (
+                    operand_spec.allow_integer_expression
+                    and _eval_int_expr(arg.strip(), self.loop_params) is not None
+                )
             ):
                 raise ValueError(
                     f"{callee} argument {index} has unsupported configuration: {arg}"
                 )
-            if _is_config_token(arg):
+            if (
+                _is_config_token(arg)
+                or (
+                    operand_spec.allow_integer_expression
+                    and _eval_int_expr(arg.strip(), self.loop_params) is not None
+                )
+            ):
                 return None
             raise ValueError(
                 f"{callee} argument {index} must be a configuration token: {arg}"
@@ -416,6 +544,7 @@ class _VFScopeParser:
         callee: str,
         op: str,
         args: Sequence[str],
+        source_location: SourceLocation,
     ) -> VFInst:
         if not args:
             raise ValueError(f"{callee} expects at least one destination operand")
@@ -426,23 +555,159 @@ class _VFScopeParser:
             if (operand := self._operand_for_arg(arg))
         ]
         form = _infer_inst_form(op, dst, src)
-        return VFInst(name=op, form=form, src=src, dst=dst)
+        return VFInst(
+            name=op,
+            form=form,
+            src=src,
+            dst=dst,
+            instruction_class="compute",
+            source_location=source_location,
+        )
+
+    def _source_location(self, line: int) -> SourceLocation:
+        return SourceLocation(
+            source=self.scope.kernel_name,
+            line=line,
+            path=self.scope.source_path,
+        )
+
+    def _memory_accesses_for_call(
+        self,
+        spec: InstructionSpec,
+        args: Sequence[str],
+    ) -> tuple[VFMemoryAccess, ...]:
+        memory_operand = next(
+            (
+                operand
+                for operand in spec.operands
+                if operand.kind == ArgumentKind.UB
+                and operand.argument_index < len(args)
+            ),
+            None,
+        )
+        if memory_operand is None:
+            return ()
+        offset_operand = next(
+            (operand for operand in spec.operands if operand.name == "offset"),
+            None,
+        )
+        mode_operand = next(
+            (
+                operand
+                for operand in spec.operands
+                if operand.name in {"mode", "config"}
+            ),
+            None,
+        )
+        ub_reference = self._parse_ub_reference(
+            args[memory_operand.argument_index]
+        )
+        if ub_reference is None:
+            return ()
+        base_name, alias_offset = ub_reference
+        offset: int | str = alias_offset
+        if offset_operand is not None and offset_operand.argument_index < len(args):
+            raw_offset = args[offset_operand.argument_index].strip()
+            if not re.fullmatch(r"vag_b(?:16|32)\s*\(.*\)", raw_offset, re.DOTALL):
+                expanded_offset = self._expand_offset_expression(raw_offset)
+                offset = self._combine_offset_expressions(
+                    alias_offset, expanded_offset
+                )
+        mode = None
+        if mode_operand is not None and mode_operand.argument_index < len(args):
+            mode = args[mode_operand.argument_index].strip()
+        span = 1 if mode and (mode.startswith("BRC_") or mode.startswith("ONEPT_")) else None
+        return (
+            VFMemoryAccess(
+                value_id=base_name,
+                access_kind=(
+                    "read"
+                    if spec.instruction_class.value == "load"
+                    else "write"
+                ),
+                offset=offset,
+                span=span,
+                mode=mode,
+            ),
+        )
+
+    @staticmethod
+    def _combine_offset_expressions(lhs: str, rhs: str) -> str:
+        if lhs.strip() == "0":
+            return rhs
+        if rhs.strip() == "0":
+            return lhs
+        return f"({lhs}) + ({rhs})"
+
+    def _resolve_ub_alias(self, name: str) -> tuple[str, str]:
+        return self.ub_aliases.get(name, (name, "0"))
+
+    def _parse_ub_reference(self, expression: str) -> tuple[str, str] | None:
+        value = _strip_ub_reference_wrappers(expression)
+        match = re.fullmatch(
+            r"(?P<base>[A-Za-z_]\w*)(?:\s*\+\s*(?P<offset>.+))?",
+            value,
+            re.DOTALL,
+        )
+        if match is None:
+            return None
+        source_name = match.group("base")
+        if source_name not in self.ub_names:
+            return None
+        base_name, alias_offset = self._resolve_ub_alias(source_name)
+        offset = match.group("offset")
+        if offset is None:
+            return base_name, alias_offset
+        inline_offset = self._expand_offset_expression(offset)
+        return (
+            base_name,
+            self._combine_offset_expressions(alias_offset, inline_offset),
+        )
+
+    def _expand_offset_expression(self, expression: str) -> str:
+        symbol_expressions = dict(self.local_scalar_initializers)
+
+        class Expander(ast.NodeTransformer):
+            def __init__(self) -> None:
+                self.resolving: set[str] = set()
+
+            def visit_Name(self, node: ast.Name):
+                initializer = symbol_expressions.get(node.id)
+                if initializer is None or node.id in self.resolving:
+                    return node
+                self.resolving.add(node.id)
+                try:
+                    replacement = ast.parse(initializer, mode="eval").body
+                    return self.visit(replacement)
+                finally:
+                    self.resolving.remove(node.id)
+
+        tree = ast.parse(expression.strip(), mode="eval")
+        expanded = Expander().visit(tree)
+        ast.fix_missing_locations(expanded)
+        return ast.unparse(expanded.body)
 
     def _register_operand(self, arg: str) -> MemInfo:
         name = _base_identifier(arg)
         if name not in self.register_names:
             raise ValueError(f"Expected declared vector register: {arg}")
-        return MemInfo(name, "Register", self.register_dtypes.get(name))
-
-    def _ub_operand(self, arg: str) -> MemInfo:
-        return MemInfo(_base_identifier(arg), "UB")
+        return MemInfo(
+            name,
+            "Register",
+            self.register_dtypes.get(name),
+        )
 
     def _operand_for_arg(self, arg: str) -> MemInfo | None:
         name = _base_identifier(arg)
         if name in self.register_names:
-            return MemInfo(name, "Register", self.register_dtypes.get(name))
-        if name in self.ub_names:
-            return MemInfo(name, "UB")
+            return MemInfo(
+                name,
+                "Register",
+                self.register_dtypes.get(name),
+            )
+        ub_reference = self._parse_ub_reference(arg)
+        if ub_reference is not None:
+            return MemInfo(ub_reference[0], "UB")
         if name in self.scalar_names:
             return MemInfo(name, "Scalar")
         return None
@@ -494,7 +759,21 @@ class _VFScopeParser:
                 continue
             self.local_scalar_initializers[name] = initializer.strip()
 
-    def _loop_count_from_header(self, header: str) -> tuple[int, str]:
+    def _record_local_ub_pointer_decl_statement(self, stmt: str) -> None:
+        match = _LOCAL_UB_POINTER_DECL_RE.fullmatch(stmt)
+        if not match:
+            raise ValueError(f"Unsupported local UB pointer declaration: {stmt}")
+        name = match.group("name")
+        initializer = match.group("initializer").strip()
+        ub_reference = self._parse_ub_reference(initializer)
+        if ub_reference is None:
+            raise ValueError(
+                f"Unsupported local UB pointer initializer: {stmt}"
+            )
+        self.ub_names.add(name)
+        self.ub_aliases[name] = ub_reference
+
+    def _loop_count_from_header(self, header: str) -> tuple[int, str, int, int]:
         parts = [part.strip() for part in header.split(";")]
         if len(parts) < 2:
             raise ValueError(f"Unsupported for-loop header: {header}")
@@ -520,8 +799,8 @@ class _VFScopeParser:
         inclusive = cond_match.group(2) == "<="
         span = bound - start + (1 if inclusive else 0)
         if span <= 0:
-            return 0, var
-        return (span + step - 1) // step, var
+            return 0, var, start, step
+        return (span + step - 1) // step, var, start, step
 
 
 def _select_scope(scopes: Sequence[CCEVFScope], kernel_name: str | None) -> CCEVFScope:
@@ -640,6 +919,18 @@ def _eval_int_expr(expr: str, names: Dict[str, int]) -> int | None:
                 if rhs == 0:
                     return None
                 return lhs // rhs
+            if isinstance(node.op, ast.LShift):
+                if rhs < 0:
+                    return None
+                return lhs << rhs
+            if isinstance(node.op, ast.RShift):
+                if rhs < 0:
+                    return None
+                return lhs >> rhs
+            if isinstance(node.op, ast.BitOr):
+                return lhs | rhs
+            if isinstance(node.op, ast.BitAnd):
+                return lhs & rhs
         return None
 
     return visit(tree)
@@ -793,6 +1084,39 @@ def _split_args(text: str) -> List[str]:
     if tail:
         args.append(tail)
     return args
+
+
+def _matching_close_parenthesis(text: str, start: int = 0) -> int | None:
+    depth = 0
+    for index in range(start, len(text)):
+        if text[index] == "(":
+            depth += 1
+        elif text[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+            if depth < 0:
+                return None
+    return None
+
+
+def _strip_ub_reference_wrappers(expression: str) -> str:
+    """Strip complete UB pointer casts and grouping around an address expression."""
+
+    value = expression.strip()
+    while value.startswith("("):
+        close = _matching_close_parenthesis(value)
+        if close is None:
+            break
+        if close == len(value) - 1:
+            value = value[1:close].strip()
+            continue
+        cast = value[1:close]
+        if "__ubuf__" in cast and ("*" in cast or "&" in cast):
+            value = value[close + 1 :].strip()
+            continue
+        break
+    return value
 
 
 def _base_identifier(arg: str) -> str:

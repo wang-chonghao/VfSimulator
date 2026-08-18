@@ -10,7 +10,9 @@
 #include "native/SimulatorRunner.h"
 
 #include <filesystem>
+#include <fstream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -46,6 +48,13 @@ bool hasDiagnostic(const CanonicalValidationResult &result,
   return false;
 }
 
+std::string readText(const std::filesystem::path &path) {
+  std::ifstream stream(path);
+  std::ostringstream text;
+  text << stream.rdbuf();
+  return text.str();
+}
+
 } // namespace
 
 int main() {
@@ -65,6 +74,8 @@ int main() {
       instructionCatalog.lookup("VLDS")->operands[3].allowedValues.count(
           "NORM") != 1 ||
       instructionCatalog.lookup("VLDS")->callVariants.size() != 2 ||
+      !instructionCatalog.lookup("VLDS")->operands[2].allowIntegerExpression ||
+      instructionCatalog.lookup("VLDS")->operands[3].allowIntegerExpression ||
       instructionCatalog.lookup("VDUP")->callVariants[1].argumentValues.at(3).count(
           "POS_LOWEST") != 1)
     throw std::runtime_error("native generated instruction catalog mismatch");
@@ -79,9 +90,138 @@ int main() {
   const auto sharedCarriedJson = json::parseFile(
       std::filesystem::path(VFSIM_SOURCE_ROOT) /
       "tests/fixtures/canonical_vf_info/v1_valid_loop_carried.json");
-  if (!validateCanonicalVfInfo(
-           decodeCanonicalVfInfoFixture(sharedCarriedJson)).ok())
+  CanonicalVfInfo canonicalCarriedContract =
+      decodeCanonicalVfInfoFixture(sharedCarriedJson);
+  if (!validateCanonicalVfInfo(canonicalCarriedContract).ok())
     throw std::runtime_error("shared valid loop-carried fixture was rejected");
+  CanonicalVfInfo aliasBackEdgeContract = canonicalCarriedContract;
+  const auto aliasLoop = std::get<std::shared_ptr<const CanonicalLoop>>(
+      aliasBackEdgeContract.context.front().payload);
+  const std::string aliasBackEdgeId =
+      aliasLoop->carriedValues.front().backEdgeValueId;
+  aliasBackEdgeContract.values.at(aliasBackEdgeId).logicalId = "alias.source";
+  if (!validateCanonicalVfInfo(aliasBackEdgeContract).ok())
+    throw std::runtime_error(
+        "native validator rejected a type-compatible alias back-edge");
+  aliasBackEdgeContract.values.at(aliasBackEdgeId).dtype = "fp16";
+  if (!hasDiagnostic(validateCanonicalVfInfo(aliasBackEdgeContract),
+                     "loop_carried_type_mismatch"))
+    throw std::runtime_error(
+        "native validator accepted an alias back-edge type mismatch");
+  CanonicalVfInfo invariantBackEdgeContract = canonicalCarriedContract;
+  CanonicalLoop invariantLoop =
+      *std::get<std::shared_ptr<const CanonicalLoop>>(
+          invariantBackEdgeContract.context.front().payload);
+  invariantLoop.carriedValues.front().backEdgeValueId = "rhs.entry";
+  invariantBackEdgeContract.context.front() =
+      CanonicalNode::makeLoop(std::move(invariantLoop));
+  if (!validateCanonicalVfInfo(invariantBackEdgeContract).ok())
+    throw std::runtime_error(
+        "native validator rejected an invariant alias back-edge");
+
+  const ParamDB db(std::filesystem::path(VFSIM_SOURCE_ROOT));
+  const auto canonicalOutDir =
+      std::filesystem::temp_directory_path() / "vfsim_native_canonical_api";
+  const SimulationResult canonicalResult =
+      runCanonicalVfInfo(canonicalContract, db, canonicalOutDir.string());
+  if (canonicalResult.cyclesExecuted != 35 || canonicalResult.vfEndCycle != 47)
+    throw std::runtime_error(
+        "native canonical loop result differs from Python: cycles=" +
+        std::to_string(canonicalResult.cyclesExecuted) +
+        ", end=" + std::to_string(canonicalResult.vfEndCycle));
+  const std::string canonicalHistory =
+      readText(canonicalOutDir / "sim_history.json");
+  if (canonicalHistory.find("\"static_instruction_id\":\"inst.load\"") ==
+          std::string::npos ||
+      canonicalHistory.find(
+          "\"iteration_path\":[{\"loop_id\":\"loop.row\",\"iteration\":0}]") ==
+          std::string::npos ||
+      canonicalHistory.find("\"stream_seq\":0") == std::string::npos)
+    throw std::runtime_error(
+        "native canonical dynamic identity was not preserved in history");
+  const SimulationResult canonicalCarriedResult =
+      runCanonicalVfInfo(canonicalCarriedContract, db);
+  if (canonicalCarriedResult.cyclesExecuted != 40 ||
+      canonicalCarriedResult.vfEndCycle != 52)
+    throw std::runtime_error(
+        "native canonical loop-carried result differs from Python: cycles=" +
+        std::to_string(canonicalCarriedResult.cyclesExecuted) +
+        ", end=" + std::to_string(canonicalCarriedResult.vfEndCycle));
+  CanonicalVfInfo canonicalUnrolledContract = canonicalCarriedContract;
+  CanonicalLoop unrolledLoop = *std::get<std::shared_ptr<const CanonicalLoop>>(
+      canonicalUnrolledContract.context.front().payload);
+  unrolledLoop.unroll = int64_t{2};
+  canonicalUnrolledContract.context.front() =
+      CanonicalNode::makeLoop(std::move(unrolledLoop));
+  const SimulationResult canonicalUnrolledResult =
+      runCanonicalVfInfo(canonicalUnrolledContract, db);
+  if (canonicalUnrolledResult.cyclesExecuted != 40 ||
+      canonicalUnrolledResult.vfEndCycle != 52)
+    throw std::runtime_error(
+        "native canonical structured unroll differs from Python: cycles=" +
+        std::to_string(canonicalUnrolledResult.cyclesExecuted) +
+        ", end=" + std::to_string(canonicalUnrolledResult.vfEndCycle));
+  CanonicalVfInfo canonicalMembarUnrollContract = canonicalCarriedContract;
+  CanonicalLoop membarUnrolledLoop =
+      *std::get<std::shared_ptr<const CanonicalLoop>>(
+          canonicalMembarUnrollContract.context.front().payload);
+  membarUnrolledLoop.unroll = int64_t{2};
+  CanonicalMembar loopMembar;
+  loopMembar.instructionId = "membar.loop";
+  loopMembar.barrier = "VST_VLD";
+  membarUnrolledLoop.body.push_back(
+      CanonicalNode::makeMembar(std::move(loopMembar)));
+  canonicalMembarUnrollContract.context.front() =
+      CanonicalNode::makeLoop(std::move(membarUnrolledLoop));
+  const ParamDB warningDb(std::filesystem::path(VFSIM_SOURCE_ROOT));
+  (void)runCanonicalVfInfo(canonicalMembarUnrollContract, warningDb);
+  bool sawMembarUnrollWarning = false;
+  for (const auto &warning : warningDb.warnings())
+    sawMembarUnrollWarning =
+        sawMembarUnrollWarning || warning.kind == "membar_unroll_disabled";
+  if (!sawMembarUnrollWarning)
+    throw std::runtime_error(
+        "native canonical membar unroll fallback did not record warning");
+  CanonicalVfInfo canonicalUarchContract = canonicalContract;
+  canonicalUarchContract.uarch["vreg_num"] = int64_t{1};
+  const SimulationResult canonicalUarchResult =
+      runCanonicalVfInfo(canonicalUarchContract, db);
+  if (canonicalUarchResult.cyclesExecuted != 68 ||
+      canonicalUarchResult.vfEndCycle != 80)
+    throw std::runtime_error(
+        "native canonical uarch override differs from Python: cycles=" +
+        std::to_string(canonicalUarchResult.cyclesExecuted) +
+        ", end=" + std::to_string(canonicalUarchResult.vfEndCycle));
+  CanonicalVfInfo deprecatedUarchContract = canonicalContract;
+  deprecatedUarchContract.uarch["load_done_latency"] = int64_t{99};
+  if (!hasDiagnostic(validateCanonicalVfInfo(deprecatedUarchContract),
+                     "deprecated_uarch_field"))
+    throw std::runtime_error(
+        "native validator accepted deprecated load_done_latency override");
+
+  CanonicalVfInfo nonInnermostUnrollContract;
+  CanonicalLoop outerLoop;
+  outerLoop.loopId = "loop.outer";
+  outerLoop.induction.variableId = "i";
+  outerLoop.count = int64_t{2};
+  outerLoop.unroll = int64_t{2};
+  CanonicalLoop innerLoop;
+  innerLoop.loopId = "loop.inner";
+  innerLoop.induction.variableId = "j";
+  innerLoop.count = int64_t{2};
+  outerLoop.body.push_back(CanonicalNode::makeLoop(std::move(innerLoop)));
+  nonInnermostUnrollContract.context.push_back(
+      CanonicalNode::makeLoop(std::move(outerLoop)));
+  bool rejectedNonInnermostUnroll = false;
+  try {
+    (void)runCanonicalVfInfo(nonInnermostUnrollContract, db);
+  } catch (const std::runtime_error &error) {
+    rejectedNonInnermostUnroll =
+        std::string(error.what()).find("non-innermost") != std::string::npos;
+  }
+  if (!rejectedNonInnermostUnroll)
+    throw std::runtime_error(
+        "native canonical non-innermost unroll was not rejected");
 
   CanonicalVfInfo ghostContract = canonicalContract;
   CanonicalValue ghostValue;
@@ -228,7 +368,6 @@ int main() {
   };
   vfInfo.body.push_back(ProgramNode::makeLoop(std::move(loop)));
 
-  const ParamDB db(std::filesystem::path(VFSIM_SOURCE_ROOT));
   VfInfo canonical = vfInfo;
   canonicalizeVfInfo(canonical);
   const auto &body = canonical.body.front().loop->body;

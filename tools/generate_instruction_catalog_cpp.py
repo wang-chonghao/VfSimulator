@@ -35,7 +35,7 @@ def render_catalog_cpp(payload: Mapping[str, Any]) -> str:
     for opcode, spec in instructions.items():
         for operand in signatures[spec["signature"]]:
             lines.append(
-                "  {%s, %s, %d, %s, %s, %s, %s},"
+                "  {%s, %s, %d, %s, %s, %s, %s, %s},"
                 % (
                     _quote(opcode),
                     _quote(operand["name"]),
@@ -44,6 +44,9 @@ def render_catalog_cpp(payload: Mapping[str, Any]) -> str:
                     _quote(operand["role"]),
                     _quote(operand["kind"]),
                     "true" if operand.get("optional", False) else "false",
+                    "true"
+                    if operand.get("allow_integer_expression", False)
+                    else "false",
                 )
             )
     lines.append("};")

@@ -129,6 +129,12 @@ class InstructionCatalogTest(unittest.TestCase):
             "allowed_values_string": lambda data: data["signatures"]["load"][3].update(
                 allowed_values="NORM"
             ),
+            "integer_expression_string": lambda data: data["signatures"]["load"][2].update(
+                allow_integer_expression="true"
+            ),
+            "integer_expression_non_config": lambda data: data["signatures"]["binary"][1].update(
+                allow_integer_expression=True
+            ),
             "operand_name_number": lambda data: data["signatures"]["binary"][0].update(
                 name=7
             ),
@@ -165,6 +171,14 @@ class InstructionCatalogTest(unittest.TestCase):
     def test_config_allowed_values_are_shared_with_native_catalog(self):
         load = DEFAULT_INSTRUCTION_CATALOG.lookup("VLDS")
         mode = next(operand for operand in load.operands if operand.name == "mode")
+        offset = next(operand for operand in load.operands if operand.name == "offset")
+        vsstb = DEFAULT_INSTRUCTION_CATALOG.lookup("VSSTB")
+        vsstb_config = next(
+            operand for operand in vsstb.operands if operand.name == "config"
+        )
+        self.assertTrue(offset.allow_integer_expression)
+        self.assertTrue(vsstb_config.allow_integer_expression)
+        self.assertFalse(mode.allow_integer_expression)
         self.assertEqual(
             set(mode.allowed_values),
             {"NORM", "BRC_B32", "BRC_B16", "ONEPT_B32", "ONEPT_B16"},

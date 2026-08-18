@@ -29,6 +29,7 @@ struct NativeOperandSpec {
   std::string role;
   CatalogArgumentKind kind = CatalogArgumentKind::Register;
   bool optional = false;
+  bool allowIntegerExpression = false;
   std::unordered_set<std::string> allowedValues;
 };
 

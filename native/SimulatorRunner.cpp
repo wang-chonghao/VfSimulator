@@ -9,6 +9,7 @@
 #include "native/SimulatorRunner.h"
 
 #include "native/ControlUnit.h"
+#include "native/CanonicalProgramLowering.h"
 #include "native/ISATraits.h"
 #include "native/ProgramCanonicalization.h"
 #include "native/ProgramFlatten.h"
@@ -81,12 +82,18 @@ std::string joinJsonArray<std::string>(const std::vector<std::string> &values) {
   return oss.str();
 }
 
-template <typename T>
-void dumpJsonLines(const std::vector<T> &records, const std::string &path) {
-  std::ofstream os(path);
-  for (const auto &r : records) {
-    os << r << '\n';
+std::string joinIterationPath(
+    const std::vector<std::pair<std::string, int64_t>> &path) {
+  std::ostringstream oss;
+  oss << "[";
+  for (size_t index = 0; index < path.size(); ++index) {
+    if (index)
+      oss << ", ";
+    oss << "{\"loop_id\":\"" << jsonEscape(path[index].first)
+        << "\",\"iteration\":" << path[index].second << "}";
   }
+  oss << "]";
+  return oss.str();
 }
 
 struct Reservation {
@@ -127,6 +134,9 @@ void dumpDispatchLog(const IDU &idu, const std::string &path) {
        << ",\"SHQ_QUEUE\":" << r.shqQueue
        << ",\"LSQ\":" << r.lsq
        << ",\"SHQ\":" << r.shq
+       << ",\"static_instruction_id\":\"" << jsonEscape(r.staticInstructionId) << "\""
+       << ",\"iteration_path\":" << joinIterationPath(r.iterationPath)
+       << ",\"stream_seq\":" << r.streamSeq
        << "}\n";
   }
 }
@@ -189,6 +199,21 @@ SimulationResult runVfInfo(const VfInfo &input,
   OoOCoreMainline ooo(db.uarch(), db, vfInfo.defaultDtype, vfInfo.values);
   return runSimulation(ifu, idu, ooo, db.uarch(), vfInfo.params, resultsDir,
                        maxCycles, vfInfo.values);
+}
+
+SimulationResult runCanonicalVfInfo(const CanonicalVfInfo &vfInfo,
+                                    const ParamDB &db,
+                                    const std::string &resultsDir,
+                                    int64_t maxCycles) {
+  CanonicalRuntimeProgram runtime = lowerCanonicalProgram(vfInfo, &db);
+  const UarchConfig uarch = resolveCanonicalUarch(vfInfo, db.uarch());
+  IFU ifu(std::move(runtime.instructions), runtime.topBlockLoopBounds,
+          runtime.totalTopBlocks);
+  IDU idu(uarch, db, runtime.params, {}, runtime.totalTopBlocks,
+          runtime.topBlockLoopBounds, runtime.dtype, runtime.values);
+  OoOCoreMainline ooo(uarch, db, runtime.dtype, runtime.values);
+  return runSimulation(ifu, idu, ooo, uarch, runtime.params, resultsDir,
+                       maxCycles, runtime.values);
 }
 
 SimulationResult runSimulation(IFU &ifu,

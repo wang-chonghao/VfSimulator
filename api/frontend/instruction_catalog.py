@@ -40,6 +40,7 @@ class OperandSpec:
     kind: ArgumentKind
     optional: bool = False
     allowed_values: tuple[str, ...] = ()
+    allow_integer_expression: bool = False
 
     @property
     def storage(self) -> StorageKind | None:
@@ -166,6 +167,14 @@ class InstructionCatalog:
                 isinstance(value, str) and value for value in operand.allowed_values
             ):
                 raise ValueError(f"Invalid allowed_values in {spec.opcode}")
+            if not isinstance(operand.allow_integer_expression, bool):
+                raise ValueError(
+                    f"Invalid allow_integer_expression in {spec.opcode}"
+                )
+            if operand.allow_integer_expression and operand.kind != ArgumentKind.CONFIG:
+                raise ValueError(
+                    f"Only config operands may allow integer expressions in {spec.opcode}"
+                )
             if operand.direction == OperandDirection.OUTPUT and operand.role not in {
                 OperandRole.DESTINATION,
                 OperandRole.MEMORY,
@@ -369,6 +378,7 @@ def instruction_catalog_from_dict(payload: Mapping[str, Any]) -> InstructionCata
             operand_name = raw.get("name")
             optional = raw.get("optional", False)
             allowed_values = raw.get("allowed_values", [])
+            allow_integer_expression = raw.get("allow_integer_expression", False)
             if not isinstance(operand_name, str) or not operand_name:
                 raise ValueError(f"{name}.name must be a non-empty string")
             if not isinstance(optional, bool):
@@ -377,6 +387,10 @@ def instruction_catalog_from_dict(payload: Mapping[str, Any]) -> InstructionCata
                 isinstance(value, str) and value for value in allowed_values
             ):
                 raise ValueError(f"{name}.allowed_values must be an array of strings")
+            if not isinstance(allow_integer_expression, bool):
+                raise ValueError(
+                    f"{name}.allow_integer_expression must be boolean"
+                )
             operands.append(OperandSpec(
                 name=operand_name,
                 argument_index=raw.get("argument_index"),
@@ -387,6 +401,7 @@ def instruction_catalog_from_dict(payload: Mapping[str, Any]) -> InstructionCata
                 kind=_enum(ArgumentKind, raw.get("kind"), f"{name}.kind"),
                 optional=optional,
                 allowed_values=tuple(allowed_values),
+                allow_integer_expression=allow_integer_expression,
             ))
         signatures[name] = tuple(operands)
 
