@@ -58,6 +58,133 @@ class InstructionFallbackTest(unittest.TestCase):
             any(warning["kind"] == "unsupported_isa_op" for warning in db.get_warnings())
         )
 
+    def test_instruction_profile_is_cached_and_immutable(self):
+        db = ParamDB(base_dir=str(ROOT))
+
+        first = db.resolve_inst("vadd", form="fp32", dtype="fp32")
+        second = db.resolve_inst("VADD", form="fp32", dtype="fp32")
+
+        self.assertIs(first, second)
+        self.assertEqual(first.op_class, "COMPUTE")
+        self.assertEqual(first.fu_type, "ALU")
+        self.assertEqual(first.latency, db.get_inst_form("VADD", "fp32")["latency"])
+        stats = db.get_profile_cache_stats()
+        self.assertEqual(stats["profiles"], 1)
+        self.assertEqual(stats["profile_misses"], 1)
+        self.assertGreaterEqual(stats["profile_hits"], 1)
+        with self.assertRaises((AttributeError, TypeError)):
+            first.latency = 99
+
+    def test_public_inst_params_cannot_mutate_cached_nested_values(self):
+        db = ParamDB(base_dir=str(ROOT))
+        db._insts["VNESTED_PROFILE"] = {
+            "op_class": "COMPUTE",
+            "forms": {
+                "fp32": {
+                    "latency": 7,
+                    "EXU": "ALU",
+                    "dispatch_exu": "EXU01",
+                    "metadata": {"source": "config"},
+                }
+            },
+        }
+
+        first = db.get_inst_form("VNESTED_PROFILE", "fp32", "fp32")
+        first["metadata"]["source"] = "caller"
+        second = db.get_inst_form("VNESTED_PROFILE", "fp32", "fp32")
+
+        self.assertEqual(second["metadata"]["source"], "config")
+
+    def test_fallback_profile_records_one_warning_per_missing_configuration(self):
+        db = ParamDB(base_dir=str(ROOT))
+
+        db.resolve_inst("VPROFILE_UNKNOWN", "fp32", "fp32")
+        db.resolve_inst("VPROFILE_UNKNOWN", "fp32", "fp32")
+        db.get_inst_form("VPROFILE_UNKNOWN", "fp32", "fp32")
+
+        warnings = [
+            item
+            for item in db.get_warnings()
+            if item["kind"] == "unsupported_isa_op"
+            and item["op"] == "VPROFILE_UNKNOWN"
+        ]
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["count"], 1)
+
+    def test_forwarding_and_ii_are_cached_by_profile_pair(self):
+        db = ParamDB(base_dir=str(ROOT))
+        producer = db.resolve_inst("VEXPDIF", "fp32", "fp32")
+        consumer = db.resolve_inst("VADD", "fp32", "fp32")
+
+        forwarding = db.get_forwarding_for_profiles(producer, consumer)
+        ii = db.get_ii_for_profiles(producer, consumer)
+
+        self.assertEqual(db.get_forwarding_for_profiles(producer, consumer), forwarding)
+        self.assertEqual(db.get_ii_for_profiles(producer, consumer), ii)
+        stats = db.get_profile_cache_stats()
+        self.assertEqual(stats["forwarding_pairs"], 1)
+        self.assertEqual(stats["ii_pairs"], 1)
+
+    def test_profile_pair_rejects_profiles_from_another_param_db(self):
+        first_db = ParamDB(base_dir=str(ROOT))
+        second_db = ParamDB(base_dir=str(ROOT))
+        first_producer = first_db.resolve_inst("VEXPDIF", "fp32", "fp32")
+        first_consumer = first_db.resolve_inst("VADD", "fp32", "fp32")
+        first_db.get_forwarding_for_profiles(first_producer, first_consumer)
+        foreign_producer = second_db.resolve_inst("VADD", "fp32", "fp32")
+        foreign_consumer = second_db.resolve_inst("VMUL", "fp32", "fp32")
+
+        with self.assertRaisesRegex(ValueError, "different ParamDB"):
+            first_db.get_forwarding_for_profiles(
+                foreign_producer, foreign_consumer
+            )
+        with self.assertRaisesRegex(ValueError, "different ParamDB"):
+            first_db.get_ii_for_profiles(foreign_producer, foreign_consumer)
+
+    def test_legacy_lsu_metadata_is_preserved_by_instruction_profile(self):
+        db = ParamDB(base_dir=str(ROOT))
+        db._isa_schema_version = 1
+        db._insts["CUSTOM_MEMORY_OP"] = {
+            "fp32": {
+                "unit": "LSU",
+                "lsu_op": "LOAD",
+                "latency": 7,
+            }
+        }
+
+        profile = db.resolve_inst("CUSTOM_MEMORY_OP", "fp32", "fp32")
+
+        self.assertEqual(profile.op_class, "LOAD")
+        self.assertEqual(profile.latency, 7)
+
+    def test_rename_binds_instruction_profile_to_uop(self):
+        core = self._make_mainline_core_for_isu()
+
+        core.accept(
+            {
+                "inst_id": 0,
+                "op": "VADD",
+                "form": "fp32",
+                "src": [],
+                "dst": ["v0"],
+            }
+        )
+
+        uop = core.ROB[-1]
+        self.assertIsNotNone(uop.profile)
+        self.assertEqual(uop.profile.op, "VADD")
+        self.assertEqual(uop.profile.op_class, "COMPUTE")
+
+    def test_freeing_preg_removes_producer_profile(self):
+        core = self._make_mainline_core_for_isu()
+        preg = "p_detached"
+        core.preg_producer_profile[preg] = core.db.resolve_inst(
+            "VADD", "fp32", "fp32"
+        )
+
+        self.assertTrue(core.preg_lifecycle.try_free_preg(preg))
+        self.assertNotIn(preg, core.preg_producer_profile)
+
     def test_fu_round_robin_keeps_exu0_only_on_exq0(self):
         core = self._make_mainline_core_for_isu()
         core.SHQ.append(self._make_compute_uop(0, "VPACK", form="b32"))

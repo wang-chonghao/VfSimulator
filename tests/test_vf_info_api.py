@@ -223,6 +223,14 @@ class VfInfoApiTest(unittest.TestCase):
             out_dir="/tmp/vfsim-vfinfo-legacy-fallback",
         )._run_lowered_payload(payload)
         self.assertGreater(result["vf_end_cycle"], 0)
+        self.assertNotIn("param_cache_stats", result)
+
+        benchmark_result = CoreVfCostModel(
+            base_dir=ROOT,
+            out_dir="/tmp/vfsim-vfinfo-cache-stats",
+            include_param_cache_stats=True,
+        )._run_lowered_payload(payload)
+        self.assertIn("param_cache_stats", benchmark_result)
 
     def test_json_adapter_allows_legacy_symbols_for_core_fallback(self):
         payload = {

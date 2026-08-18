@@ -34,6 +34,13 @@ struct Uop {
   std::vector<std::string> pregDst;
   std::vector<std::optional<std::string>> pregOld;
 
+  // Immutable scheduling profile copied at rename. Avoid pointers into
+  // ParamDB fallback maps because later insertions may rehash them.
+  std::string opClass = "COMPUTE";
+  std::string fuType = "ALU";
+  std::string dispatchExu;
+  int64_t latency = 1;
+
   std::string state = "blocked";
   int64_t readyCycle = 0;
   std::optional<int64_t> startCycle;
@@ -163,6 +170,8 @@ protected:
   std::deque<Uop> rob_;
 
   std::unordered_map<std::string, ProducerInfo> pregProducer_;
+  mutable std::unordered_map<std::string, int64_t> forwardingPairCache_;
+  mutable std::unordered_map<std::string, int64_t> initiationIntervalPairCache_;
   std::vector<int64_t> lastIssueCycleALU_;
   std::vector<int64_t> lastIssueCycleSFU_;
   std::vector<std::string> lastOpALU_;
@@ -231,6 +240,7 @@ protected:
   std::string getFuType(const std::string &op, const std::string &form) const;
   std::vector<int> eligibleExuPorts(const std::string &op,
                                     const std::string &form) const;
+  std::vector<int> eligibleExuPorts(const Uop &u) const;
   int64_t getIi(const std::string *prevOp, const std::string *prevForm,
                 const std::string &curOp, const std::string &curForm) const;
   void log(const std::string &event, const Uop &u);

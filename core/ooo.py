@@ -9,6 +9,7 @@ from collections import deque
 import json
 
 from core.isa_traits import is_compute_op, is_load_op, is_store_op
+from core.instruction_profile import InstructionProfile
 from core.value_storage import ValueStorageLookup
 
 
@@ -26,6 +27,7 @@ class Uop:
     preg_src: List[Optional[str]]
     preg_dst: List[str]
     preg_old: List[Optional[str]]
+    profile: Optional[InstructionProfile] = None
 
     state: str = "blocked"  # blocked/ready/running/done
     ready_cycle: int = 0
@@ -81,6 +83,7 @@ class OoOCore:
         # dependency tracking
         self.preg_producer: Dict[str, Tuple[str, str, int, str]] = {}
         self.preg_producer_uop: Dict[str, Uop] = {}
+        self.preg_producer_profile: Dict[str, InstructionProfile] = {}
 
         # EXU issue history.
         # By default, II is enforced at EXU level (cross-FU), because each EXU
@@ -101,6 +104,11 @@ class OoOCore:
         self.last_issue_cycle_exu = [-10**9] * self.issue_ports
         self.last_op_exu = [None] * self.issue_ports
         self.last_form_exu = [None] * self.issue_ports
+        self.last_profile = {
+            "ALU": [None] * self.issue_ports,
+            "SFU": [None] * self.issue_ports,
+        }
+        self.last_profile_exu = [None] * self.issue_ports
 
         self.cycle: int = 0
         self.last_done_cycle: int = 0
@@ -239,8 +247,16 @@ class OoOCore:
             return self.db.get_inst_form(op, form=form, dtype=self.dtype)
         return self.db.get_inst(op, dtype=form or self.dtype)
 
-    def _latency(self, op: str, form: Optional[str] = None) -> int:
-        return int(self._inst_params(op, form=form).get("latency", 1))
+    def _profile(self, op: str, form: Optional[str] = None) -> InstructionProfile:
+        return self.db.resolve_inst(op, form=form, dtype=self.dtype)
+
+    def _latency(
+        self,
+        op: str,
+        form: Optional[str] = None,
+        profile: Optional[InstructionProfile] = None,
+    ) -> int:
+        return int((profile or self._profile(op, form)).latency)
 
     def _get_ii(
         self,
@@ -248,9 +264,13 @@ class OoOCore:
         cur_op: str,
         prev_form: Optional[str] = None,
         cur_form: Optional[str] = None,
+        prev_profile: Optional[InstructionProfile] = None,
+        cur_profile: Optional[InstructionProfile] = None,
     ) -> int:
         if prev_op is None:
             return 1
+        if prev_profile is not None and cur_profile is not None:
+            return int(self.db.get_ii_for_profiles(prev_profile, cur_profile))
         return int(
             self.db.get_ii(
                 prev_op,
@@ -261,7 +281,14 @@ class OoOCore:
             )
         )
 
-    def _get_fu_type(self, op: str, form: Optional[str] = None) -> str:
+    def _get_fu_type(
+        self,
+        op: str,
+        form: Optional[str] = None,
+        profile: Optional[InstructionProfile] = None,
+    ) -> str:
+        if profile is not None:
+            return profile.fu_type
         try:
             fu = str(self._inst_params(op, form=form).get("EXU", "ALU")).upper()
         except Exception:
@@ -270,7 +297,12 @@ class OoOCore:
             fu = "ALU"
         return fu
 
-    def _eligible_exu_ports(self, op: str, form: Optional[str] = None) -> List[int]:
+    def _eligible_exu_ports(
+        self,
+        op: str,
+        form: Optional[str] = None,
+        profile: Optional[InstructionProfile] = None,
+    ) -> List[int]:
         """
         Restrict which EXU/EXQ ports an op may use according to isa.json.
 
@@ -283,7 +315,10 @@ class OoOCore:
         - missing / unknown tag => all available ports
         """
         try:
-            dispatch_exu = str(self._inst_params(op, form=form).get("dispatch_exu", "")).upper()
+            if profile is not None:
+                dispatch_exu = profile.dispatch_exu
+            else:
+                dispatch_exu = str(self._inst_params(op, form=form).get("dispatch_exu", "")).upper()
         except Exception:
             dispatch_exu = ""
 
@@ -307,23 +342,27 @@ class OoOCore:
         producer_info: Tuple[str, str, int, str],
         consumer_op: str,
         consumer_form: Optional[str] = None,
+        producer_profile: Optional[InstructionProfile] = None,
+        consumer_profile: Optional[InstructionProfile] = None,
     ) -> int:
         prod_op, prod_form, prod_start, _kind = producer_info
-        fwd = int(
-            self.db.get_forwarding_cycles(
+        if producer_profile is not None and consumer_profile is not None:
+            fwd = int(self.db.get_forwarding_for_profiles(producer_profile, consumer_profile))
+        else:
+            fwd = int(self.db.get_forwarding_cycles(
                 prod_op,
                 consumer_op,
                 dtype=self.dtype,
                 producer_form=prod_form,
                 consumer_form=consumer_form,
-            )
-        )
+            ))
         # Queue-level timing alignment:
         # In SHQ wakeup modeling, consumer wakeup-ready follows
         #   producer_EXQ_ISSUE - 1 + forwarding
         # where prod_start is producer_EXQ_ISSUE/start_cycle.
         if (
-            is_compute_op(consumer_op, self.db, consumer_form or self.dtype)
+            ((consumer_profile is not None and consumer_profile.op_class == "COMPUTE")
+             or (consumer_profile is None and is_compute_op(consumer_op, self.db, consumer_form or self.dtype)))
             and bool(getattr(self, "enable_isu_queue_model", False))
             and not self.theoretical_limit_legacy_forwarding
         ):
@@ -341,7 +380,16 @@ class OoOCore:
                 if ps in self.preg_pending:
                     return 10 ** 9
                 continue
-            t = max(t, self._ready_time_for_src(info, u.op, u.form))
+            t = max(
+                t,
+                self._ready_time_for_src(
+                    info,
+                    u.op,
+                    u.form,
+                    self.preg_producer_profile.get(ps),
+                    u.profile,
+                ),
+            )
         return t
 
     def _load_ready_cycle(self, u: Uop) -> int:
@@ -386,12 +434,15 @@ class OoOCore:
             if info is None:
                 continue
             prod_op, prod_form, prod_start, kind = info
+            producer_profile = self.preg_producer_profile.get(ps)
             if kind not in ("COMPUTE", "LOAD") and not (
-                is_compute_op(prod_op, self.db, prod_form or self.dtype)
-                or is_load_op(prod_op, self.db, prod_form or self.dtype)
+                producer_profile is not None
+                and producer_profile.op_class in ("COMPUTE", "LOAD")
             ):
                 continue
-            cand = self._ready_time_for_src(info, u.op, u.form)
+            cand = self._ready_time_for_src(
+                info, u.op, u.form, producer_profile, u.profile
+            )
             if cand > best_t:
                 best_t = cand
                 pop = prod_op
@@ -410,9 +461,7 @@ class OoOCore:
                 continue
             if u.state == "done":
                 continue
-            cls = "LOAD" if is_load_op(u.op, self.db, u.form) else None
-            if cls is None:
-                cls = "STORE" if is_store_op(u.op, self.db, u.form) else None
+            cls = u.profile.op_class if u.profile is not None else None
             if cls == target:
                 return True
         return False
@@ -430,8 +479,9 @@ class OoOCore:
         c: int,
         exu_used_this_cycle: List[bool],
         cur_form: Optional[str] = None,
+        cur_profile: Optional[InstructionProfile] = None,
     ) -> Optional[int]:
-        legal_ports = set(self._eligible_exu_ports(cur_op, cur_form))
+        legal_ports = set(self._eligible_exu_ports(cur_op, cur_form, cur_profile))
         if not self.enable_exq_greedy_balance:
             for port in range(self.issue_ports):
                 if port not in legal_ports:
@@ -446,7 +496,14 @@ class OoOCore:
                     prev_op = self.last_op[fu_type][port]
                     prev_form = self.last_form[fu_type][port]
                     prev_issue = self.last_issue_cycle[fu_type][port]
-                ii = self._get_ii(prev_op, cur_op, prev_form=prev_form, cur_form=cur_form)
+                ii = self._get_ii(
+                    prev_op,
+                    cur_op,
+                    prev_form=prev_form,
+                    cur_form=cur_form,
+                    prev_profile=(self.last_profile_exu[port] if self.enable_cross_fu_ii else self.last_profile[fu_type][port]),
+                    cur_profile=cur_profile,
+                )
                 if c >= prev_issue + ii:
                     return port
             return None
@@ -465,7 +522,14 @@ class OoOCore:
                 prev_op = self.last_op[fu_type][port]
                 prev_form = self.last_form[fu_type][port]
                 prev_issue = self.last_issue_cycle[fu_type][port]
-            ii = self._get_ii(prev_op, cur_op, prev_form=prev_form, cur_form=cur_form)
+            ii = self._get_ii(
+                prev_op,
+                cur_op,
+                prev_form=prev_form,
+                cur_form=cur_form,
+                prev_profile=(self.last_profile_exu[port] if self.enable_cross_fu_ii else self.last_profile[fu_type][port]),
+                cur_profile=cur_profile,
+            )
             avail = max(c, prev_issue + ii)
             candidates.append((port, avail))
 

@@ -383,7 +383,7 @@ bool ParamDB::hasInst(const std::string &op, const std::string &dtype) const {
   return false;
 }
 
-const InstConfig &ParamDB::inst(const std::string &op, const std::string &dtype) const {
+InstConfig ParamDB::inst(const std::string &op, const std::string &dtype) const {
   const auto opIt = bundle_.isa.find(op);
   if (opIt == bundle_.isa.end())
     return fallbackInst(op, dtype, false);
@@ -394,8 +394,9 @@ const InstConfig &ParamDB::inst(const std::string &op, const std::string &dtype)
   if (!compatible.empty()) {
     const auto compatibleIt = opIt->second.find(compatible);
     if (compatibleIt != opIt->second.end()) {
-      recordWarning("compatible_isa_form_fallback",
-                    {{"op", op}, {"requested_form", dtype}, {"used_form", compatible}});
+      recordWarningOnce(
+          "compatible_isa_form_fallback",
+          {{"op", op}, {"requested_form", dtype}, {"used_form", compatible}});
       return compatibleIt->second;
     }
   }
@@ -404,6 +405,7 @@ const InstConfig &ParamDB::inst(const std::string &op, const std::string &dtype)
 
 void ParamDB::recordWarning(const std::string &kind,
                             std::map<std::string, std::string> fields) const {
+  const std::lock_guard<std::mutex> lock(warningsMutex_);
   const std::string key = warningKey(kind, fields);
   auto it = warnings_.find(key);
   if (it != warnings_.end()) {
@@ -418,6 +420,7 @@ void ParamDB::recordWarning(const std::string &kind,
 }
 
 std::vector<ModelWarning> ParamDB::warnings() const {
+  const std::lock_guard<std::mutex> lock(warningsMutex_);
   std::vector<ModelWarning> out;
   out.reserve(warnings_.size());
   for (const auto &[_, warning] : warnings_)
@@ -425,14 +428,19 @@ std::vector<ModelWarning> ParamDB::warnings() const {
   return out;
 }
 
-const InstConfig &ParamDB::fallbackInst(const std::string &op,
-                                        const std::string &dtype,
-                                        bool unsupportedForm) const {
-  auto &dtypeMap = fallbackIsa_[op];
-  auto it = dtypeMap.find(dtype);
-  if (it != dtypeMap.end())
-    return it->second;
+void ParamDB::recordWarningOnce(
+    const std::string &kind,
+    std::map<std::string, std::string> fields) const {
+  const std::lock_guard<std::mutex> lock(warningsMutex_);
+  const std::string key = warningKey(kind, fields);
+  if (warnings_.find(key) != warnings_.end())
+    return;
+  warnings_.emplace(key, ModelWarning{kind, std::move(fields), 1});
+}
 
+InstConfig ParamDB::fallbackInst(const std::string &op,
+                                 const std::string &dtype,
+                                 bool unsupportedForm) const {
   const std::string canon = upper(op);
   InstConfig cfg;
   cfg.latency = 9;
@@ -448,7 +456,7 @@ const InstConfig &ParamDB::fallbackInst(const std::string &op,
     cfg.dispatchExu = "EXU01";
   }
 
-  recordWarning(
+  recordWarningOnce(
       unsupportedForm ? "unsupported_isa_form" : "unsupported_isa_op",
       {
           {"op", op},
@@ -457,8 +465,7 @@ const InstConfig &ParamDB::fallbackInst(const std::string &op,
           {"used_latency", std::to_string(cfg.latency)},
           {"used_dispatch_exu", cfg.dispatchExu},
       });
-  auto inserted = dtypeMap.emplace(dtype, std::move(cfg));
-  return inserted.first->second;
+  return cfg;
 }
 
 int64_t ParamDB::forwardingCycles(const std::string &dtype, const std::string &prod,
@@ -476,7 +483,7 @@ int64_t ParamDB::forwardingCycles(const std::string &dtype, const std::string &p
   const InstConfig &consCfg = inst(cons, dtype);
   const bool lsuDefault = configIsLoad(prodCfg, prod) && configIsStore(consCfg, cons);
   const int64_t value = lsuDefault ? 6 : std::max<int64_t>(0, prodCfg.latency - 3);
-  recordWarning("missing_forwarding_pair",
+  recordWarningOnce("missing_forwarding_pair",
                 {{"producer", qualifyOp(prod, dtype)},
                  {"consumer", qualifyOp(cons, dtype)},
                  {"producer_latency", std::to_string(prodCfg.latency)},
@@ -499,7 +506,7 @@ int64_t ParamDB::forwardingCycles(const std::string &prod,
       const auto consIt = prodIt->second.find(candidate.consumer);
       if (consIt != prodIt->second.end()) {
         if (candidate.usedCompatible) {
-          recordWarning("compatible_forwarding_pair_fallback",
+          recordWarningOnce("compatible_forwarding_pair_fallback",
                         {{"producer", requestedProd},
                          {"consumer", requestedCons},
                          {"used_producer", candidate.producer},
@@ -515,7 +522,7 @@ int64_t ParamDB::forwardingCycles(const std::string &prod,
   const InstConfig &consCfg = inst(cons, consForm);
   const bool lsuDefault = configIsLoad(prodCfg, prod) && configIsStore(consCfg, cons);
   const int64_t value = lsuDefault ? 6 : std::max<int64_t>(0, prodCfg.latency - 3);
-  recordWarning("missing_forwarding_pair",
+  recordWarningOnce("missing_forwarding_pair",
                 {{"producer", qualifyOp(prod, prodForm)},
                  {"consumer", qualifyOp(cons, consForm)},
                  {"producer_latency", std::to_string(prodCfg.latency)},
@@ -539,7 +546,7 @@ int64_t ParamDB::initiationInterval(const std::string &dtype, const std::string 
   const InstConfig &prevCfg = inst(prev, dtype);
   const InstConfig &curCfg = inst(cur, dtype);
   const int64_t value = (prevCfg.latency - curCfg.latency) == 1 ? 2 : 1;
-  recordWarning("missing_ii_pair",
+  recordWarningOnce("missing_ii_pair",
                 {{"prev", qualifyOp(prev, dtype)},
                  {"cur", qualifyOp(cur, dtype)},
                  {"prev_latency", std::to_string(prevCfg.latency)},
@@ -563,7 +570,7 @@ int64_t ParamDB::initiationInterval(const std::string &prev,
       const auto curIt = prevIt->second.find(candidate.consumer);
       if (curIt != prevIt->second.end()) {
         if (candidate.usedCompatible) {
-          recordWarning("compatible_ii_pair_fallback",
+          recordWarningOnce("compatible_ii_pair_fallback",
                         {{"prev", requestedPrev},
                          {"cur", requestedCur},
                          {"used_prev", candidate.producer},
@@ -578,7 +585,7 @@ int64_t ParamDB::initiationInterval(const std::string &prev,
   const InstConfig &prevCfg = inst(prev, prevForm);
   const InstConfig &curCfg = inst(cur, curForm);
   const int64_t value = (prevCfg.latency - curCfg.latency) == 1 ? 2 : 1;
-  recordWarning("missing_ii_pair",
+  recordWarningOnce("missing_ii_pair",
                 {{"prev", qualifyOp(prev, prevForm)},
                  {"cur", qualifyOp(cur, curForm)},
                  {"prev_latency", std::to_string(prevCfg.latency)},

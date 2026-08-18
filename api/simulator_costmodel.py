@@ -33,6 +33,7 @@ class CoreVfCostModel(VfCostModel):
     base_dir: str | Path = Path(__file__).resolve().parents[1]
     out_dir: str | Path = "results/api_costmodel"
     dtype: str = "fp32"
+    include_param_cache_stats: bool = False
 
     def predict_vf_cycles(self, vf_info: VFInfo) -> int:
         return int(self.run_vf_info(vf_info)["vf_end_cycle"])
@@ -147,6 +148,8 @@ class CoreVfCostModel(VfCostModel):
         result["linear_inst_count"] = len(linear)
         result["normalization_stats"] = norm_stats
         result["canonicalization_stats"] = canonicalization_stats
+        if self.include_param_cache_stats and hasattr(db, "get_profile_cache_stats"):
+            result["param_cache_stats"] = db.get_profile_cache_stats()
         return result
 
     @staticmethod

@@ -1289,3 +1289,55 @@ InputAPI -> VFInfo -> canonicalize/resolve -> CoreIR -> simulation
 11. 启动废弃 OoO 和冲突配置清理：先告警、再迁移 helper、最后物理删字段。
 12. 后续单独启动其它 `SMEM_BAR` 类型建模。
 13. 后续单独启动 VFInfo-core typed input 迁移。
+
+## Python/C++ 指令参数热路径优化
+
+本轮只优化参数解析和调度热路径，不调整 ready-cycle 算法，也不关闭或缩减日志。
+
+### 统一 Instruction Profile
+
+`core/instruction_profile.py` 定义不可变、带 `slots` 的 `InstructionProfile`。Profile
+保存规范化 opcode、请求/实际 form、dtype、指令分类、FU、可分发 EXU 和 latency，
+并由单个 `ParamDB` 实例分配稳定 `profile_id`。
+
+实现约束如下：
+
+1. `ParamDB` 加载时按 `ISA defaults -> opcode defaults -> compatible form -> 当前 form`
+   预合并所有已声明 form；未知 opcode/form 仍按首次实际请求惰性生成，避免提前告警。
+2. `resolve_inst(op, form, dtype)` 按三元组缓存不可变 Profile。公开
+   `get_inst_form()` 继续返回 dict 副本，调用方不能修改内部缓存。
+3. rename/accept 阶段将 Profile 绑定到 Uop；OoO/ISU 每周期直接读取分类、FU、端口和
+   latency，不再重复解析 ISA dict。
+4. Python forwarding 和 II 分别按 `(producer_profile_id, consumer_profile_id)` 与
+   `(previous_profile_id, current_profile_id)` 缓存静态周期值，不缓存 ready cycle 或
+   资源状态。Profile 必须由执行查询的同一个 `ParamDB` 创建，跨实例 Profile 会被
+   明确拒绝，避免不同实例从相同 `profile_id` 起始值产生缓存碰撞。
+5. Python 缓存属于 `ParamDB` 实例，Native 运行时参数对缓存属于 `OoOCore` 实例。
+   fallback warning 按唯一缺失配置或参数对记录一次，`count` 不再反映调度热路径
+   重复查询次数。
+6. Native 的 form 参数原本已经在 `ParamDB` 加载时合并；Uop 在 rename 时复制小型
+   profile 字段，不保存指向 fallback `unordered_map` 元素的指针。Native forwarding
+   和 II 缓存属于每个 `OoOCore`，共享只读参数配置时不会由正常查询写入共享 cache。
+7. `param_cache_stats` 仅在 `CoreVfCostModel(include_param_cache_stats=True)` 的 benchmark
+   模式加入结果，普通公共预测结果保持不变。
+8. Native `ParamDB` 可作为只读配置跨预测线程共享：`inst()` 按值返回 `InstConfig`，
+   未覆盖指令不再写入共享 fallback map；warning 聚合使用互斥保护。运行期
+   forwarding/II cache 仍位于各自 `OoOCore`，不会给共享配置增加热路径锁。
+
+### 验收结果
+
+`cce_code/softmax` 的 12 个 U1/U2/U4 case 与优化前 cycle 逐项一致。每个 case 只有
+13～14 个唯一 Profile、13～14 个 forwarding pair 和 30～42 个 II pair。
+
+代表 case `expdif_mulcvt/U4`（1161 条动态指令、完整日志）同机运行 7 次：
+
+| 版本 | vf_end_cycle | 中位耗时 |
+|---|---:|---:|
+| 优化前提交代码 | 630 | 800.4 ms |
+| Instruction Profile 优化后 | 630 | 314.7 ms |
+
+当前主要耗时已经转移到完整 history JSON 写出。非调试日志模式属于后续独立优化，
+不纳入本轮改动。
+
+同一 lowered payload 的 Native Release 完整日志中位耗时由约 67.4 ms 降至
+约 64.5 ms；Native 原本已完成加载期 merge，因此收益小于 Python。

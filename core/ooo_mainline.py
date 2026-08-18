@@ -46,6 +46,7 @@ class PregLifecycleController:
             return False
         self.core.preg_producer.pop(preg, None)
         self.core.preg_producer_uop.pop(preg, None)
+        self.core.preg_producer_profile.pop(preg, None)
         self.core.preg_pending.discard(preg)
         self.core.preg_consumer_count.pop(preg, None)
         self.core.preg_release_eligible_cycle.pop(preg, None)
@@ -261,6 +262,7 @@ class RenameController:
     def accept(self, inst: Dict[str, Any]) -> None:
         op = str(inst.get("op"))
         form = str(inst.get("form", "") or self.core.dtype)
+        profile = self.core._profile(op, form)
         inst_id = int(inst.get("inst_id", inst.get("id", -1)))
         iter_stack = list(inst.get("iter_stack", []))
         top_block_id = int(inst.get("top_block_id", 0))
@@ -403,6 +405,7 @@ class RenameController:
             preg_src=preg_src,
             preg_dst=preg_dst,
             preg_old=preg_old,
+            profile=profile,
             top_block_id=top_block_id,
             iter_stack=list(iter_stack),
             is_last_in_top_block=is_last_in_top_block,
@@ -417,7 +420,7 @@ class RenameController:
         for pd in preg_dst:
             self.core.preg_pending.add(pd)
 
-        if uses_lsq(op, self.core.db, form):
+        if profile.op_class in ("LOAD", "STORE"):
             u.lsq_ready_cycle = int(self.core.cycle) + max(0, int(self.core.ooo_to_lsq_delay))
             self.core.LSQ.append(u)
         else:
@@ -425,7 +428,7 @@ class RenameController:
             self.core.SHQ.append(u)
         if (
             self.core.enable_shq_credit_model
-            and uses_shared_shq_credit(op, self.core.db, form)
+            and profile.op_class in ("COMPUTE", "STORE")
         ):
             self.core.shq_used += 1
             if self.core.enable_credit_visibility_delay:
@@ -434,7 +437,7 @@ class RenameController:
         else:
             setattr(u, "shq_tracked", False)
 
-        if is_store_op(op, self.core.db, form):
+        if profile.op_class == "STORE":
             for d in dsts:
                 if self.core.is_mem(d):
                     iter_key = self.core._top_iter_key_from_stack(top_block_id, iter_stack)
@@ -655,7 +658,7 @@ class OoOCoreMainline(OoOCore):
 
         not_done_stores: List[Uop] = []
         for u in self.ROB:
-            if not is_store_op(u.op, self.db, u.form) or u.state == "done":
+            if not (u.profile and u.profile.op_class == "STORE") or u.state == "done":
                 continue
             not_done_stores.append(u)
 
@@ -717,7 +720,7 @@ class OoOCoreMainline(OoOCore):
                 if u.exu_port is not None and 0 <= u.exu_port < self.issue_ports:
                     self.exq_inflight[u.exu_port] = max(0, self.exq_inflight[u.exu_port] - 1)
                     u.exu_port = None
-                if is_store_op(u.op, self.db, u.form):
+                if u.profile and u.profile.op_class == "STORE":
                     iter_key = self._top_iter_key_from_stack(u.top_block_id, list(u.iter_stack))
                     iter_remain = self.iter_outstanding_stores.get(iter_key, 0) - 1
                     self.iter_outstanding_stores[iter_key] = max(0, iter_remain)
@@ -747,7 +750,7 @@ class OoOCoreMainline(OoOCore):
         for u in self.LSQ:
             if u.state in ("running", "done"):
                 continue
-            if is_load_op(u.op, self.db, u.form):
+            if u.profile and u.profile.op_class == "LOAD":
                 u.ready_cycle = self._load_ready_cycle(u)
             else:
                 (
@@ -768,7 +771,7 @@ class OoOCoreMainline(OoOCore):
 
         issued_ld: List[Any] = []
         for u in self.LSQ:
-            if u.state != "ready" or not is_load_op(u.op, self.db, u.form):
+            if u.state != "ready" or not (u.profile and u.profile.op_class == "LOAD"):
                 continue
             if ld >= self.load_ports:
                 break
@@ -780,7 +783,7 @@ class OoOCoreMainline(OoOCore):
 
             u.start_cycle = c
             u.blocked_reason = None
-            u.done_cycle = c + self._latency(u.op, u.form)
+            u.done_cycle = c + self._latency(u.op, u.form, u.profile)
             u.state = "running"
             self._schedule_src_release_from_start(u)
             self._log("start", u)
@@ -789,6 +792,7 @@ class OoOCoreMainline(OoOCore):
 
             for pd in u.preg_dst:
                 self.preg_producer[pd] = (u.op, u.form, u.start_cycle, "LOAD")
+                self.preg_producer_profile[pd] = u.profile
                 self.preg_producer_uop[pd] = u
                 self.preg_pending.discard(pd)
 
@@ -805,7 +809,7 @@ class OoOCoreMainline(OoOCore):
         for u in self.LSQ:
             if u.state in ("running", "done"):
                 continue
-            if not is_store_op(u.op, self.db, u.form):
+            if not (u.profile and u.profile.op_class == "STORE"):
                 continue
             (
                 u.ready_cycle,
@@ -837,7 +841,7 @@ class OoOCoreMainline(OoOCore):
         for u in self.LSQ:
             if u.state in ("running", "done"):
                 continue
-            if not is_store_op(u.op, self.db, u.form):
+            if not (u.profile and u.profile.op_class == "STORE"):
                 continue
             (
                 u.ready_cycle,
@@ -849,7 +853,7 @@ class OoOCoreMainline(OoOCore):
 
         issued_st: List[Any] = []
         for u in self.LSQ:
-            if u.state != "ready" or not is_store_op(u.op, self.db, u.form):
+            if u.state != "ready" or not (u.profile and u.profile.op_class == "STORE"):
                 continue
             if st >= self.store_ports:
                 break
@@ -863,7 +867,7 @@ class OoOCoreMainline(OoOCore):
 
             u.start_cycle = c
             u.blocked_reason = None
-            u.done_cycle = c + self._latency(u.op, u.form)
+            u.done_cycle = c + self._latency(u.op, u.form, u.profile)
             u.state = "running"
             self._schedule_src_release_from_start(u)
             # SHQ credit release for store-like LSU ops.

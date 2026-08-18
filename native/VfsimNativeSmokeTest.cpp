@@ -16,10 +16,13 @@
 
 #include <filesystem>
 #include <fstream>
+#include <atomic>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -346,6 +349,41 @@ void verifyInstructionFallback(ParamDB &db) {
   }
   require(sawUnsupported, "native fallback must record unsupported_isa_op");
   require(sawForwarding, "native fallback must record missing_forwarding_pair");
+}
+
+void verifySharedParamDbFallbackQueriesAreStable(ParamDB &db) {
+  static_assert(
+      !std::is_reference_v<decltype(db.inst("VTHREAD_UNKNOWN", "fp32"))>,
+      "ParamDB::inst must return fallback-safe values");
+  std::atomic<bool> valid{true};
+  std::vector<std::thread> workers;
+  for (int threadIndex = 0; threadIndex < 8; ++threadIndex) {
+    workers.emplace_back([&]() {
+      for (int iteration = 0; iteration < 200; ++iteration) {
+        const InstConfig cfg = db.inst("VTHREAD_UNKNOWN", "fp32");
+        if (cfg.opClass != "COMPUTE" || cfg.latency != 9)
+          valid.store(false);
+        if (db.forwardingCycles("VTHREAD_PROD", "fp32", "VTHREAD_CONS",
+                                "fp32") < 0)
+          valid.store(false);
+        if (db.initiationInterval("VTHREAD_PREV", "fp32", "VTHREAD_CUR",
+                                  "fp32") < 1)
+          valid.store(false);
+      }
+    });
+  }
+  for (auto &worker : workers)
+    worker.join();
+  require(valid.load(), "shared ParamDB fallback queries returned invalid data");
+  bool sawThreadWarning = false;
+  for (const auto &warning : db.warnings())
+    if (warning.kind == "unsupported_isa_op" &&
+        warning.fields.count("op") &&
+        warning.fields.at("op") == "VTHREAD_UNKNOWN") {
+      sawThreadWarning = warning.count == 1;
+    }
+  require(sawThreadWarning,
+          "shared ParamDB warning aggregation must be deterministic");
 }
 
 void verifyNativePartialCompatibleFormMerge() {
@@ -749,6 +787,7 @@ int main() {
     const std::filesystem::path root = std::filesystem::path(VFSIM_SOURCE_ROOT);
     ParamDB db(root);
     verifyInstructionFallback(db);
+    verifySharedParamDbFallbackQueriesAreStable(db);
     verifyNativePartialCompatibleFormMerge();
     verifyVpackVsstbConfig(db);
     verifyVexpdifVmulscvtConfig(db);

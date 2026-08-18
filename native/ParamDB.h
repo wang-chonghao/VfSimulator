@@ -13,6 +13,7 @@
 
 #include <filesystem>
 #include <map>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -28,7 +29,7 @@ public:
   const IsaDefaults &isaDefaults() const noexcept { return bundle_.isaDefaults; }
 
   bool hasInst(const std::string &op, const std::string &dtype) const;
-  const InstConfig &inst(const std::string &op, const std::string &dtype) const;
+  InstConfig inst(const std::string &op, const std::string &dtype) const;
   void recordWarning(const std::string &kind,
                      std::map<std::string, std::string> fields = {}) const;
   std::vector<ModelWarning> warnings() const;
@@ -50,12 +51,14 @@ public:
 private:
   ParamBundle bundle_;
   std::filesystem::path baseDir_;
-  mutable std::unordered_map<std::string, std::unordered_map<std::string, InstConfig>> fallbackIsa_;
   mutable std::map<std::string, ModelWarning> warnings_;
+  mutable std::mutex warningsMutex_;
 
-  const InstConfig &fallbackInst(const std::string &op,
-                                 const std::string &dtype,
-                                 bool unsupportedForm) const;
+  InstConfig fallbackInst(const std::string &op,
+                          const std::string &dtype,
+                          bool unsupportedForm) const;
+  void recordWarningOnce(const std::string &kind,
+                         std::map<std::string, std::string> fields) const;
 };
 
 } // namespace vfsim

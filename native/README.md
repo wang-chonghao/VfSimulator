@@ -9,6 +9,9 @@
 - 内部使用轻量 JSON 解析器，避免为基础配置读取引入额外第三方依赖。
 - 不在手写 C++ 常量中重复配置值。
 - C++ 路径完全对齐前，以 Python 主线行为作为一致性基准。
+- 一个加载完成的 `ParamDB` 可以跨预测线程共享：参数 bundle 只读，fallback
+  `InstConfig` 按值返回，warning 聚合受互斥保护。forwarding/II 热路径 cache 属于
+  每个 `OoOCore`，不写共享 `ParamDB`。
 
 核心模块：
 

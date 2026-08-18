@@ -53,6 +53,11 @@ def _read_isa_entry(pdb: Any, op: str, dtype: str) -> dict[str, Any]:
 
 def get_op_traits(op: Any, pdb: Any = None, dtype: str = "fp32") -> OpTraits:
     opu = str(op or "").upper()
+    if pdb is not None and hasattr(pdb, "resolve_inst"):
+        try:
+            return OpTraits(op_class=pdb.resolve_inst(opu, form=dtype, dtype=dtype).op_class)
+        except Exception:
+            pass
     inst = _read_isa_entry(pdb, opu, dtype)
 
     op_class = str(
