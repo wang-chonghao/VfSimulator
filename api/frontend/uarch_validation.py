@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import json
+from pathlib import Path
 from typing import Any, Mapping
 
 from api.frontend.diagnostics import (
@@ -10,7 +12,10 @@ from api.frontend.diagnostics import (
 )
 
 
-DEPRECATED_UARCH_FIELDS = frozenset({"load_done_latency"})
+_SCHEMA_PATH = Path(__file__).resolve().parents[2] / "configs/uarch_override_schema.json"
+_SCHEMA = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+UARCH_FIELD_TYPES = dict(_SCHEMA["fields"])
+DEPRECATED_UARCH_FIELDS = frozenset(_SCHEMA.get("deprecated_fields", ()))
 _INT64_MIN = -(2**63)
 _INT64_MAX = 2**63 - 1
 
@@ -62,6 +67,29 @@ def validate_uarch_overrides(uarch: Any) -> ValidationResult:
                     context={"path": path, "value_type": type(value).__name__},
                 )
             )
+            continue
+
+        expected_type = UARCH_FIELD_TYPES.get(key)
+        type_matches = (
+            expected_type is None
+            or (expected_type == "integer" and type(value) is int)
+            or (expected_type == "boolean" and type(value) is bool)
+            or (expected_type == "string" and type(value) is str)
+        )
+        if not type_matches:
+            diagnostics.append(
+                Diagnostic(
+                    "uarch_field_type_mismatch",
+                    DiagnosticSeverity.ERROR,
+                    f"{path} must use {expected_type} type",
+                    context={
+                        "path": path,
+                        "field": key,
+                        "expected_type": expected_type,
+                        "actual_type": type(value).__name__,
+                    },
+                )
+            )
 
     diagnostics.extend(
         Diagnostic(
@@ -75,4 +103,8 @@ def validate_uarch_overrides(uarch: Any) -> ValidationResult:
     return ValidationResult(tuple(diagnostics))
 
 
-__all__ = ["DEPRECATED_UARCH_FIELDS", "validate_uarch_overrides"]
+__all__ = [
+    "DEPRECATED_UARCH_FIELDS",
+    "UARCH_FIELD_TYPES",
+    "validate_uarch_overrides",
+]

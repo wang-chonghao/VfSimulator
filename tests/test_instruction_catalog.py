@@ -12,6 +12,7 @@ from api.frontend import (
     instruction_catalog_from_dict,
 )
 from tools.generate_instruction_catalog_cpp import render_catalog_cpp
+from tools.generate_uarch_override_schema_cpp import render_uarch_override_schema_cpp
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -167,6 +168,15 @@ class InstructionCatalogTest(unittest.TestCase):
             ROOT / "api/native/generated/InstructionCatalogData.inc"
         ).read_text()
         self.assertEqual(generated, render_catalog_cpp(payload))
+
+    def test_generated_cpp_uarch_override_schema_is_up_to_date(self):
+        payload = json.loads(
+            (ROOT / "configs/uarch_override_schema.json").read_text()
+        )
+        generated = (
+            ROOT / "api/native/generated/UarchOverrideSchemaData.inc"
+        ).read_text()
+        self.assertEqual(generated, render_uarch_override_schema_cpp(payload))
 
     def test_config_allowed_values_are_shared_with_native_catalog(self):
         load = DEFAULT_INSTRUCTION_CATALOG.lookup("VLDS")

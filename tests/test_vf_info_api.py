@@ -97,6 +97,39 @@ class VfInfoApiTest(unittest.TestCase):
             "invalid_scalar_attribute",
         )
 
+    def test_all_public_paths_reject_wrong_uarch_field_types(self):
+        invalid_uarch = {
+            "issue_ports": "2",
+            "three_ports_mode": 1,
+            "shq_exq_dispatch_policy": False,
+        }
+        without_alias = VFInfo(context=[], uarch=dict(invalid_uarch))
+        with_alias = VFInfo(
+            context=[VFAlias("b", "a")],
+            values={
+                "a": ValueInfo("a", "Register", "fp32"),
+                "b": ValueInfo("b", "Register", "fp32"),
+            },
+            uarch=dict(invalid_uarch),
+        )
+        legacy_payload = {
+            "dtype": "fp32",
+            "values": {},
+            "program": [],
+            "uarch": dict(invalid_uarch),
+        }
+        callbacks = (
+            lambda: VFInfoLowerer().lower(without_alias),
+            lambda: VFInfoLowerer().lower(with_alias),
+            lambda: CoreVfCostModel(base_dir=ROOT).run_payload(legacy_payload),
+        )
+        for callback in callbacks:
+            with self.subTest(callback=callback):
+                self._assert_uarch_rejected(
+                    callback,
+                    "uarch_field_type_mismatch",
+                )
+
     def test_input_symbols_normalize_public_aliases(self):
         self.assertEqual(normalize_dtype("float32"), "fp32")
         self.assertEqual(normalize_dtype("fp64"), "fp64")

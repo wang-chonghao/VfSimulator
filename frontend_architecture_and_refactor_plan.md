@@ -290,6 +290,9 @@ producer 关系必须双向一致：instruction producer 必须且只能在自�
 canonical `uarch` override 只允许仍有活跃语义的配置。已经物理删除的字段，例如
 `load_done_latency`，由 Python/C++ validator 统一返回
 `deprecated_uarch_field`，不得静默忽略或让调用方误以为 override 已生效。
+活跃 override 的 integer、boolean、string 类型由
+`configs/uarch_override_schema.json` 统一维护，Python 直接加载，C++ 从该文件生成
+只读表；已登记字段不得通过 `int()` / `bool()` 等隐式转换接受错误类型。
 
 ### 6.5 存储类型
 

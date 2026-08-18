@@ -4,6 +4,7 @@
 #include "native/CanonicalProgramLowering.h"
 
 #include "api/native/InstructionCatalog.h"
+#include "api/native/UarchOverrideSchema.h"
 
 #include <algorithm>
 #include <cmath>
@@ -33,10 +34,6 @@ int64_t integerOverride(const CanonicalScalar &value,
                         const std::string &name) {
   if (const auto *integer = std::get_if<int64_t>(&value))
     return *integer;
-  if (const auto *number = std::get_if<double>(&value)) {
-    if (std::isfinite(*number) && std::floor(*number) == *number)
-      return static_cast<int64_t>(*number);
-  }
   throw std::runtime_error("Canonical uarch override " + name +
                            " must be an integer");
 }
@@ -490,9 +487,9 @@ UarchConfig resolveCanonicalUarch(const CanonicalVfInfo &vfInfo,
       };
 
   for (const auto &[name, value] : vfInfo.uarch) {
-    if (name == "load_done_latency")
+    if (isDeprecatedUarchOverrideField(name))
       throw std::runtime_error(
-          "Canonical uarch override load_done_latency is deprecated");
+          "Canonical uarch override " + name + " is deprecated");
     if (const auto found = integerFields.find(name); found != integerFields.end()) {
       resolved.*(found->second) = integerOverride(value, name);
       continue;

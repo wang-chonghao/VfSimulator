@@ -198,6 +198,22 @@ int main() {
                      "deprecated_uarch_field"))
     throw std::runtime_error(
         "native validator accepted deprecated load_done_latency override");
+  for (const auto &[name, value] :
+       std::vector<std::pair<std::string, CanonicalScalar>>{
+           {"issue_ports", std::string("2")},
+           {"issue_ports", true},
+           {"three_ports_mode", int64_t{1}},
+           {"three_ports_mode", std::string("true")},
+           {"shq_exq_dispatch_policy", int64_t{1}},
+           {"shq_exq_dispatch_policy", false},
+       }) {
+    CanonicalVfInfo invalidUarchTypeContract = canonicalContract;
+    invalidUarchTypeContract.uarch[name] = value;
+    if (!hasDiagnostic(validateCanonicalVfInfo(invalidUarchTypeContract),
+                       "uarch_field_type_mismatch"))
+      throw std::runtime_error(
+          "native validator accepted wrong uarch field type: " + name);
+  }
 
   CanonicalVfInfo nonInnermostUnrollContract;
   CanonicalLoop outerLoop;

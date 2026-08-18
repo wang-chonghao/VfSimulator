@@ -28,6 +28,7 @@ from api.frontend import (
     canonical_vf_info_from_dict,
     validate_canonical_vf_info,
 )
+from api.frontend.uarch_validation import validate_uarch_overrides
 
 
 class CanonicalVfInfoValidatorTest(unittest.TestCase):
@@ -452,6 +453,24 @@ class CanonicalVfInfoValidatorTest(unittest.TestCase):
             sum(item.code == "invalid_scalar_attribute" for item in errors),
             4,
         )
+
+    def test_uarch_override_field_types_are_strict(self):
+        invalid_values = (
+            {"issue_ports": "2"},
+            {"issue_ports": True},
+            {"three_ports_mode": 1},
+            {"three_ports_mode": "true"},
+            {"shq_exq_dispatch_policy": 1},
+            {"shq_exq_dispatch_policy": False},
+        )
+        for uarch in invalid_values:
+            with self.subTest(uarch=uarch):
+                result = validate_uarch_overrides(uarch)
+                self.assertFalse(result.ok)
+                self.assertEqual(
+                    {item.code for item in result.errors},
+                    {"uarch_field_type_mismatch"},
+                )
 
     def test_membar_and_loop_parameter_validation(self):
         invalid = self._contract((

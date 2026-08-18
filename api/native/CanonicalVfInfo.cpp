@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: CANN-1.0
 
 #include "api/native/CanonicalVfInfo.h"
+#include "api/native/UarchOverrideSchema.h"
 #include "api/native/InstructionCatalog.h"
 
 #include <algorithm>
@@ -118,6 +119,18 @@ bool finiteScalar(const CanonicalScalar &value) {
   return true;
 }
 
+const char *scalarTypeName(const CanonicalScalar &value) {
+  if (std::holds_alternative<std::monostate>(value))
+    return "NoneType";
+  if (std::holds_alternative<bool>(value))
+    return "bool";
+  if (std::holds_alternative<int64_t>(value))
+    return "int";
+  if (std::holds_alternative<double>(value))
+    return "float";
+  return "str";
+}
+
 } // namespace
 
 CanonicalNode CanonicalNode::makeInstruction(CanonicalInstruction value) {
@@ -174,10 +187,33 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
     error("unsupported_schema_version", "Unsupported schema version",
           "schema_version");
   validateScalarMap(vfInfo.uarch, "uarch");
-  if (vfInfo.uarch.count("load_done_latency"))
-    error("deprecated_uarch_field",
-          "Deprecated uarch field is no longer accepted",
-          "uarch.load_done_latency");
+  for (const auto &[name, value] : vfInfo.uarch) {
+    if (isDeprecatedUarchOverrideField(name)) {
+      error("deprecated_uarch_field",
+            "Deprecated uarch field is no longer accepted", "uarch." + name);
+      continue;
+    }
+    const auto expected = uarchOverrideFieldType(name);
+    if (!expected)
+      continue;
+    const bool matches =
+        (*expected == UarchOverrideFieldType::Integer &&
+         std::holds_alternative<int64_t>(value)) ||
+        (*expected == UarchOverrideFieldType::Boolean &&
+         std::holds_alternative<bool>(value)) ||
+        (*expected == UarchOverrideFieldType::String &&
+         std::holds_alternative<std::string>(value));
+    if (!matches)
+      error("uarch_field_type_mismatch",
+            "uarch." + name + " must use " +
+                uarchOverrideFieldTypeName(*expected) + " type",
+            "uarch." + name,
+            std::nullopt,
+            {{"field", name},
+             {"expected_type",
+              std::string(uarchOverrideFieldTypeName(*expected))},
+             {"actual_type", std::string(scalarTypeName(value))}});
+  }
   validateScalarMap(vfInfo.source, "source");
 
   std::unordered_map<std::string, NodeInfo> nodeInfo;
