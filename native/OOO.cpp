@@ -12,8 +12,10 @@
 #include "native/ISATraits.h"
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -612,9 +614,9 @@ bool OoOCore::useExu0Reserve() const {
   return shqExqDispatchPolicy_ == "fu_round_robin_exu0_reserve";
 }
 
-bool OoOCore::hasExu0OnlyPressure(size_t startIndex) const {
+int OoOCore::exu0OnlyPressureCount(size_t startIndex) const {
   if (exu0ReserveLookahead_ <= 0)
-    return false;
+    return 0;
   int seenCompute = 0;
   int seenExu0Only = 0;
   for (size_t index = startIndex + 1; index < shq_.size(); ++index) {
@@ -625,12 +627,12 @@ bool OoOCore::hasExu0OnlyPressure(size_t startIndex) const {
                    [](unsigned char c) {
                      return static_cast<char>(std::toupper(c));
                    });
-    if (dispatch == "EXU0_ONLY" && ++seenExu0Only >= exu0ReserveMinCount_)
-      return true;
+    if (dispatch == "EXU0_ONLY")
+      ++seenExu0Only;
     if (seenCompute >= exu0ReserveLookahead_)
       break;
   }
-  return false;
+  return seenExu0Only >= exu0ReserveMinCount_ ? seenExu0Only : 0;
 }
 
 int OoOCore::selectFuRoundRobinPort(const std::string &fuType,
@@ -1078,14 +1080,38 @@ void OoOCoreMainline::step() {
       if (useExu0Reserve() &&
           std::find(candidates.begin(), candidates.end(), 0) != candidates.end() &&
           legalPorts.size() > 1 &&
-          db_.inst(u.op, u.form).dispatchExu != "EXU0_ONLY" &&
-          hasExu0OnlyPressure(shqIndex)) {
-        std::vector<int> nonExu0;
-        std::copy_if(candidates.begin(), candidates.end(),
-                     std::back_inserter(nonExu0),
-                     [](int port) { return port != 0; });
-        if (!nonExu0.empty())
-          candidates = std::move(nonExu0);
+          db_.inst(u.op, u.form).dispatchExu != "EXU0_ONLY") {
+        const int pressure = exu0OnlyPressureCount(shqIndex);
+        if (pressure > 0 && candidates.size() > 1) {
+          std::vector<int> occupancy(static_cast<size_t>(issuePorts_), 0);
+          for (int port = 0; port < issuePorts_; ++port) {
+            const auto &q = exqWait_[static_cast<size_t>(port)];
+            occupancy[static_cast<size_t>(port)] =
+                static_cast<int>(q.at("ALU").size() + q.at("SFU").size());
+            if (exqCapacityCountsInflight_)
+              occupancy[static_cast<size_t>(port)] +=
+                  exqInflight_[static_cast<size_t>(port)];
+          }
+
+          auto balanceError = [&](int port) {
+            std::vector<int> projected = occupancy;
+            ++projected[static_cast<size_t>(port)];
+            double nonExu0Average = 0.0;
+            for (int other = 1; other < issuePorts_; ++other)
+              nonExu0Average += projected[static_cast<size_t>(other)];
+            nonExu0Average /= std::max(1, issuePorts_ - 1);
+            return std::abs((nonExu0Average - projected[0]) - pressure);
+          };
+
+          double bestError = std::numeric_limits<double>::infinity();
+          for (int port : candidates)
+            bestError = std::min(bestError, balanceError(port));
+          std::vector<int> balancedCandidates;
+          std::copy_if(candidates.begin(), candidates.end(),
+                       std::back_inserter(balancedCandidates),
+                       [&](int port) { return balanceError(port) == bestError; });
+          candidates = std::move(balancedCandidates);
+        }
       }
 
       const int64_t recv = c + exqRecvDelay_;

@@ -50,10 +50,10 @@ class ISUController:
         except Exception:
             return ""
 
-    def _has_exu0_only_pressure(self, start_index: int) -> bool:
+    def _exu0_only_pressure_count(self, start_index: int) -> int:
         lookahead = int(getattr(self.core, "exu0_reserve_lookahead", 0))
         if lookahead <= 0:
-            return False
+            return 0
         min_count = max(1, int(getattr(self.core, "exu0_reserve_min_count", 1)))
         seen_compute = 0
         seen_exu0_only = 0
@@ -61,11 +61,9 @@ class ISUController:
             seen_compute += 1
             if self._dispatch_exu_tag(cand) == "EXU0_ONLY":
                 seen_exu0_only += 1
-                if seen_exu0_only >= min_count:
-                    return True
             if seen_compute >= lookahead:
                 break
-        return False
+        return seen_exu0_only if seen_exu0_only >= min_count else 0
 
     def _apply_exu0_reserve(
         self,
@@ -82,10 +80,23 @@ class ISUController:
             return candidates
         if 0 not in legal_ports or len(legal_ports) <= 1:
             return candidates
-        if not self._has_exu0_only_pressure(index):
+        pressure = self._exu0_only_pressure_count(index)
+        if pressure <= 0 or len(candidates) <= 1:
             return candidates
-        non_exu0 = [port for port in candidates if port != 0]
-        return non_exu0 or candidates
+
+        occupancy = [self.exq_occ(port) for port in range(self.core.issue_ports)]
+
+        def balance_error(port: int) -> float:
+            projected = list(occupancy)
+            projected[port] += 1
+            non_exu0 = projected[1:]
+            if not non_exu0:
+                return 0.0
+            non_exu0_average = sum(non_exu0) / len(non_exu0)
+            return abs((non_exu0_average - projected[0]) - pressure)
+
+        best_error = min(balance_error(port) for port in candidates)
+        return [port for port in candidates if balance_error(port) == best_error]
 
     def remove_issued(self, queue_name: str, issued: List[Any]) -> None:
         if not issued:

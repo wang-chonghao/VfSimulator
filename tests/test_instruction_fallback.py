@@ -161,6 +161,25 @@ class InstructionFallbackTest(unittest.TestCase):
         self.assertEqual([u.op for u in core.exq_wait[0]["ALU"]], ["VPACK"])
         self.assertEqual([u.op for u in core.exq_wait[1]["ALU"]], ["VADDS"])
 
+    def test_exu0_reserve_balances_queue_gap_instead_of_forcing_exq1(self):
+        db = ParamDB(base_dir=str(ROOT))
+        uarch = dict(db.get_uarch())
+        core = OoOCoreMainline(uarch, db, dtype="fp32")
+        core.exq_wait[1]["ALU"].append(self._make_compute_uop(100, "VADDS"))
+        core.SHQ.extend(
+            [
+                self._make_compute_uop(0, "VADDS"),
+                self._make_compute_uop(1, "VPACK", form="b32"),
+            ]
+        )
+
+        issued = core.isu.enqueue_shq_to_exq(0, set())
+
+        self.assertEqual(issued, 1)
+        self.assertEqual([u.op for u in core.exq_wait[0]["ALU"]], ["VADDS"])
+        self.assertEqual([u.op for u in core.exq_wait[1]["ALU"]], ["VADDS"])
+        self.assertEqual([u.op for u in core.SHQ], ["VPACK"])
+
     def test_unknown_load_store_prefixes_use_lsu_defaults(self):
         db = ParamDB(base_dir=str(ROOT))
 

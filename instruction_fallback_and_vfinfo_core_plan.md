@@ -110,16 +110,20 @@ IDU -> OoO/SHQ -> EXQ -> EXU
    端口时标记该 `fu_type` 本周期 blocked。若它是 `EXU0_ONLY` 这类窄端口指令，
    因 EXQ0 满而无法入队时，不阻塞后面可进入 EXQ1 的 ready ALU 指令。
 7. `fu_round_robin_exu0_reserve` 策略下，若当前 ready 指令是 `EXU01` / `EXU012`
-   这类 flexible 指令，并且 SHQ 前瞻窗口内出现足够数量的 `EXU0_ONLY` compute
-   指令，则优先避让 EXQ0：
+   这类 flexible 指令，则根据 SHQ 前瞻窗口中的 `EXU0_ONLY` compute 数量做
+   平衡预留：
    - 前瞻窗口大小由 `configs/uarch.json` 的 `exu0_reserve_lookahead` 配置。
    - 当前实验值为 `8`，代码中不写死该值。
    - 触发阈值由 `configs/uarch.json` 的 `exu0_reserve_min_count` 配置。
-   - 当前实验值为 `1`，即看到单条 `EXU0_ONLY` 压力时就保护 EXQ0。
+   - 当前值为 `1`，即窗口内至少存在一条 `EXU0_ONLY` 时启用平衡预留。
    - 窗口从当前指令之后开始，最多看 8 条 SHQ compute 指令。
    - 窗口内指令不要求已经 ready；near-ready 的 `EXU0_ONLY` 也会形成 EXQ0 压力。
-   - 若过滤 EXQ0 后仍有候选端口，则在非 EXQ0 候选端口内按该 FU 的 RR 指针选择。
-   - 若过滤后没有候选端口，则 fallback 到原候选端口，避免 EXQ1 满时无意义空转。
+   - 若窗口内有 `n` 条 `EXU0_ONLY`，则 flexible 指令分发后尽量让
+     `非 EXQ0 平均占用 - EXQ0 占用` 接近 `n`。
+   - 端口选择只筛掉会让队列差值进一步偏离目标的候选；候选误差相同时仍由该
+     FU 的 RR 指针决定，因此达到目标差值后 flexible 指令可以继续进入 EXQ0。
+   - 该规则替代旧的“只要达到阈值就过滤 EXQ0”二值预留，避免 EXQ0 长时间
+     空闲而 EXQ1 拥堵。
 8. 对 ready 且可入队的指令，在它的合法端口集合内按该 `fu_type` 的 round-robin
    指针选择第一个可用端口。
 9. 入队成功后只推进该 `fu_type` 的 round-robin 指针。

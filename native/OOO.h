@@ -251,7 +251,7 @@ protected:
                                int64_t recvCycle) const;
   bool useFuRoundRobinFifo() const;
   bool useExu0Reserve() const;
-  bool hasExu0OnlyPressure(size_t startIndex) const;
+  int exu0OnlyPressureCount(size_t startIndex) const;
   int selectFuRoundRobinPort(const std::string &fuType,
                              const std::vector<int> &candidates);
   void scheduleShqRelease(int64_t cycle, int count = 1);
