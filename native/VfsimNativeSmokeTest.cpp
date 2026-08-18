@@ -181,6 +181,50 @@ void verifyNativeExu0ReserveDispatch(const ParamDB &db) {
           "flexible ALU must reserve EXQ0 for pending EXU0_ONLY work");
   require(core.getExuPortForInst(9001) == std::optional<int>{0},
           "EXU0_ONLY work must dispatch to EXQ0");
+
+  OoOCoreMainline balancedCore(db.uarch(), db, "fp32");
+  DynamicInst firstFlexible;
+  firstFlexible.type = "inst";
+  firstFlexible.instId = 9010;
+  firstFlexible.op = "VADDS";
+  firstFlexible.form = "fp32";
+  firstFlexible.dst = {"v_first"};
+  DynamicInst firstDependentExu0Only;
+  firstDependentExu0Only.type = "inst";
+  firstDependentExu0Only.instId = 9011;
+  firstDependentExu0Only.op = "VPACK";
+  firstDependentExu0Only.form = "b32";
+  firstDependentExu0Only.src = {"v_first"};
+  firstDependentExu0Only.dst = {"v_first_pack"};
+  balancedCore.accept(firstFlexible);
+  balancedCore.accept(firstDependentExu0Only);
+  balancedCore.step();
+
+  DynamicInst secondFlexible;
+  secondFlexible.type = "inst";
+  secondFlexible.instId = 9012;
+  secondFlexible.op = "VADDS";
+  secondFlexible.form = "fp32";
+  secondFlexible.dst = {"v_second"};
+  DynamicInst secondDependentExu0Only;
+  secondDependentExu0Only.type = "inst";
+  secondDependentExu0Only.instId = 9013;
+  secondDependentExu0Only.op = "VPACK";
+  secondDependentExu0Only.form = "b32";
+  secondDependentExu0Only.src = {"v_second"};
+  secondDependentExu0Only.dst = {"v_second_pack"};
+  balancedCore.accept(secondFlexible);
+  balancedCore.accept(secondDependentExu0Only);
+
+  for (int cycle = 0; cycle < 64; ++cycle) {
+    balancedCore.step();
+    if (balancedCore.getExuPortForInst(9012).has_value())
+      break;
+  }
+  require(balancedCore.getExuPortForInst(9010) == std::optional<int>{1},
+          "first flexible work must establish one EXQ1 reserve slot");
+  require(balancedCore.getExuPortForInst(9012) == std::optional<int>{0},
+          "balanced reserve must return flexible work to EXQ0 once the target gap is reached");
 }
 
 void verifyNativeThreePortsMode(const ParamDB &db) {
