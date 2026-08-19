@@ -8,7 +8,7 @@ from collections import deque
 
 from core import isu
 from core.isa_traits import is_load_op, is_store_op, uses_lsq, uses_shared_shq_credit
-from core.ooo import OoOCore, Uop, make_mem_key
+from core.ooo import OoOCore, Uop
 
 
 @dataclass
@@ -46,6 +46,7 @@ class PregLifecycleController:
             return False
         self.core.preg_producer.pop(preg, None)
         self.core.preg_producer_uop.pop(preg, None)
+        self.core.preg_producer_profile.pop(preg, None)
         self.core.preg_pending.discard(preg)
         self.core.preg_consumer_count.pop(preg, None)
         self.core.preg_release_eligible_cycle.pop(preg, None)
@@ -261,10 +262,56 @@ class RenameController:
     def accept(self, inst: Dict[str, Any]) -> None:
         op = str(inst.get("op"))
         form = str(inst.get("form", "") or self.core.dtype)
+        profile = self.core._profile(op, form)
         inst_id = int(inst.get("inst_id", inst.get("id", -1)))
         iter_stack = list(inst.get("iter_stack", []))
         top_block_id = int(inst.get("top_block_id", 0))
         is_last_in_top_block = bool(inst.get("is_last_in_top_block", False))
+        stream_seq = int(inst.get("stream_seq", -1))
+        static_instruction_id = inst.get("static_instruction_id")
+        if static_instruction_id is not None:
+            static_instruction_id = str(static_instruction_id)
+        raw_iteration_path = inst.get("iteration_path", [])
+        iteration_path = (
+            [dict(item) for item in raw_iteration_path if isinstance(item, dict)]
+            if isinstance(raw_iteration_path, list)
+            else []
+        )
+        raw_src_instances = inst.get("src_value_instances", [])
+        src_value_instances = (
+            [dict(item) for item in raw_src_instances if isinstance(item, dict)]
+            if isinstance(raw_src_instances, list)
+            else []
+        )
+        raw_dst_instances = inst.get("dst_value_instances", [])
+        dst_value_instances = (
+            [dict(item) for item in raw_dst_instances if isinstance(item, dict)]
+            if isinstance(raw_dst_instances, list)
+            else []
+        )
+        raw_src_release = inst.get("src_value_instance_release", [])
+        src_value_instance_release = (
+            [bool(item) for item in raw_src_release]
+            if isinstance(raw_src_release, list)
+            else []
+        )
+        raw_dst_keep = inst.get("dst_value_instance_keep", [])
+        dst_value_instance_keep = (
+            [bool(item) for item in raw_dst_keep]
+            if isinstance(raw_dst_keep, list)
+            else []
+        )
+
+        def rat_key(instance: Dict[str, Any] | None, fallback: Any) -> Any:
+            if not instance:
+                return fallback
+            path = instance.get("iteration_path", [])
+            frozen_path = tuple(
+                (str(item.get("loop_id", "")), int(item.get("iteration", 0)))
+                for item in path
+                if isinstance(item, dict)
+            )
+            return (str(instance.get("definition_id", fallback)), frozen_path)
 
         srcs = inst.get("src", [])
         dsts = inst.get("dst", [])
@@ -279,8 +326,26 @@ class RenameController:
 
         preg_src: List[str | None] = []
         preg_src_gen: List[Optional[int]] = []
-        for s in srcs:
-            preg = self.core.RAT.get(s) if self.core.is_vreg(s) else None
+        released_rat_pregs: List[str] = []
+        for index, s in enumerate(srcs):
+            instance = (
+                src_value_instances[index]
+                if index < len(src_value_instances)
+                else None
+            )
+            source_key = rat_key(instance, s)
+            preg = None
+            if self.core.is_vreg(s):
+                preg = self.core.RAT.get(source_key)
+                if preg is None and instance is not None:
+                    preg = self.core.RAT.get(s)
+                if (
+                    index < len(src_value_instance_release)
+                    and src_value_instance_release[index]
+                ):
+                    released = self.core.RAT.pop(source_key, None)
+                    if released is not None:
+                        released_rat_pregs.append(released)
             preg_src.append(preg)
             if preg is None:
                 preg_src_gen.append(None)
@@ -296,7 +361,7 @@ class RenameController:
         preg_dst: List[str] = []
         preg_old: List[str | None] = []
         preg_alloc_count = 0
-        for d in dsts:
+        for index, d in enumerate(dsts):
             if not self.core.is_vreg(d):
                 continue
             if self.core.theoretical_limit_mode:
@@ -304,8 +369,20 @@ class RenameController:
                 self.core.next_dynamic_preg_id += 1
             else:
                 new_p = self.core.freelist.popleft()
-            old_p = self.core.RAT.get(d)
-            self.core.RAT[d] = new_p
+            instance = (
+                dst_value_instances[index]
+                if index < len(dst_value_instances)
+                else None
+            )
+            destination_key = rat_key(instance, d)
+            old_p = self.core.RAT.get(destination_key)
+            keep_mapping = (
+                dst_value_instance_keep[index]
+                if index < len(dst_value_instance_keep)
+                else True
+            )
+            if keep_mapping:
+                self.core.RAT[destination_key] = new_p
             preg_dst.append(new_p)
             preg_old.append(old_p)
             preg_alloc_count += 1
@@ -328,23 +405,22 @@ class RenameController:
             preg_src=preg_src,
             preg_dst=preg_dst,
             preg_old=preg_old,
+            profile=profile,
             top_block_id=top_block_id,
             iter_stack=list(iter_stack),
             is_last_in_top_block=is_last_in_top_block,
+            stream_seq=stream_seq,
+            static_instruction_id=static_instruction_id,
+            iteration_path=iteration_path,
+            src_value_instances=src_value_instances,
+            dst_value_instances=dst_value_instances,
         )
         setattr(u, "preg_src_gen", preg_src_gen)
-
-        if is_load_op(op, self.core.db, form):
-            for s in srcs:
-                if self.core.is_mem(s):
-                    pred_uop = self.core.mem_last_store_uop.get(make_mem_key(s, iter_stack))
-                    if pred_uop is not None:
-                        u.mem_dep_uops.append(pred_uop)
 
         for pd in preg_dst:
             self.core.preg_pending.add(pd)
 
-        if uses_lsq(op, self.core.db, form):
+        if profile.op_class in ("LOAD", "STORE"):
             u.lsq_ready_cycle = int(self.core.cycle) + max(0, int(self.core.ooo_to_lsq_delay))
             self.core.LSQ.append(u)
         else:
@@ -352,7 +428,7 @@ class RenameController:
             self.core.SHQ.append(u)
         if (
             self.core.enable_shq_credit_model
-            and uses_shared_shq_credit(op, self.core.db, form)
+            and profile.op_class in ("COMPUTE", "STORE")
         ):
             self.core.shq_used += 1
             if self.core.enable_credit_visibility_delay:
@@ -361,19 +437,18 @@ class RenameController:
         else:
             setattr(u, "shq_tracked", False)
 
-        if is_store_op(op, self.core.db, form):
+        if profile.op_class == "STORE":
             for d in dsts:
                 if self.core.is_mem(d):
-                    self.core.mem_last_store_uop[make_mem_key(d, iter_stack)] = u
-                    self.core.block_outstanding_stores[top_block_id] = (
-                        self.core.block_outstanding_stores.get(top_block_id, 0) + 1
-                    )
                     iter_key = self.core._top_iter_key_from_stack(top_block_id, iter_stack)
                     self.core.iter_outstanding_stores[iter_key] = (
                         self.core.iter_outstanding_stores.get(iter_key, 0) + 1
                     )
 
         self.core.ROB.append(u)
+
+        for released_preg in released_rat_pregs:
+            self.core.preg_lifecycle.try_free_preg(released_preg)
 
         for old_p in preg_old:
             if old_p is not None:
@@ -468,6 +543,19 @@ class OoOCoreMainline(OoOCore):
             uarch.get("shq_exq_static_rr", False)
         )
         self.shq_exq_rr_ptr: int = 0
+        self.shq_exq_dispatch_policy: str = str(
+            uarch.get("shq_exq_dispatch_policy", "fu_round_robin_fifo")
+        ).lower()
+        self.exu0_reserve_lookahead: int = int(
+            uarch.get("exu0_reserve_lookahead", 0)
+        )
+        self.exu0_reserve_min_count: int = int(
+            uarch.get("exu0_reserve_min_count", 1)
+        )
+        self.shq_exq_rr_ptr_by_fu: Dict[str, int] = {
+            "ALU": 0,
+            "SFU": 0,
+        }
         self.admit_blocked_to_exq: bool = bool(
             uarch.get("admit_blocked_to_exq", False)
         )
@@ -570,7 +658,7 @@ class OoOCoreMainline(OoOCore):
 
         not_done_stores: List[Uop] = []
         for u in self.ROB:
-            if not is_store_op(u.op, self.db, u.form) or u.state == "done":
+            if not (u.profile and u.profile.op_class == "STORE") or u.state == "done":
                 continue
             not_done_stores.append(u)
 
@@ -632,19 +720,13 @@ class OoOCoreMainline(OoOCore):
                 if u.exu_port is not None and 0 <= u.exu_port < self.issue_ports:
                     self.exq_inflight[u.exu_port] = max(0, self.exq_inflight[u.exu_port] - 1)
                     u.exu_port = None
-                if is_store_op(u.op, self.db, u.form):
-                    remain = self.block_outstanding_stores.get(u.top_block_id, 0) - 1
-                    self.block_outstanding_stores[u.top_block_id] = max(0, remain)
+                if u.profile and u.profile.op_class == "STORE":
                     iter_key = self._top_iter_key_from_stack(u.top_block_id, list(u.iter_stack))
                     iter_remain = self.iter_outstanding_stores.get(iter_key, 0) - 1
                     self.iter_outstanding_stores[iter_key] = max(0, iter_remain)
                 if u.is_last_in_top_block:
-                    self.block_last_inst_done[u.top_block_id] = True
                     iter_key = self._top_iter_key_from_stack(u.top_block_id, list(u.iter_stack))
                     self.iter_last_inst_done[iter_key] = True
-                if self.block_last_inst_done.get(u.top_block_id, False) and self.block_outstanding_stores.get(u.top_block_id, 0) == 0:
-                    prev = self.block_release_cycle.get(u.top_block_id, -1)
-                    self.block_release_cycle[u.top_block_id] = max(prev, u.done_cycle)
                 iter_key = self._top_iter_key_from_stack(u.top_block_id, list(u.iter_stack))
                 if self.iter_last_inst_done.get(iter_key, False) and self.iter_outstanding_stores.get(iter_key, 0) == 0:
                     prev = self.iter_release_cycle.get(iter_key, -1)
@@ -668,7 +750,7 @@ class OoOCoreMainline(OoOCore):
         for u in self.LSQ:
             if u.state in ("running", "done"):
                 continue
-            if is_load_op(u.op, self.db, u.form):
+            if u.profile and u.profile.op_class == "LOAD":
                 u.ready_cycle = self._load_ready_cycle(u)
             else:
                 (
@@ -689,15 +771,19 @@ class OoOCoreMainline(OoOCore):
 
         issued_ld: List[Any] = []
         for u in self.LSQ:
-            if u.state != "ready" or not is_load_op(u.op, self.db, u.form):
+            if u.state != "ready" or not (u.profile and u.profile.op_class == "LOAD"):
                 continue
             if ld >= self.load_ports:
                 break
             if c < self.vf_startup_cost:
                 break
+            if self._blocked_by_control_unit(u):
+                self._log_membar_blocked(u)
+                continue
 
             u.start_cycle = c
-            u.done_cycle = c + self.load_done_latency
+            u.blocked_reason = None
+            u.done_cycle = c + self._latency(u.op, u.form, u.profile)
             u.state = "running"
             self._schedule_src_release_from_start(u)
             self._log("start", u)
@@ -706,6 +792,7 @@ class OoOCoreMainline(OoOCore):
 
             for pd in u.preg_dst:
                 self.preg_producer[pd] = (u.op, u.form, u.start_cycle, "LOAD")
+                self.preg_producer_profile[pd] = u.profile
                 self.preg_producer_uop[pd] = u
                 self.preg_pending.discard(pd)
 
@@ -722,7 +809,7 @@ class OoOCoreMainline(OoOCore):
         for u in self.LSQ:
             if u.state in ("running", "done"):
                 continue
-            if not is_store_op(u.op, self.db, u.form):
+            if not (u.profile and u.profile.op_class == "STORE"):
                 continue
             (
                 u.ready_cycle,
@@ -754,7 +841,7 @@ class OoOCoreMainline(OoOCore):
         for u in self.LSQ:
             if u.state in ("running", "done"):
                 continue
-            if not is_store_op(u.op, self.db, u.form):
+            if not (u.profile and u.profile.op_class == "STORE"):
                 continue
             (
                 u.ready_cycle,
@@ -766,20 +853,21 @@ class OoOCoreMainline(OoOCore):
 
         issued_st: List[Any] = []
         for u in self.LSQ:
-            if u.state != "ready" or not is_store_op(u.op, self.db, u.form):
+            if u.state != "ready" or not (u.profile and u.profile.op_class == "STORE"):
                 continue
             if st >= self.store_ports:
                 break
             if c < self.vf_startup_cost:
                 break
+            if self._blocked_by_control_unit(u):
+                self._log_membar_blocked(u)
+                continue
             if u.producer_op_for_store is None:
                 continue
 
             u.start_cycle = c
-            u.done_cycle = c + self._data_store_cost(
-                u.producer_op_for_store,
-                u.producer_form_for_store,
-            )
+            u.blocked_reason = None
+            u.done_cycle = c + self._latency(u.op, u.form, u.profile)
             u.state = "running"
             self._schedule_src_release_from_start(u)
             # SHQ credit release for store-like LSU ops.

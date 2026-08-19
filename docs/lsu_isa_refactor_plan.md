@@ -1,97 +1,96 @@
-# LSU / ISA Refactor Plan
+# LSU / ISA 重构计划
 
-## Purpose
+## 目的
 
-This document records the current simulator implementation around load/store
-vector instructions and proposes a refactor that makes LSU instructions
-first-class ISA instructions.
+本文记录当前模拟器对 load/store 向量指令的实现方式，以及让 LSU 指令进一步 table-driven 所剩的重构工作。
 
-The hardware distinction must remain:
+硬件语义上的区分必须保留：
 
-- load/store style vector instructions use LSU resources
-- compute vector instructions use EXU resources
+- load/store 风格向量指令使用 LSU 资源。
+- compute 向量指令使用 EXU 资源。
 
-The simulator implementation distinction should be reduced:
+当前主线已经减少了实现层面的硬编码区分：
 
-- `VLDS`, `VSTS`, `VSTAS`, `VSTUS`, and future LSU instructions should be
-  represented by ISA metadata, not by scattered `op == "VLD"` / `op == "VST"`
-  checks
-- producer-consumer timing should be represented through dependency tables
-  instead of special `pipeline_startup_cost` and `pipeline_drain_cost` paths
+- `VLDS` 和 `VSTS` 已在 `configs/isa.json` 中用 `op_class = "LOAD"` / `"STORE"` 表示。
+- IDU、模拟器运行器的预约估算、OoO load/store 放置、内存依赖检查都使用 `core/isa_traits.py` 中的统一辅助函数。
+- 生产者到消费者的就绪时间使用 `configs/forwarding.json`，并按 schema v2 的 `OP.form` key 查询。
 
-The goal is to make LSU op support extensible without changing hardware
-semantics.
+剩余工作：
 
-## Current Model Summary
+- 在时序数据准备好后，为其他 LSU op spelling 增加校准后的 ISA 配置，例如 `VLD`、`VST`、`VSTUS`、`VSTAS`。
+- 决定 store 执行时长是否继续使用 producer 的 `data_store_cost`，还是迁移到 store op 自身 latency 或单独的 duration table。
 
-The current mainline flow is:
+目标是在不改变硬件语义的前提下，让 LSU op 支持更容易扩展。
+
+## 当前主线流程
+
+当前主线流程：
 
 ```text
 JSON / CCE
   -> API adapter
-  -> vreg live-range normalization
+  -> vreg 活跃范围规范化
   -> flatten
-  -> IFU dynamic instruction generation
-  -> IDU dispatch and credit gates
+  -> IFU 动态指令生成
+  -> IDU 发射和信用门控
   -> OoO rename / SHQ / LSQ
-  -> ISU / EXQ / EXU for compute
-  -> LSU direct load/store issue
+  -> 计算指令的 ISU / EXQ / EXU 路径
+  -> LSU 直接 load/store 发射
   -> VF end cycle
 ```
 
-Relevant files:
+相关文件：
 
-- `main.py`: CLI entry and model selection
-- `api/cce_adapter.py`: parses CCE `__VEC_SCOPE__`
-- `api/vf_lowering.py`: lowers public VF API into simulator program payload
-- `core/flatten.py`: static program to linear IR
-- `core/ifu.py`: dynamic loop and unroll expansion
-- `core/idu.py`: IDU window, VLOOP gates, and credit gates
-- `core/ooo.py`: base OoO utilities and dependency timing helpers
-- `core/ooo_mainline.py`: mainline rename, preg lifecycle, SHQ/LSQ/ROB,
-  load/store path
-- `core/isu.py`: compute SHQ -> EXQ -> EXU path
-- `core/param_db.py`: configuration database for ISA, uarch, forwarding, and II
+- `main.py`：CLI 入口和模型选择。
+- `api/cce_adapter.py`：解析 CCE `__VEC_SCOPE__`。
+- `api/vf_lowering.py`：把公共 VF API lower 成 simulator program payload。
+- `core/flatten.py`：静态 program 到线性 IR。
+- `core/ifu.py`：动态 loop 和 unroll 展开。
+- `core/idu.py`：IDU window、VLOOP gate、credit gate。
+- `core/ooo.py`：基础 OoO 工具和 dependency timing helper。
+- `core/ooo_mainline.py`：主线 rename、preg lifecycle、SHQ/LSQ/ROB、load/store 路径。
+- `core/isu.py`：compute 的 SHQ -> EXQ -> EXU 路径。
+- `core/param_db.py`：ISA、uarch、forwarding、II 的配置数据库。
 
-## Current Configuration Meaning
+## 当前配置含义
 
 ### `configs/isa.json`
 
-Current instruction fields include:
+当前指令字段包括：
 
-- `latency`: compute start-to-done latency
-- `pipeline_startup_cost`: currently used mostly for `VLD` producer to compute
-  consumer readiness
-- `pipeline_drain_cost`: currently used mostly for compute producer to `VST`
-  readiness
-- `data_store_cost`: currently used as `VST` duration based on the producer op
-- `data_load_cost`: present, but not used by the mainline load path
-- `EXU`: compute functional unit class, usually `ALU` or `SFU`
-- `dispatch_exu`: legal EXU ports, such as `EXU0_ONLY`, `EXU01`, `EXU012`
-- `throughput`: present, but mainline issue spacing is mostly controlled by
-  `InitiationInterval.json`
+- `schema_version: 2`
+- `instructions.<op>.op_class`：`COMPUTE`、`LOAD` 或 `STORE`
+- `instructions.<op>.forms.<form>`：每种 form 的参数，例如 `fp32`、`fp16`，或 `f32_to_f16` 这类转换 form
+- `latency`：指令 start 到 done 的 latency
+- `pipeline_startup_cost`：作为 form metadata 保留；当前 ready 主要由 `forwarding.json` 驱动
+- `pipeline_drain_cost`：作为 form metadata 保留；当前 ready 主要由 `forwarding.json` 驱动
+- `data_store_cost`：字段保留为历史/校准参考，主线 store 路径不直接使用
+- `data_load_cost`：字段保留为历史/校准参考，主线 load 路径不直接使用
+- `EXU`：计算功能单元类别，通常是 `ALU` 或 `SFU`
+- `dispatch_exu`：合法 EXU port，例如 `EXU0_ONLY`、`EXU01`、`EXU012`
+- `throughput`：字段保留，但主线 issue spacing 主要由 `InitiationInterval.json` 控制
 
-Global defaults:
+全局默认值：
 
 - `vf_startup_cost`
 - `vf_drain_cost`
 
 ### `configs/forwarding.json`
 
-Current meaning:
+当前含义：
 
 ```text
-consumer_ready_cycle = producer_start_cycle + forwarding[producer_op][consumer_op]
+consumer_ready_cycle = producer_start_cycle + forwarding[producer_OP.form][consumer_OP.form]
 ```
 
-Today this is effectively compute-producer to compute-consumer forwarding.
-If a pair is missing, the fallback is:
+表按 `OP.form` 建 key，例如 `VADDS.fp32`、`VCVT_F32_TO_F16.f32_to_f16`、`VLDS.fp32`、`VSTS.fp16`。
+如果 pair 缺失，fallback 是：
 
 ```text
 max(0, producer.latency - forwarding.defaults)
 ```
 
-In queue-level mode, compute wakeup uses:
+queue-level 模式下，compute wakeup 使用：
 
 ```text
 producer_start + max(0, forwarding - 1)
@@ -99,142 +98,104 @@ producer_start + max(0, forwarding - 1)
 
 ### `configs/InitiationInterval.json`
 
-Current meaning:
+当前含义：
 
 ```text
 cycle(cur_op) >= last_issue_cycle(prev_op_on_same_port) + II(prev_op, cur_op)
 ```
 
-This is a same-port structural issue-spacing constraint. It is not a data
-dependency rule.
+这是同端口 structural issue-spacing 约束，不是数据依赖规则。
 
 ### `configs/uarch.json`
 
-Relevant fields:
+相关字段：
 
-- `issue_ports`: compute EXU issue ports
-- `load_ports`: load issue capacity per cycle
-- `store_ports`: store issue capacity per cycle
-- `IDU_window_width`: IDU window capacity
-- `IDU_issue_width`: IDU dispatch width
-- `LDQ_width`: current LSQ capacity for load/store instructions
-- `vreg_num`: physical vector register count
-- `shq_depth`: shared SHQ credit depth for compute and store-like paths
-- `exq_depth`: per-port EXQ wait queue depth
-- `idu_to_ooo_delay`: IDU to OoO transport delay
-- `vloop_to_dispatch_delay`: VLOOP start to loop-body dispatch visibility
-- `exq_recv_delay`: SHQ to EXQ receive delay
-- `shq_to_exq_port_per_cycle`: per-port SHQ to EXQ enqueue bandwidth
-- `exq_issue_inflight_cap_per_port`: per-port compute inflight cap
-- `enable_shq_credit_model`: enables shared SHQ credit accounting
-- `enable_credit_visibility_delay`: enables delayed preg/SHQ credit visibility
-  back to IDU
-- `mem_bar_mode`: memory ordering mode, currently including `strong`
+- `issue_ports`：compute EXU issue port 数量。
+- `load_ports`：每 cycle load issue capacity。
+- `store_ports`：每拍 store 发射容量。
+- `IDU_window_width`：IDU window 容量。
+- `IDU_issue_width`：IDU dispatch 宽度。
+- `LDQ_width`：当前 load/store 指令使用的 LSQ 容量。
+- `vreg_num`：物理向量寄存器数量。
+- `shq_depth`：compute 和 store-like 路径共享的 SHQ credit depth。
+- `exq_depth`：每个 port 的 EXQ wait queue depth。
+- `idu_to_ooo_delay`：IDU 到 OoO transport delay。
+- `vloop_to_dispatch_delay`：VLOOP start 到 loop-body dispatch 可见的 delay。
+- `exq_recv_delay`：SHQ 到 EXQ receive delay。
+- `shq_to_exq_port_per_cycle`：每个 port 的 SHQ 到 EXQ enqueue bandwidth。
+- `exq_issue_inflight_cap_per_port`：每个 port 的 compute inflight cap。
+- `enable_shq_credit_model`：启用共享 SHQ 信用计数。
+- `enable_credit_visibility_delay`：启用 preg/SHQ credit 回传到 IDU 的延迟可见。
+- `mem_bar_mode`：memory ordering mode，目前包含 `strong`。
 
-## Current LSU Special Cases
+## 当前 LSU 分类
 
-The implementation currently treats only two op spellings as LSU operations:
+当前实现通过 `core/isa_traits.py` 做资源分类。首选来源是 `configs/isa.json`：
 
 ```text
-VLD = load
-VST = store
-everything else = compute
+op_class = LOAD    -> LSQ load path
+op_class = STORE   -> LSQ store path
+op_class = COMPUTE -> SHQ / EXQ / EXU 计算路径
 ```
 
-Historical JSON inputs used `VLD` and `VST` for cases that were actually
-`VLDS` and `VSTS`. Those JSON inputs should be migrated to the real ISA names.
-`VLD`, `VST`, `VLDS`, `VSTS`, `VSTUS`, and `VSTAS` are all ISA instruction
-names, not internal load/store class names.
+兼容行为：
 
-This appears in several layers.
+- `VLDS` 在 metadata 缺失时 fallback 为 load-like。
+- `VSTS` 在 metadata 缺失时 fallback 为 store-like。
+- `VLD` / `VST` 由公开 CCE alias 规范化为 `VLDS` / `VSTS`；`VSTUS` / `VSTAS` 保留真实 op name 和 store semantic forms。后两者 timing 未校准时使用统一默认参数并记录 warning。
+- unknown op 为兼容旧路径会 fallback 为 compute-like。
+
+历史 JSON 输入曾用 `VLD` 和 `VST` 表示实际应为 `VLDS` 和 `VSTS` 的 case。当前公开示例应使用真实 ISA 名称。
 
 ### CCE Adapter
 
-Older `api/cce_adapter.py` normalized:
+当前 `api/cce_adapter.py` 会保留大写后的 callee name：
 
 ```text
-VLDS -> VLD
-VLD  -> VLD
-VSTS -> VST
-VST  -> VST
+vlds -> VLDS
+vsts -> VSTS
+vcvt -> VCVT_*，前提是 form 可推断
 ```
-
-That loses the original op identity. The adapter should preserve the uppercase
-callee name so `VLD`, `VST`, `VLDS`, `VSTS`, `VSTAS`, `VSTUS`, and future LSU
-instructions can reach the core as distinct ISA instructions.
-
-### IFU
-
-`core/ifu.py` classifies unrolled innermost body instructions as:
-
-```text
-VLD -> LD
-VST -> ST
-other -> ALU
-```
-
-The unroll expansion emits loads first, compute second, stores last. This
-scheduling shape may still be desired, but the classification source should be
-ISA metadata or a central op-class helper.
 
 ### IDU
 
-`core/idu.py` uses hard-coded credit gates:
+`core/idu.py` 使用统一资源分类进行 credit gate：
 
-- `VLD`: consumes LSQ only
-- `VST`: consumes LSQ and shared SHQ credit
-- other ops: consume compute SHQ queue and shared SHQ credit
-
-This should become resource-class driven:
-
-- load-like LSU op
-- store-like LSU op
-- compute EXU op
+- load-like：只消耗 LSQ。
+- store-like：消耗 LSQ 和 shared SHQ credit。
+- compute-like：消耗 compute SHQ queue 和 shared SHQ credit。
 
 ### Simulator Runner
 
-`core/simulator_runner.py` estimates in-flight IDU-to-OOO reservations using
-hard-coded `VLD` and `VST` checks. This logic must use the same central resource
-classification as IDU.
+`core/simulator_runner.py` 在估算 IDU 到 OOO 的在途预约时使用同一组辅助函数。
 
 ### OoO Dependency Timing
 
-`core/ooo.py` currently has distinct readiness paths:
+`core/ooo.py` 通过 `ParamDB.get_forwarding_cycles(...)` 计算生产者到消费者的就绪时间，并支持按 form 查询：
 
 ```text
-VLD -> compute:
-  ready = VLD.start + consumer.pipeline_startup_cost
-
-compute -> compute:
-  ready = producer.start + forwarding[producer][consumer]
-
-compute -> VST:
-  ready = producer.start + producer.pipeline_drain_cost
+producer_OP.form -> consumer_OP.form
 ```
 
-This is the main conceptual issue. `pipeline_startup_cost` and
-`pipeline_drain_cost` are acting as hidden producer-consumer timing tables.
+ISU 队列模型开启时，队列级计算唤醒使用 `forwarding - 1` 对齐。理论上界的旧版转发变体使用直接 forwarding 值。
 
 ### OoO Load/Store Execution
 
-`core/ooo_mainline.py` currently:
+`core/ooo_mainline.py` 当前行为：
 
-- places `VLD` and `VST` into `LSQ`
-- places other ops into `SHQ`
-- tracks memory dependencies only for `VLD`
-- tracks outstanding stores only for `VST`
-- historically issued `VLD` with `load_ports` and `VLD_COST`; the active path
-  now uses `load_done_latency`
-- issues `VST` with `store_ports` and producer `data_store_cost`
-- records producer kind as `"VLD"` or `"COMPUTE"`
+- load-like 和 store-like op 进入 `LSQ`。
+- compute-like op 进入 `SHQ`。
+- load-like op 会跟踪 memory dependency。
+- store-like op 会跟踪 outstanding store。
+- load-like op 通过 `load_ports` 发射；当前活跃路径使用该 load op 自身 ISA `latency`。
+- store-like op 通过 `store_ports` 发射；当前活跃路径使用该 store op 自身 ISA `latency`。
+- producer kind 记录为 `"LOAD"` 或 `"COMPUTE"`。
 
-This hard-codes both op identity and producer kind.
+## 目标架构
 
-## Target Architecture
+### ISA 级 op 分类
 
-### ISA-Level Op Classification
-
-Add ISA metadata for each op:
+当前覆盖到的 op 已经具备 ISA metadata：
 
 ```json
 {
@@ -242,7 +203,7 @@ Add ISA metadata for each op:
 }
 ```
 
-or:
+或：
 
 ```json
 {
@@ -250,7 +211,7 @@ or:
 }
 ```
 
-Compute instructions keep EXU metadata:
+compute 指令保留 EXU metadata：
 
 ```json
 {
@@ -260,23 +221,22 @@ Compute instructions keep EXU metadata:
 }
 ```
 
-Suggested canonical meanings:
+推荐语义：
 
-- `op_class = "COMPUTE"`: compute instruction, enters SHQ / EXQ / EXU path
-- `op_class = "LOAD"`: load instruction, enters LSQ load path
-- `op_class = "STORE"`: store instruction, enters LSQ store path
+- `op_class = "COMPUTE"`：compute 指令，进入 SHQ / EXQ / EXU 路径。
+- `op_class = "LOAD"`：load 指令，进入 LSQ load 路径。
+- `op_class = "STORE"`：store 指令，进入 LSQ store 路径。
 
-Compatibility while configs are migrating:
+配置迁移期间的兼容规则：
 
-- `VLDS` should default to `LOAD` if metadata is absent
-- `VSTS` should default to `STORE` if metadata is absent
-- `VLD`, `VST`, `VSTUS`, and `VSTAS` are real ISA op names, but their timing
-  data is intentionally not covered until calibration/config entries are added
-- unknown ops should not silently become compute unless ISA lookup succeeds
+- `VLDS` metadata 缺失时默认为 `LOAD`。
+- `VSTS` metadata 缺失时默认为 `STORE`。
+- `VLD`、`VST`、`VSTUS`、`VSTAS` 是真实 ISA op name；在校准/配置条目加入前，其 timing data 有意不覆盖。
+- unknown op 不应在 ISA 查找失败后静默变成 compute；当前 fallback 是兼容旧路径，后续可以收紧。
 
-### Central Resource Classification
+### 统一资源分类
 
-Add central helpers, probably in `ParamDB` or a small `core/isa_traits.py`:
+统一 helper 位于 `core/isa_traits.py`：
 
 ```python
 get_op_class(op, dtype) -> "LOAD" | "STORE" | "COMPUTE"
@@ -288,14 +248,13 @@ uses_shq_queue(op, dtype) -> bool
 uses_shared_shq_credit(op, dtype) -> bool
 ```
 
-IDU, simulator runner, IFU, and OoO should all call the same helpers.
+当前活跃路径中，IDU、simulator runner、OoO 都调用同一组 helper。
 
-### Unified Producer-Consumer Timing
+### 统一 Producer-Consumer Timing
 
-Move load-to-compute and compute-to-store timing into `forwarding.json` or a
-renamed dependency table.
+load-to-compute 和 compute-to-store timing 现在已经通过 `forwarding.json` 的 schema v2 `OP.form` key 查询。剩余工作主要是扩大校准覆盖，并决定是否把 `forwarding` 重命名为更宽泛的 dependency-delay 名称。
 
-The target readiness rule should be:
+目标 ready 规则：
 
 ```text
 consumer_ready = max(
@@ -304,7 +263,7 @@ consumer_ready = max(
 )
 ```
 
-Examples:
+示例：
 
 ```text
 VLDS -> VADD
@@ -314,100 +273,100 @@ VEXP -> VSTS
 VADD -> VEXP
 ```
 
-This lets `pipeline_startup_cost` and `pipeline_drain_cost` become migration
-inputs rather than active special-case semantics.
+这样 `pipeline_startup_cost` 和 `pipeline_drain_cost` 可以逐步变成迁移输入，而不是活跃的特殊语义。
 
-Open naming choice:
+命名选择仍需确认：
 
-- keep the file named `forwarding.json` and broaden its meaning
-- or introduce `dependency_delay.json` while keeping `forwarding.json` as a
-  compatibility source
+- 继续使用 `forwarding.json`，并扩展其含义。
+- 或新增 `dependency_delay.json`，同时把 `forwarding.json` 作为兼容来源。
 
-The second option is cleaner semantically but touches more call sites.
+第二种语义更清晰，但会触及更多调用点。
 
-### LSU Execution Timing
+### LSU 执行时序
 
-Load/store execution can remain separate because the resources differ:
+load/store 执行可以继续分开，因为资源不同：
 
 ```text
-LOAD-like LSU:
-  LSQ + load_ports + op.latency
+类 LOAD 的 LSU：
+  LSQ + load_ports + load op 自身 ISA latency
 
-STORE-like LSU:
-  LSQ + store_ports + op.latency
+类 STORE 的 LSU：
+  LSQ + store_ports + store op 自身 ISA latency
 ```
 
-The current `VST` behavior uses producer `data_store_cost` as store duration.
-The refactor needs an explicit decision:
+当前 Python 和 C++ native 主线已经统一为第一种口径：所有 load/store-like 指令
+使用指令自身 `latency`。`data_load_cost`、`data_store_cost` 不再作为主线执行时长
+来源；旧 `load_done_latency` 配置已经端到端删除。
 
-1. use store op `latency` for all store-like instructions
-2. keep a producer-to-store duration table
-3. temporarily derive store op `latency` from old producer `data_store_cost`
-   during config migration
+### 内存依赖和屏障
 
-Recommended first step:
+内存依赖逻辑也应继续使用 LSU 分类：
 
-- use store op `latency`
-- choose `VST` / `VSTS` latency values that reproduce current baseline cases
-  as closely as possible
-- preserve old behavior behind a temporary compatibility flag only if needed
+- 内存源操作数的类 load 指令可以依赖同一内存 key 的前序 store。
+- 内存目的操作数的类 store 指令会更新最后 store 映射。
+- strong 模式下的中间内存 block 释放应作用于类 load 指令，而不是只作用于 `VLD`。
 
-### Memory Dependency and Barriers
+## 当前配置 Schema
 
-Memory dependency logic should also use LSU classification:
-
-- load-like op with memory src may depend on previous store to same memory key
-- store-like op with memory dst updates last-store map
-- strong intermediate-memory block release should apply to load-like ops, not
-  only `VLD`
-
-## Proposed Config Schema
-
-Example:
+示例：
 
 ```json
-"VLDS": {
-  "fp32": {
+"instructions": {
+  "VLDS": {
     "op_class": "LOAD",
-    "latency": 9
-  },
-  "fp16": {
-    "op_class": "LOAD",
-    "latency": 9
+    "forms": {
+      "fp32": {
+        "op_class": "LOAD",
+        "latency": 9,
+        "src_dtypes": ["ub"],
+        "dst_dtypes": ["fp32"],
+        "dtype": "fp32"
+      },
+      "fp16": {
+        "op_class": "LOAD",
+        "latency": 9,
+        "src_dtypes": ["ub"],
+        "dst_dtypes": ["fp16"],
+        "dtype": "fp16"
+      }
+    }
   }
 }
 ```
 
 ```json
-"VSTS": {
-  "fp32": {
+"instructions": {
+  "VSTS": {
     "op_class": "STORE",
-    "latency": 9
-  },
-  "fp16": {
-    "op_class": "STORE",
-    "latency": 9
+    "forms": {
+      "fp32": {
+        "op_class": "STORE",
+        "latency": 9,
+        "src_dtypes": ["fp32"],
+        "dst_dtypes": ["ub"],
+        "dtype": "fp32"
+      },
+      "fp16": {
+        "op_class": "STORE",
+        "latency": 9,
+        "src_dtypes": ["fp16"],
+        "dst_dtypes": ["ub"],
+        "dtype": "fp16"
+      }
+    }
   }
 }
 ```
 
-```json
-"VSTAS": {
-  "fp32": {
-    "op_class": "STORE",
-    "latency": 9
-  }
-}
-```
+`forwarding.json` 和 `InitiationInterval.json` 的 pair table 使用 `OP.form` key，例如 `VADDS.fp32`、`VLDS.fp32`、`VSTS.fp16`。
 
-The exact latency and dependency values should come from calibration. The
-schema is the important first boundary.
+具体 latency 和 dependency 值应来自校准。
 
-## Proposed Refactor Phases
+## 重构状态
 
-### Phase 0: Baseline Capture
+### 阶段 0：基线采集
 
-Before code changes, record current outputs for representative cases:
+状态：历史阶段，已完成。代码修改前记录代表性 case 输出：
 
 ```bash
 python3 main.py --trace VFtest/VADD_oneloop.json --out_dir results/baseline_vadd_oneloop
@@ -415,172 +374,125 @@ python3 main.py --trace VFtest/GeLU_poly.json --out_dir results/baseline_gelu_po
 python3 tools/run_cost_model_regression.py --tier smoke
 ```
 
-Keep these as behavior anchors during compatibility refactor.
+这些输出作为兼容性重构期间的行为锚点。
 
-### Phase 1: Central ISA Traits
+### 阶段 1：集中 ISA 分类
 
-Add central op-class helpers.
+状态：活跃路径已完成。统一 op-class 辅助函数位于 `core/isa_traits.py`。
 
-Initial compatibility rules:
+当前兼容规则：
 
-- `VLD` is load-like
-- `VLDS` is load-like
-- `VST` is store-like
-- `VSTS`, `VSTUS`, and `VSTAS` are store-like
-- ISA `op_class = LOAD` is load-like
-- ISA `op_class = STORE` is store-like
-- ISA `op_class = COMPUTE` or missing `op_class` for known existing compute ops is compute
+- `VLDS` 是 load-like。
+- `VSTS` 是 store-like。
+- ISA `op_class = LOAD` 是 load-like。
+- ISA `op_class = STORE` 是 store-like。
+- ISA `op_class = COMPUTE` 是 compute-like。
+- `VSTUS`、`VSTAS` 在加入校准配置前按 store fallback 执行并记录 timing warning。
 
-Do not change behavior yet.
+### 阶段 2：旧版 LSU 指令的 ISA 条目
 
-Expected code changes:
+状态：`VLDS` 和 `VSTS` 已完成。
 
-- `core/param_db.py` or new `core/isa_traits.py`
-- `core/ifu.py`
-- `core/idu.py`
-- `core/simulator_runner.py`
-- `core/ooo_mainline.py`
+其他真实 LSU ISA 指令，例如 `VLD`、`VST`、`VSTUS`、`VSTAS`，应在时序数据准备好后再加入。
 
-Validation target:
+兼容映射：
 
-- existing `VLD/VST` JSON cases produce unchanged cycles
+- `VLDS.latency` 应匹配 load 完成延迟。
+- `VSTS.latency` 应匹配 store 完成延迟。
+- 修改 producer `data_store_cost` 不应改变 store done cycle。
 
-### Phase 2: ISA Entries for Legacy LSU Ops
+### 阶段 3：统一依赖时序
 
-Add `VLDS` and `VSTS` entries to `isa.json` as explicit LSU ops. Other real
-LSU ISA ops such as `VLD`, `VST`, `VSTUS`, and `VSTAS` should be added only
-when their timing data is ready.
+状态：部分完成。生产者到消费者的就绪查询已经通过 `forwarding.json` 的 v2 `OP.form` key。剩余工作是扩大校准覆盖，并决定表名是否从 `forwarding` 改成依赖延迟术语。
 
-Compatibility mapping:
+迁移旧行为：
 
-- `VLDS.latency` or `load_done_latency` should match the historical load done
-  latency
-- `VSTS.latency` needs careful handling because current duration is producer
-  `data_store_cost`
+- 旧 `VLD -> compute`：
+  - 从类 load 生产者到各计算消费者写入表项，值来自旧消费者 `pipeline_startup_cost`。
+- 旧 compute -> `VST`：
+  - 从各计算生产者到类 store 消费者写入表项，值来自旧生产者 `pipeline_drain_cost`。
+- 旧 compute -> compute：
+  - 保留现有 forwarding 条目。
 
-At this phase, it is acceptable to keep store duration compatibility if needed,
-but the classification should already be ISA-driven.
+队列级 `-1` 对齐需要保留或显式重新定义。如果保留，应一致应用到队列级计算消费者的依赖表唤醒。
 
-### Phase 3: Unified Dependency Timing
+### 阶段 4：保留真实 CCE LSU 指令
 
-Replace special readiness rules with unified producer-consumer dependency
-lookup.
+状态：当前支持子集已完成。`api/cce_adapter.py` 保留：
 
-Migrate old behavior:
+- `vlds` -> `VLDS`
+- `vsts` -> `VSTS`
+- 其他向量指令名称保留其大写规范指令名
 
-- old `VLD -> compute`:
-  - write table entries from `VLD` to each compute consumer using the old
-    consumer `pipeline_startup_cost`
-- old compute -> `VST`:
-  - write table entries from each compute producer to `VST` using old producer
-    `pipeline_drain_cost`
-- old compute -> compute:
-  - keep existing forwarding entries
+后续如需支持更多 LSU op，再补充 ISA 和 dependency 条目。
 
-Queue-level `-1` alignment needs to be preserved or explicitly redefined. If
-preserved, apply it consistently to dependency-table wakeup for queue-level
-compute consumers.
+### 阶段 5：LSU 路径清理
 
-### Phase 4: Preserve Real CCE LSU Ops
+有用时可以继续清理内部概念命名：
 
-Stop normalizing CCE ops to `VLD` / `VST`.
+- `LSQ` 可以继续作为 queue 名称。
+- 注释应使用类 load / 类 store 的 LSU 指令，而不是泛称 `VLD/VST`。
+- 活跃路径中的 producer kind 已经使用 `"LOAD"` 或 `"COMPUTE"`。
+- store 跟踪应基于 `is_store_op`。
+- load 内存依赖应基于 `is_load_op`。
 
-Change `api/cce_adapter.py` so:
+该阶段结束时，除旧版兼容代码和测试之外，`grep` 不应在模型关键路径中看到直接检查 `op == "VLD"` 或 `op == "VST"`。
 
-- `vlds` becomes `VLDS`
-- `vsts` becomes `VSTS`
-- `vstas` becomes `VSTAS`
-- `vstus` becomes `VSTUS`
-- other vector op names preserve their uppercase canonical op
+## 历史清理计划
 
-Add ISA and dependency entries for the newly preserved ops.
+LSU op-class 重构后，代码库仍带有一些历史兼容路径。应在保持当前 `queue_level4` 主线结果的前提下逐步移除。
 
-### Phase 5: LSU Path Cleanup
+### 1. 旧版释放规则路径
 
-Rename internal concepts where useful:
-
-- `LSQ` can remain as the queue name
-- comments should refer to load-like / store-like LSU ops instead of `VLD/VST`
-- producer kind should avoid hard-coded `"VLD"` / `"COMPUTE"` if op names are
-  sufficient
-- store tracking should be based on `is_store_op`
-- load memory dependency should be based on `is_load_op`
-
-At the end of this phase, grep should show no model-critical direct checks of
-`op == "VLD"` or `op == "VST"` outside legacy compatibility code and tests.
-
-## Historical Cleanup Plan
-
-After the LSU op-class refactor, the codebase still carries several historical
-compatibility paths. These should be removed step by step while preserving the
-current `queue_level4` mainline results.
-
-### 1. Release Rule Legacy Path
-
-Current mainline behavior is source release at:
+当前主线 source release 行为是：
 
 ```text
 consumer.start_cycle + consumer_release_start_offset
 ```
 
-The old done-based alternative is no longer a separate supported model. Remove:
+旧的基于完成时刻的替代路径已不再是独立支持模型。可清理：
 
-- removed `consumer_release_from_start = false` behavior
-- removed `consumer_done_release_delay`
-- removed `release_done_delay`
-- removed done-based source release logic in `PregLifecycleController.on_uop_done`
+- 已移除的 `consumer_release_from_start = false` 行为。
+- 已移除的 `consumer_done_release_delay`。
+- 已移除的 `release_done_delay`。
+- `PregLifecycleController.on_uop_done` 中旧的基于完成时刻的源寄存器释放逻辑。
 
-Keep `consumer_release_start_offset` as the single mainline uarch parameter.
+保留 `consumer_release_start_offset` 作为唯一主线 uarch 参数。
 
-### 2. Old Naming Residue
+### 2. 旧命名残留
 
-The class/file names still carry the old `consumer_done` wording even though the
-mainline behavior is start-based release and queue-level4 timing. After logic
-cleanup, rename toward a mainline name such as:
+部分类名/文件名曾携带旧 `consumer_done` 语义，但主线行为已经是基于开始时刻的释放和 queue-level4 时序。逻辑清理后，命名应收敛到主线名称，例如：
 
 - `OoOCoreMainline`
 - `OoOCoreQueueLevel4`
 
-The active class has been renamed to `OoOCoreMainline`, and the active file is
-now `core/ooo_mainline.py`.
+当前活跃 class 已重命名为 `OoOCoreMainline`，活跃文件是 `core/ooo_mainline.py`。
 
-### 3. Old LSU Name Residue
+### 3. 旧 LSU 名称残留
 
-Remove old `VLD` / `VST` terminology from active model code where it is only a
-generic load/store label:
+如果 `VLD` / `VST` 只是泛化 load/store 标签，应从活跃模型代码中移除：
 
-- remove `VLD_COST` fallback after `load_done_latency` or ISA load latency is
-  established (completed for the active `load_done_latency` path)
-- update comments from `VLD/VST` to load/store LSU op where appropriate
-- keep real ISA names `VLD`, `VST`, `VLDS`, `VSTS`, `VSTUS`, and `VSTAS` only
-  when referring to actual ops
+- load 执行时长已统一到 ISA load latency；旧的独立 load duration 配置和 fallback 表述已经移除。
+- 注释从 `VLD/VST` 改成 load/store LSU 指令。
+- 只有在指真实 ISA op 时，才保留 `VLD`、`VST`、`VLDS`、`VSTS`、`VSTUS`、`VSTAS` 这些名称。
 
-### 4. Historical Model Label Residue
+### 4. 历史模型标签残留
 
-The current simulator has one concrete mainline backend: `queue_level4`.
-Historical labels such as `consumer-done`, `queue_level1`, `queue_level2`, and
-`queue_level3` should be removed from active code paths where they no longer
-select distinct behavior.
+当前模拟器只有一个具体主线 backend：`queue_level4`。`consumer-done`、`queue_level1`、`queue_level2`、`queue_level3` 等历史标签，如果不再选择独立行为，应从活跃代码路径中移除。
 
-Historical reports and docs can remain as archived context, but active CLI/API
-code should not imply that those are still separate maintained modes.
+历史报告和文档可以作为归档上下文保留，但活跃 CLI/API 代码不应暗示这些仍是独立维护模式。
 
-## Important Open Questions
+## 重要开放问题
 
-1. Should the dependency table stay named `forwarding.json`, or should we add a
-   clearer `dependency_delay.json`?
-2. Should store-like instruction duration be the store op's `latency`, or should
-   there be a producer-store duration table?
-3. Do `VSTS`, `VSTAS`, and `VSTUS` share one store port pool, or do any of them
-   need separate LSU sub-resource modeling?
-4. Should load-like instructions include more than `VLDS`, and do any require
-   separate load port pools?
-5. Is the queue-level `forwarding - 1` alignment still valid for all dependency
-   pairs, or only for compute consumers entering SHQ/EXQ?
+1. 依赖表是否继续叫 `forwarding.json`，还是新增更清晰的 `dependency_delay.json`？
+2. 类 store 指令的执行时长应使用 store 指令自身 `latency`，还是需要生产者到 store 的执行时长表？
+3. `VSTS`、`VSTAS`、`VSTUS` 是否共享一个 store port pool，还是需要单独 LSU 子资源模型？
+4. load-like 指令是否应包含 `VLDS` 之外的更多指令，是否有指令需要独立 load port pool？
+5. 队列级 `forwarding - 1` 对齐是否适用于所有依赖指令对，还是只适用于进入 SHQ/EXQ 的计算消费者？
 
-## Validation Checklist
+## 验证清单
 
-After each phase:
+每个 phase 后运行：
 
 ```bash
 python3 -m py_compile main.py api/*.py core/*.py
@@ -589,24 +501,21 @@ python3 main.py --trace VFtest/GeLU_poly.json --out_dir results/sanity_gelu_poly
 python3 tools/run_cost_model_regression.py --tier smoke
 ```
 
-Expected first-phase behavior:
+第一阶段期望行为：
 
-- migrated JSON traces using `VLDS` / `VSTS` should remain cycle-compatible
-- `idu_to_ooo.json`, `start_by_cycle.json`, and `done_by_cycle.json` should
-  preserve instruction ordering for legacy cases unless a phase explicitly
-  changes timing semantics
+- 已迁移到 `VLDS` / `VSTS` 的 JSON trace 应保持 cycle 兼容。
+- 除非某个阶段明确改变时序语义，否则 `idu_to_ooo.json`、`start_by_cycle.json`、`done_by_cycle.json` 应保持旧版 case 的指令顺序。
 
-## Summary
+## 总结
 
-The desired model boundary is:
+目标模型边界是：
 
 ```text
-op is a first-class ISA instruction
-ISA classifies op as LOAD, STORE, or COMPUTE
-uarch defines queue, port, and credit capacity
-dependency table defines producer-consumer ready timing
-core executes classification and timing rules without hard-coded LSU op names
+op 是一等 ISA instruction
+ISA 把 op 分类为 LOAD、STORE 或 COMPUTE
+uarch 定义 queue、port、credit capacity
+依赖表定义生产者到消费者的就绪时序
+core 执行分类和 timing rule，不再硬编码 LSU op 名称
 ```
 
-This preserves hardware non-equivalence while removing simulator implementation
-non-equivalence.
+这样既保留硬件资源差异，又消除模拟器实现中不必要的 op 名称特判。

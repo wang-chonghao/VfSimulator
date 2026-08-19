@@ -12,6 +12,7 @@
 #include "native/IDU.h"
 #include "native/OOO.h"
 #include "api/native/VfInfo.h"
+#include "api/native/CanonicalVfInfo.h"
 
 #include <string>
 
@@ -27,6 +28,11 @@ SimulationResult runVfInfo(const VfInfo &vfInfo,
                            const ParamDB &db,
                            const std::string &resultsDir = {},
                            int64_t maxCycles = 1000000);
+
+SimulationResult runCanonicalVfInfo(const CanonicalVfInfo &vfInfo,
+                                    const ParamDB &db,
+                                    const std::string &resultsDir = {},
+                                    int64_t maxCycles = 1000000);
 
 SimulationResult runSimulation(IFU &ifu,
                                IDU &idu,

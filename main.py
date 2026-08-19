@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import argparse
-import json
 import os
 from typing import Any, Dict
 
@@ -20,7 +19,7 @@ from core.ooo_factory import (
 from core.param_db import ParamDB
 from core.program_canonicalization import canonicalize_single_super_iteration_loops
 from core.program_analysis import ProgramAnalyzer
-from core.simulator_runner import run_simulation
+from core.simulator_runner import dump_model_warnings, run_simulation
 from core.vreg_live_range_normalization import normalize_program_vreg_live_ranges
 
 
@@ -159,28 +158,61 @@ def build_uarch(
     return uarch
 
 
-def write_warning_log(results_dir: str, warnings: list[Dict[str, Any]]) -> None:
-    if not warnings:
+def scan_instruction_fallback_warnings(program, db: ParamDB, dtype: str) -> None:
+    def visit(node):
+        if isinstance(node, list):
+            for item in node:
+                visit(item)
+            return
+        if not isinstance(node, dict):
+            return
+        ntype = node.get("type")
+        if ntype == "inst":
+            op = str(node.get("op", ""))
+            form = str(node.get("form", "") or dtype)
+            db.get_inst_form(op, form=form, dtype=dtype)
+            return
+        if ntype == "loop":
+            visit(node.get("body", []))
+
+    visit(program)
+
+
+def write_warning_log(
+    results_dir: str,
+    vreg_warnings: list[Dict[str, Any]],
+    instruction_warnings: list[Dict[str, Any]],
+) -> None:
+    if not vreg_warnings and not instruction_warnings:
         return
     print("[WARN] Low-confidence scenario detected:")
-    for warning in warnings:
+    for warning in vreg_warnings:
         print(
             "[WARN]",
             f"{warning['loop_path']}: expanded_vreg_namespace={warning['expanded_vreg_namespace']}",
             f"> preg_num={warning['preg_num']}",
         )
-    warning_path = os.path.join(results_dir, "model_warnings.json")
-    with open(warning_path, "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "has_warning": True,
-                "warnings": warnings,
-            },
-            f,
-            indent=2,
-            ensure_ascii=False,
+    if instruction_warnings:
+        unsupported = sum(
+            1
+            for warning in instruction_warnings
+            if str(warning.get("kind", "")).startswith("unsupported_isa")
         )
-    print(f"Wrote {warning_path}")
+        timing = sum(
+            1
+            for warning in instruction_warnings
+            if str(warning.get("kind", "")).startswith("missing_")
+        )
+        print(
+            "[WARN]",
+            f"instruction fallback warnings: unsupported={unsupported}, timing={timing}",
+        )
+    if dump_model_warnings(
+        results_dir,
+        instruction_warnings=instruction_warnings,
+        vreg_warnings=vreg_warnings,
+    ):
+        print(f"Wrote {os.path.join(results_dir, 'model_warnings.json')}")
 
 
 def main():
@@ -202,22 +234,35 @@ def main():
     if program is None:
         raise RuntimeError("trace.json missing key 'program'")
     db = ParamDB(base_dir=base_dir)
-
-    program, values, norm_stats = normalize_program_vreg_live_ranges(program, values=values)
-    print(
-        "[INFO] vreg live-range normalization = ON, changed_chains =",
-        int(norm_stats.get("changed_fields", norm_stats.get("changed_chains", 0))),
-    )
-    program, canonicalization_stats = canonicalize_single_super_iteration_loops(
-        program,
-        params,
-        pdb=db,
-        dtype=dtype,
-    )
+    canonical_input = bool(trace.get("canonical_input"))
+    if canonical_input:
+        norm_stats = {"renamed_operands": 0, "reused_slots": 0}
+        canonicalization_stats = {
+            "expanded_loops": 0,
+            "expanded_instructions": 0,
+        }
+        print("[INFO] canonical input: legacy vreg normalization = OFF")
+    else:
+        program, values, norm_stats = normalize_program_vreg_live_ranges(
+            program,
+            values=values,
+            params=params,
+        )
+        print(
+            "[INFO] vreg live-range normalization = ON, changed_chains =",
+            int(norm_stats.get("changed_fields", norm_stats.get("changed_chains", 0))),
+        )
+        program, canonicalization_stats = canonicalize_single_super_iteration_loops(
+            program,
+            params,
+            pdb=db,
+            dtype=dtype,
+        )
     print(
         "[INFO] single-super-iteration loops expanded =",
         int(canonicalization_stats["expanded_loops"]),
     )
+    scan_instruction_fallback_warnings(program, db, dtype)
 
     analyzer = ProgramAnalyzer(params, values=values)
     top_block_loop_bounds = analyzer.infer_top_block_loop_bounds(program)
@@ -228,11 +273,20 @@ def main():
     loop_bounds = top_block_loop_bounds.get(0, [])
     linear = Flattener(params).flatten(program)
 
-    ifu = IFUUnroll(linear, params, pdb=db, dtype=dtype)
     trace_uarch = trace.get("uarch", {}) or {}
     if not isinstance(trace_uarch, dict):
         raise RuntimeError("trace.json key 'uarch' must be a dict when provided")
     uarch = build_uarch(db, trace_uarch, args)
+    ifu = IFUUnroll(
+        linear,
+        params,
+        pdb=db,
+        dtype=dtype,
+        structured_value_identity=canonical_input,
+        structured_dynamic_instruction_limit=int(
+            uarch.get("canonical_dynamic_instruction_limit", 20_000)
+        ),
+    )
 
     idu = IDU(
         uarch,
@@ -265,7 +319,7 @@ def main():
         program,
         int(ooo.preg_num),
     )
-    write_warning_log(results_dir, vreg_capacity_warnings)
+    write_warning_log(results_dir, vreg_capacity_warnings, db.get_warnings())
 
     print(f"Wrote {os.path.join(results_dir, 'sim_history.json')}")
     print(f"Wrote logs to {results_dir}")

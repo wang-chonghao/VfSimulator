@@ -31,8 +31,12 @@ from __future__ import annotations
 
 import json
 import os
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
+
+from core.instruction_profile import InstructionProfile
+from core.param_compat import compatible_form, form_candidates, pair_key_candidates
 
 
 def _read_json(path: str) -> Dict[str, Any]:
@@ -118,6 +122,16 @@ class ParamDB:
         self._defaults: Dict[str, Any] = self._isa.get("defaults", {}) or {}
         self._insts: Dict[str, Any] = self._isa.get("instructions", {}) or {}
         self._isa_schema_version: int = int(self._isa.get("schema_version", 1) or 1)
+        self._warnings: Dict[tuple[Any, ...], Dict[str, Any]] = {}
+        self._inst_param_templates: Dict[tuple[str, str], Dict[str, Any]] = {}
+        self._inst_param_cache: Dict[tuple[str, str, str, bool], Dict[str, Any]] = {}
+        self._profile_cache: Dict[tuple[str, str, str], InstructionProfile] = {}
+        self._profiles_by_id: Dict[int, InstructionProfile] = {}
+        self._forwarding_profile_cache: Dict[tuple[int, int], int] = {}
+        self._ii_profile_cache: Dict[tuple[int, int], int] = {}
+        self._next_profile_id = 0
+        self._profile_cache_hits = 0
+        self._profile_cache_misses = 0
 
         # ---------------- forwarding table (optional) ----------------
         self._fwd_default_offset: int = 3
@@ -155,6 +169,42 @@ class ParamDB:
             except Exception:
                 self._ii_default = 1
                 self._ii_table = {}
+
+        self._prepare_inst_param_templates()
+
+    def _prepare_inst_param_templates(self) -> None:
+        """Merge all declared forms once; fallback forms remain lazy."""
+        if not self._is_v2_isa():
+            return
+        for raw_op, raw_node in self._insts.items():
+            op = str(raw_op).upper()
+            if not isinstance(raw_node, dict):
+                continue
+            forms = raw_node.get("forms", {}) or {}
+            if not isinstance(forms, dict):
+                continue
+            op_defaults = {k: v for k, v in raw_node.items() if k != "forms"}
+            base = _deep_merge(self._defaults, op_defaults)
+            for raw_form, raw_params in forms.items():
+                form = str(raw_form)
+                if not isinstance(raw_params, dict):
+                    continue
+                merged = dict(base)
+                compatible = compatible_form(form)
+                if compatible and compatible != form and compatible in forms:
+                    compatible_params = forms.get(compatible, {})
+                    if isinstance(compatible_params, dict):
+                        merged = _deep_merge(merged, compatible_params)
+                merged = _deep_merge(merged, raw_params)
+                merged.update(
+                    {
+                        "op": op,
+                        "form": form,
+                        "resolved_form": form,
+                        "dtype": str(merged.get("dtype") or form),
+                    }
+                )
+                self._inst_param_templates[(op, form)] = merged
 
     def _resolve_path(self, *, explicit: Optional[str], env_key: str, rel_candidates: list[str]) -> str:
         if explicit:
@@ -213,6 +263,79 @@ class ParamDB:
         """Return ISA defaults section (may be empty)."""
         return dict(self._defaults)
 
+    # ---------------- warning / fallback helpers ----------------
+
+    def _record_warning(self, kind: str, **payload: Any) -> None:
+        key_items = []
+        for k, v in sorted(payload.items()):
+            if k in ("used_defaults", "sample_inst_ids"):
+                continue
+            if isinstance(v, (dict, list)):
+                v = json.dumps(v, sort_keys=True, ensure_ascii=False)
+            key_items.append((k, v))
+        key = (kind, tuple(key_items))
+        item = self._warnings.get(key)
+        if item is None:
+            item = {"kind": kind, **payload, "count": 0}
+            self._warnings[key] = item
+        item["count"] = int(item.get("count", 0)) + 1
+
+    def record_warning(self, kind: str, **payload: Any) -> None:
+        self._record_warning(kind, **payload)
+
+    def get_warnings(self) -> list[Dict[str, Any]]:
+        return sorted(
+            (dict(item) for item in self._warnings.values()),
+            key=lambda x: (str(x.get("kind", "")), str(x.get("op", "")), str(x.get("form", ""))),
+        )
+
+    @staticmethod
+    def _fallback_op_class(op: str) -> str:
+        opu = str(op or "").upper()
+        if opu.startswith("VLD"):
+            return "LOAD"
+        if opu.startswith("VST"):
+            return "STORE"
+        return "COMPUTE"
+
+    def _fallback_inst_form_params(
+        self,
+        op: str,
+        form: Optional[str] = None,
+        dtype: Optional[str] = None,
+        *,
+        kind: str,
+    ) -> Dict[str, Any]:
+        opu = str(op or "").upper()
+        normalized_form = self._normalize_form_key(opu, form) or self._dtype_to_form(dtype)
+        op_class = self._fallback_op_class(opu)
+        params: Dict[str, Any] = _deep_merge(self._defaults, {})
+        params.update(
+            {
+                "op": opu,
+                "form": normalized_form,
+                "dtype": str(dtype or normalized_form),
+                "op_class": op_class,
+                "latency": 9,
+                "pipeline_startup_cost": 0,
+                "pipeline_drain_cost": 0,
+                "throughput": 1,
+            }
+        )
+        if op_class == "COMPUTE":
+            params.update({"EXU": "ALU", "dispatch_exu": "EXU01"})
+        self._record_warning(
+            kind,
+            op=opu,
+            form=normalized_form,
+            used_defaults={
+                "op_class": op_class,
+                "latency": 9,
+                **({"EXU": "ALU", "dispatch_exu": "EXU01"} if op_class == "COMPUTE" else {}),
+            },
+        )
+        return params
+
     def get_inst(self, op: str, dtype: str = "fp32") -> Dict[str, Any]:
         """
         Return instruction parameters for given op and dtype.
@@ -224,7 +347,12 @@ class ParamDB:
         opu = op.upper()
         node = self._insts.get(opu, {})
         if not isinstance(node, dict) or dtype not in node:
-            raise KeyError(f"Instruction not found: op={opu}, dtype={dtype}")
+            return self._fallback_inst_form_params(
+                opu,
+                form=dtype,
+                dtype=dtype,
+                kind="unsupported_isa_op",
+            )
 
         inst_params = node.get(dtype, {}) or {}
         if not isinstance(inst_params, dict):
@@ -265,30 +393,47 @@ class ParamDB:
         }
         return mapping.get(op.upper())
 
-    def _select_v2_form(self, op: str, form: Optional[str] = None, dtype: Optional[str] = None) -> str:
+    def _select_v2_form(
+        self,
+        op: str,
+        form: Optional[str] = None,
+        dtype: Optional[str] = None,
+        *,
+        allow_fallback: bool = True,
+    ) -> str:
         opu = op.upper()
         node = self._insts.get(opu, {})
         forms = node.get("forms", {}) if isinstance(node, dict) else {}
         if not isinstance(forms, dict):
+            if allow_fallback:
+                return self._normalize_form_key(opu, form) or self._dtype_to_form(dtype)
             raise KeyError(f"Instruction has no forms: op={opu}")
 
         candidates = []
         normalized = self._normalize_form_key(opu, form)
         if normalized:
-            candidates.append(normalized)
-        if dtype is not None:
-            candidates.append(self._dtype_to_form(dtype))
+            candidates.extend(form_candidates(normalized))
+        elif dtype is not None:
+            candidates.extend(form_candidates(self._dtype_to_form(dtype)))
         legacy = self._legacy_vcvt_form(opu)
         if legacy:
             candidates.append(legacy)
-        candidates.extend(["default", "fp32"])
 
         for candidate in candidates:
             if candidate in forms:
                 return candidate
+        if allow_fallback:
+            return candidates[0] if candidates else self._dtype_to_form(dtype)
         raise KeyError(f"Instruction form not found: op={opu}, form={form}, dtype={dtype}")
 
-    def _v2_inst_form_params(self, op: str, form: str, dtype: Optional[str]) -> Dict[str, Any]:
+    def _v2_inst_form_params(
+        self,
+        op: str,
+        form: str,
+        dtype: Optional[str],
+        *,
+        requested_form: Optional[str] = None,
+    ) -> Dict[str, Any]:
         opu = op.upper()
         node = self._insts.get(opu, {})
         if not isinstance(node, dict):
@@ -298,15 +443,42 @@ class ParamDB:
         if not isinstance(inst_params, dict):
             raise TypeError(f"Bad schema for {opu}.{form}: expected dict, got {type(inst_params)}")
 
-        op_defaults = {k: v for k, v in node.items() if k != "forms"}
-        merged = _deep_merge(self._defaults, op_defaults)
-        merged = _deep_merge(merged, inst_params)
+        normalized_requested = self._normalize_form_key(opu, requested_form) or form
+        template = self._inst_param_templates.get((opu, form))
+        if template is not None:
+            merged = dict(template)
+        else:
+            op_defaults = {k: v for k, v in node.items() if k != "forms"}
+            merged = _deep_merge(self._defaults, op_defaults)
+            compatible = compatible_form(normalized_requested)
+            if compatible and compatible != normalized_requested and compatible in forms:
+                compatible_params = forms.get(compatible, {}) if isinstance(forms, dict) else {}
+                if not isinstance(compatible_params, dict):
+                    raise TypeError(
+                        f"Bad schema for {opu}.{compatible}: expected dict, got {type(compatible_params)}"
+                    )
+                merged = _deep_merge(merged, compatible_params)
+            merged = _deep_merge(merged, inst_params)
         merged["op"] = opu
-        merged["form"] = form
-        merged["dtype"] = str(dtype or merged.get("dtype") or form)
+        merged["form"] = normalized_requested
+        merged["resolved_form"] = form
+        merged["dtype"] = str(dtype or merged.get("dtype") or normalized_requested)
+        if form != normalized_requested:
+            self._record_warning(
+                "compatible_isa_form_fallback",
+                op=opu,
+                requested_form=normalized_requested,
+                used_form=form,
+            )
         return merged
 
-    def get_inst_form(self, op: str, form: Optional[str] = None, dtype: Optional[str] = None) -> Dict[str, Any]:
+    def get_inst_form(
+        self,
+        op: str,
+        form: Optional[str] = None,
+        dtype: Optional[str] = None,
+        allow_fallback: bool = True,
+    ) -> Dict[str, Any]:
         """
         Return instruction parameters for a concrete form.
 
@@ -314,20 +486,136 @@ class ParamDB:
         VCVT_F32_TO_F16.f32_to_f16.  For v1 configs this falls back to dtype.
         """
         opu = op.upper()
+        normalized_form = self._normalize_form_key(opu, form)
+        normalized_dtype = str(dtype or normalized_form or "fp32")
+        cache_key = (opu, normalized_form, normalized_dtype, bool(allow_fallback))
+        cached = self._inst_param_cache.get(cache_key)
+        if cached is not None:
+            return deepcopy(cached)
+
+        result: Dict[str, Any]
         if self._is_v2_isa():
-            selected = self._select_v2_form(opu, form=form, dtype=dtype)
-            return self._v2_inst_form_params(opu, selected, dtype=dtype)
+            if opu not in self._insts:
+                if allow_fallback:
+                    result = self._fallback_inst_form_params(
+                        opu,
+                        form=form,
+                        dtype=dtype,
+                        kind="unsupported_isa_op",
+                    )
+                    self._inst_param_cache[cache_key] = dict(result)
+                    return deepcopy(result)
+                raise KeyError(f"Instruction not found: op={opu}")
+            node = self._insts.get(opu, {})
+            if not isinstance(node, dict):
+                if allow_fallback:
+                    result = self._fallback_inst_form_params(
+                        opu,
+                        form=form,
+                        dtype=dtype,
+                        kind="unsupported_isa_op",
+                    )
+                    self._inst_param_cache[cache_key] = dict(result)
+                    return deepcopy(result)
+                raise KeyError(f"Instruction not found: op={opu}")
+            forms = node.get("forms", {}) or {}
+            if not isinstance(forms, dict):
+                raise TypeError(f"Bad schema for {opu}.forms: expected dict, got {type(forms)}")
+            selected = self._select_v2_form(
+                opu,
+                form=form,
+                dtype=dtype,
+                allow_fallback=allow_fallback,
+            )
+            if selected not in forms and allow_fallback:
+                result = self._fallback_inst_form_params(
+                    opu,
+                    form=selected,
+                    dtype=dtype,
+                    kind="unsupported_isa_form",
+                )
+                self._inst_param_cache[cache_key] = dict(result)
+                return deepcopy(result)
+            result = self._v2_inst_form_params(
+                opu,
+                selected,
+                dtype=dtype,
+                requested_form=form,
+            )
+            self._inst_param_cache[cache_key] = dict(result)
+            return deepcopy(result)
 
         legacy_dtype = str(dtype or form or "fp32")
         return self.get_inst(opu, legacy_dtype)
+
+    def resolve_inst(
+        self,
+        op: str,
+        form: Optional[str] = None,
+        dtype: Optional[str] = None,
+    ) -> InstructionProfile:
+        opu = str(op or "").upper()
+        requested_form = self._normalize_form_key(opu, form) or self._dtype_to_form(dtype)
+        normalized_dtype = str(dtype or requested_form)
+        key = (opu, requested_form, normalized_dtype)
+        cached = self._profile_cache.get(key)
+        if cached is not None:
+            self._profile_cache_hits += 1
+            return cached
+
+        self._profile_cache_misses += 1
+        params = self.get_inst_form(opu, form=requested_form, dtype=normalized_dtype)
+        op_class = str(params.get("op_class", "")).upper()
+        if op_class not in ("LOAD", "STORE", "COMPUTE"):
+            unit = str(params.get("unit", "")).upper()
+            lsu_op = str(params.get("lsu_op", "")).upper()
+            if unit == "LSU" and lsu_op in ("LOAD", "STORE"):
+                op_class = lsu_op
+            elif unit == "EXU":
+                op_class = "COMPUTE"
+            else:
+                op_class = self._fallback_op_class(opu)
+        fu_type = str(params.get("EXU", "ALU")).upper()
+        if fu_type not in ("ALU", "SFU"):
+            fu_type = "ALU"
+        profile = InstructionProfile(
+            profile_id=self._next_profile_id,
+            op=opu,
+            requested_form=requested_form,
+            resolved_form=str(params.get("resolved_form", requested_form)),
+            dtype=normalized_dtype,
+            op_class=op_class,
+            fu_type=fu_type,
+            dispatch_exu=str(params.get("dispatch_exu", "")).upper(),
+            latency=int(params.get("latency", 1)),
+        )
+        self._next_profile_id += 1
+        self._profile_cache[key] = profile
+        self._profiles_by_id[profile.profile_id] = profile
+        return profile
+
+    def get_profile_cache_stats(self) -> Dict[str, int]:
+        return {
+            "profiles": len(self._profile_cache),
+            "profile_hits": self._profile_cache_hits,
+            "profile_misses": self._profile_cache_misses,
+            "forwarding_pairs": len(self._forwarding_profile_cache),
+            "ii_pairs": len(self._ii_profile_cache),
+        }
 
     def has_inst(self, op: str, dtype: str = "fp32") -> bool:
         opu = op.upper()
         node = self._insts.get(opu, {})
         if self._is_v2_isa():
             try:
-                self._select_v2_form(opu, dtype=dtype)
-                return True
+                node = self._insts.get(opu, {})
+                if not isinstance(node, dict):
+                    return False
+                forms = node.get("forms", {}) or {}
+                if not isinstance(forms, dict):
+                    return False
+                selected = self._select_v2_form(opu, form=dtype, dtype=dtype, allow_fallback=False)
+                return selected in forms
             except Exception:
                 return False
         return isinstance(node, dict) and dtype in node
@@ -367,10 +655,47 @@ class ParamDB:
         return text.upper(), None
 
     def _form_key_for_lookup(self, op: str, form: Optional[str], dtype: str) -> str:
-        selected = self._select_v2_form(op, form=form, dtype=dtype)
+        selected = self._select_v2_form(op, form=form, dtype=dtype, allow_fallback=True)
         return self._join_form_key(op, selected)
 
     def get_forwarding_cycles(
+        self,
+        producer_op: str,
+        consumer_op: str,
+        dtype: str = "fp32",
+        producer_form: Optional[str] = None,
+        consumer_form: Optional[str] = None,
+    ) -> int:
+        producer = self.resolve_inst(producer_op, producer_form, dtype)
+        consumer = self.resolve_inst(consumer_op, consumer_form, dtype)
+        return self.get_forwarding_for_profiles(producer, consumer)
+
+    def get_forwarding_for_profiles(
+        self,
+        producer: InstructionProfile,
+        consumer: InstructionProfile,
+    ) -> int:
+        self._require_owned_profile(producer)
+        self._require_owned_profile(consumer)
+        key = (producer.profile_id, consumer.profile_id)
+        cached = self._forwarding_profile_cache.get(key)
+        if cached is not None:
+            return cached
+        value = self._compute_forwarding_cycles(
+            producer.op,
+            consumer.op,
+            dtype=consumer.dtype,
+            producer_form=producer.requested_form,
+            consumer_form=consumer.requested_form,
+        )
+        self._forwarding_profile_cache[key] = value
+        return value
+
+    def _require_owned_profile(self, profile: InstructionProfile) -> None:
+        if self._profiles_by_id.get(profile.profile_id) is not profile:
+            raise ValueError("InstructionProfile belongs to a different ParamDB instance")
+
+    def _compute_forwarding_cycles(
         self,
         producer_op: str,
         consumer_op: str,
@@ -394,11 +719,23 @@ class ParamDB:
 
         if self._is_v2_isa():
             try:
-                p_key = self._form_key_for_lookup(p, producer_form, dtype)
-                c_key = self._form_key_for_lookup(c, consumer_form, dtype)
-                prod_map = (self._fwd_table or {}).get(p_key, None)
-                if isinstance(prod_map, dict) and c_key in prod_map:
-                    return max(0, int(prod_map[c_key]))
+                p_form = self._normalize_form_key(p, producer_form) or self._dtype_to_form(dtype)
+                c_form = self._normalize_form_key(c, consumer_form) or self._dtype_to_form(dtype)
+                p_key = self._join_form_key(p, p_form)
+                c_key = self._join_form_key(c, c_form)
+                for lookup_p, lookup_c, used_compatible in pair_key_candidates(p, p_form, c, c_form):
+                    prod_map = (self._fwd_table or {}).get(lookup_p, None)
+                    if isinstance(prod_map, dict) and lookup_c in prod_map:
+                        value = max(0, int(prod_map[lookup_c]))
+                        if used_compatible:
+                            self._record_warning(
+                                "compatible_forwarding_pair_fallback",
+                                producer=p_key,
+                                consumer=c_key,
+                                used_producer=lookup_p,
+                                used_consumer=lookup_c,
+                            )
+                        return value
             except Exception:
                 pass
         else:
@@ -425,11 +762,62 @@ class ParamDB:
             lat_i = int(lat)
         except Exception:
             lat_i = 0
-        return max(0, lat_i - int(self._fwd_default_offset))
+        p_params = self.get_inst_form(p, form=producer_form, dtype=dtype)
+        c_params = self.get_inst_form(c, form=consumer_form, dtype=dtype)
+        p_class = str(p_params.get("op_class", "")).upper()
+        c_class = str(c_params.get("op_class", "")).upper()
+        if p_class == "LOAD" and c_class == "STORE":
+            default_fwd = 6
+            rule = "load_store_default"
+        else:
+            default_fwd = max(0, lat_i - int(self._fwd_default_offset))
+            rule = "producer_latency_minus_default_offset"
+        self._record_warning(
+            "missing_forwarding_pair",
+            producer=self._join_form_key(p, str(p_params.get("form", producer_form or dtype))),
+            consumer=self._join_form_key(c, str(c_params.get("form", consumer_form or dtype))),
+            producer_latency=lat_i,
+            used_default=default_fwd,
+            rule=rule,
+        )
+        return default_fwd
 
     # ---------------- Initiation Interval API ----------------
 
     def get_ii(
+        self,
+        prev_op: str,
+        cur_op: str,
+        dtype: str = "fp32",
+        prev_form: Optional[str] = None,
+        cur_form: Optional[str] = None,
+    ) -> int:
+        previous = self.resolve_inst(prev_op, prev_form, dtype)
+        current = self.resolve_inst(cur_op, cur_form, dtype)
+        return self.get_ii_for_profiles(previous, current)
+
+    def get_ii_for_profiles(
+        self,
+        previous: InstructionProfile,
+        current: InstructionProfile,
+    ) -> int:
+        self._require_owned_profile(previous)
+        self._require_owned_profile(current)
+        key = (previous.profile_id, current.profile_id)
+        cached = self._ii_profile_cache.get(key)
+        if cached is not None:
+            return cached
+        value = self._compute_ii(
+            previous.op,
+            current.op,
+            dtype=current.dtype,
+            prev_form=previous.requested_form,
+            cur_form=current.requested_form,
+        )
+        self._ii_profile_cache[key] = value
+        return value
+
+    def _compute_ii(
         self,
         prev_op: str,
         cur_op: str,
@@ -455,11 +843,23 @@ class ParamDB:
 
         if self._is_v2_isa():
             try:
-                p_key = self._form_key_for_lookup(p, prev_form, dtype)
-                c_key = self._form_key_for_lookup(c, cur_form, dtype)
-                prev_map = (self._ii_table or {}).get(p_key, None)
-                if isinstance(prev_map, dict) and c_key in prev_map:
-                    return max(1, int(prev_map[c_key]))
+                p_form = self._normalize_form_key(p, prev_form) or self._dtype_to_form(dtype)
+                c_form = self._normalize_form_key(c, cur_form) or self._dtype_to_form(dtype)
+                p_key = self._join_form_key(p, p_form)
+                c_key = self._join_form_key(c, c_form)
+                for lookup_p, lookup_c, used_compatible in pair_key_candidates(p, p_form, c, c_form):
+                    prev_map = (self._ii_table or {}).get(lookup_p, None)
+                    if isinstance(prev_map, dict) and lookup_c in prev_map:
+                        value = max(1, int(prev_map[lookup_c]))
+                        if used_compatible:
+                            self._record_warning(
+                                "compatible_ii_pair_fallback",
+                                prev=p_key,
+                                cur=c_key,
+                                used_prev=lookup_p,
+                                used_cur=lookup_c,
+                            )
+                        return value
             except Exception:
                 pass
         else:
@@ -475,4 +875,24 @@ class ParamDB:
                 except Exception:
                     pass
 
-        return max(1, int(self._ii_default))
+        prev_params = self.get_inst_form(p, form=prev_form, dtype=dtype)
+        cur_params = self.get_inst_form(c, form=cur_form, dtype=dtype)
+        try:
+            prev_latency = int(prev_params.get("latency", 9))
+        except Exception:
+            prev_latency = 9
+        try:
+            cur_latency = int(cur_params.get("latency", 9))
+        except Exception:
+            cur_latency = 9
+        default_ii = 2 if (prev_latency - cur_latency) == 1 else 1
+        self._record_warning(
+            "missing_ii_pair",
+            prev=self._join_form_key(p, str(prev_params.get("form", prev_form or dtype))),
+            cur=self._join_form_key(c, str(cur_params.get("form", cur_form or dtype))),
+            prev_latency=prev_latency,
+            cur_latency=cur_latency,
+            used_default=default_ii,
+            rule="prev_latency_minus_cur_latency_eq_1" if default_ii == 2 else "default_one",
+        )
+        return max(1, int(default_ii))

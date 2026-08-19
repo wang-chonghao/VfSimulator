@@ -40,6 +40,9 @@ struct IDUDispatchRecord {
   int64_t shqQueue = 0;
   int64_t lsq = 0;
   int64_t shq = 0;
+  std::string staticInstructionId;
+  std::vector<std::pair<std::string, int64_t>> iterationPath;
+  int64_t streamSeq = -1;
 };
 
 struct VloopTraceRecord {
@@ -67,6 +70,7 @@ public:
   std::vector<DynamicInst> dispatch(int64_t cycle, const IDUDispatchBudget &budget);
 
   const ParamDB &db() const noexcept { return db_; }
+  const std::deque<DynamicInst> &window() const noexcept { return window_; }
   const std::vector<IDUDispatchRecord> &dispatchLog() const noexcept { return dispatchLog_; }
   const std::vector<VloopTraceRecord> &vloopTrace() const noexcept { return vloopTrace_; }
 

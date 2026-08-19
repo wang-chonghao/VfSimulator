@@ -11,6 +11,7 @@ from core.isa_traits import (
     uses_shared_shq_credit,
     uses_shq_queue,
 )
+from core.value_storage import ValueStorageLookup
 
 
 class IDU:
@@ -23,6 +24,7 @@ class IDU:
         total_top_blocks=1,
         top_block_loop_bounds=None,
         dtype="fp32",
+        values=None,
     ):
         self.window_width = uarch["IDU_window_width"]
         self.issue_width = uarch["IDU_issue_width"]
@@ -32,6 +34,7 @@ class IDU:
         )
         self.db = pdb
         self.dtype = str(dtype)
+        self.value_storage = ValueStorageLookup(values)
 
         defaults = self.db.get_defaults()
         self.vf_startup_cost = int(defaults.get("vf_startup_cost", 0))
@@ -406,6 +409,7 @@ class IDU:
                 break
 
             op = inst.get("op", "")
+            form = inst.get("form") or self.dtype
             iter_stack = inst.get("iter_stack", [])
             top_block_id = int(inst.get("top_block_id", 0))
 
@@ -450,8 +454,8 @@ class IDU:
             # -------------------------------------------------
             # 2) SHQ / LSQ space gate
             # -------------------------------------------------
-            is_load = is_load_op(op, self.db, self.dtype)
-            is_store = is_store_op(op, self.db, self.dtype)
+            is_load = is_load_op(op, self.db, form)
+            is_store = is_store_op(op, self.db, form)
             if is_load:
                 if lsq_free <= 0:
                     break
@@ -471,7 +475,7 @@ class IDU:
             # -------------------------------------------------
             dst_count = 0
             for d in inst.get("dst", []):
-                if isinstance(d, str) and d[:1].lower() == "v":
+                if self.value_storage.is_register(d):
                     dst_count += 1
 
             if credits < dst_count:
@@ -483,11 +487,11 @@ class IDU:
             dispatched.append(inst)
 
             credits -= dst_count
-            if uses_lsq(op, self.db, self.dtype):
+            if uses_lsq(op, self.db, form):
                 lsq_free -= 1
-                if uses_shared_shq_credit(op, self.db, self.dtype):
+                if uses_shared_shq_credit(op, self.db, form):
                     shq_free -= 1
-            elif uses_shq_queue(op, self.db, self.dtype):
+            elif uses_shq_queue(op, self.db, form):
                 shq_queue_free -= 1
                 shq_free -= 1
 
@@ -498,6 +502,9 @@ class IDU:
             self.dispatch_log.append({
                 "cy": cycle,
                 "inst_id": inst.get("inst_id", inst.get("id")),
+                "static_instruction_id": inst.get("static_instruction_id"),
+                "iteration_path": inst.get("iteration_path", []),
+                "stream_seq": int(inst.get("stream_seq", -1)),
                 "op": inst.get("op"),
                 "dst": inst.get("dst", []),
                 "src": inst.get("src", []),

@@ -64,7 +64,6 @@ def normalize_mainline_uarch(uarch: Dict[str, Any]) -> Dict[str, Any]:
     cfg["consumer_release_start_offset"] = int(
         cfg.get("consumer_release_start_offset", 4)
     )
-    cfg["load_done_latency"] = int(cfg.get("load_done_latency", 9))
     cfg["ooo_to_shq_delay"] = int(cfg.get("ooo_to_shq_delay", 1))
     cfg["ooo_to_lsq_delay"] = int(cfg.get("ooo_to_lsq_delay", 1))
     cfg["global_shq_preg_gate"] = bool(cfg.get("global_shq_preg_gate", False))

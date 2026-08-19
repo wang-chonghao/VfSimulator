@@ -38,6 +38,7 @@ struct LinearProgramNode {
 
   std::vector<std::string> src;
   std::vector<std::string> dst;
+  std::string barrier;
 };
 
 class ProgramFlatten {
@@ -59,6 +60,8 @@ private:
              const std::vector<int64_t> &loopStack);
   void emitInst(const ProgramInstNode &inst, int64_t depth,
                 const std::vector<int64_t> &loopStack);
+  void emitMembar(const ProgramMembarNode &membar, int64_t depth,
+                  const std::vector<int64_t> &loopStack);
   void emitLoop(const ProgramLoopNode &loopNode, int64_t depth,
                 const std::vector<int64_t> &loopStack);
 };

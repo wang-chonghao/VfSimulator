@@ -12,7 +12,11 @@
 #include "native/ParamSchema.h"
 
 #include <filesystem>
+#include <map>
+#include <mutex>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace vfsim {
 
@@ -25,7 +29,10 @@ public:
   const IsaDefaults &isaDefaults() const noexcept { return bundle_.isaDefaults; }
 
   bool hasInst(const std::string &op, const std::string &dtype) const;
-  const InstConfig &inst(const std::string &op, const std::string &dtype) const;
+  InstConfig inst(const std::string &op, const std::string &dtype) const;
+  void recordWarning(const std::string &kind,
+                     std::map<std::string, std::string> fields = {}) const;
+  std::vector<ModelWarning> warnings() const;
 
   int64_t forwardingCycles(const std::string &dtype, const std::string &prod,
                            const std::string &cons) const;
@@ -44,6 +51,14 @@ public:
 private:
   ParamBundle bundle_;
   std::filesystem::path baseDir_;
+  mutable std::map<std::string, ModelWarning> warnings_;
+  mutable std::mutex warningsMutex_;
+
+  InstConfig fallbackInst(const std::string &op,
+                          const std::string &dtype,
+                          bool unsupportedForm) const;
+  void recordWarningOnce(const std::string &kind,
+                         std::map<std::string, std::string> fields) const;
 };
 
 } // namespace vfsim

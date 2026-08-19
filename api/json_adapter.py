@@ -10,6 +10,7 @@ from api.vf_info import (
     VFInfo,
     VFInst,
     VFLoop,
+    VFMemoryAccess,
     VFNode,
     canonicalize_vf_info,
 )
@@ -59,12 +60,33 @@ class JsonVfInfoAdapter:
                     raise RuntimeError("program node must be an object")
                 node_type = raw.get("type")
                 if node_type == "inst":
+                    raw_accesses = raw.get("memory_accesses", []) or []
+                    memory_accesses = tuple(
+                        VFMemoryAccess(
+                            value_id=str(
+                                item.get("value_id", item.get("base", ""))
+                            ),
+                            access_kind=str(item.get("access_kind", "read")),
+                            offset=item.get("offset", 0),
+                            span=item.get("span"),
+                            mode=item.get("mode"),
+                        )
+                        for item in raw_accesses
+                        if isinstance(item, dict)
+                    )
                     nodes.append(
                         VFInst(
                             name=str(raw.get("op", "")),
                             src=[str(value) for value in raw.get("src", [])],
                             dst=[str(value) for value in raw.get("dst", [])],
                             form=str(raw["form"]) if raw.get("form") else None,
+                            instruction_class=(
+                                str(raw["instruction_class"])
+                                if raw.get("instruction_class")
+                                else None
+                            ),
+                            memory_accesses=memory_accesses,
+                            attributes=dict(raw.get("attributes", {}) or {}),
                         )
                     )
                 elif node_type == "loop":
@@ -77,6 +99,22 @@ class JsonVfInfoAdapter:
                             unroll=raw.get("unroll", 1),
                             body=parse_nodes(body),
                             loop_id=str(raw["name"]) if raw.get("name") else None,
+                            induction_variable=(
+                                str(raw.get("induction", {}).get("variable_id"))
+                                if isinstance(raw.get("induction"), dict)
+                                and raw.get("induction", {}).get("variable_id")
+                                else None
+                            ),
+                            induction_start=(
+                                raw.get("induction", {}).get("start", 0)
+                                if isinstance(raw.get("induction"), dict)
+                                else 0
+                            ),
+                            induction_step=(
+                                raw.get("induction", {}).get("step", 1)
+                                if isinstance(raw.get("induction"), dict)
+                                else 1
+                            ),
                         )
                     )
                 elif node_type == "membar":
@@ -96,4 +134,24 @@ class JsonVfInfoAdapter:
         )
 
 
-__all__ = ["JsonVfInfoAdapter"]
+class LegacyCanonicalJsonAdapter:
+    """Explicit migration path from permissive trace JSON to canonical values."""
+
+    @staticmethod
+    def load(path: str | Path):
+        with Path(path).open("r", encoding="utf-8") as stream:
+            payload = json.load(stream)
+        return LegacyCanonicalJsonAdapter.from_payload(payload)
+
+    @staticmethod
+    def from_payload(payload: Dict[str, Any]):
+        from api.frontend.value_versioning import ValueVersioningPass
+
+        vf_info = JsonVfInfoAdapter.from_payload(payload)
+        return ValueVersioningPass().run(
+            vf_info,
+            source={"adapter": "legacy_json"},
+        )
+
+
+__all__ = ["JsonVfInfoAdapter", "LegacyCanonicalJsonAdapter"]

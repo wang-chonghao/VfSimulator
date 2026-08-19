@@ -10,8 +10,11 @@
 #define VFSIM_NATIVE_PARAM_SCHEMA_H
 
 #include <cstdint>
+#include <map>
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace vfsim {
 
@@ -34,6 +37,7 @@ struct IsaDefaults {
 
 struct UarchConfig {
   int64_t issuePorts = 0;
+  bool threePortsMode = false;
   int64_t loadPorts = 0;
   int64_t storePorts = 0;
   int64_t iduWindowWidth = 0;
@@ -59,15 +63,16 @@ struct UarchConfig {
   int64_t loop1MinFeedbackGap = 0;
   int64_t innermostIterDispatchStride = 0;
   int64_t consumerReleaseStartOffset = 0;
-  int64_t loadDoneLatency = 0;
   int64_t oooToShqDelay = 0;
   int64_t oooToLsqDelay = 0;
   int64_t exqRecvDelay = 0;
   int64_t shqToExqPortPerCycle = 0;
+  std::string shqExqDispatchPolicy = "fu_round_robin_fifo";
+  int64_t exu0ReserveLookahead = 0;
+  int64_t exu0ReserveMinCount = 1;
   int64_t computeInflightCap = 0;
   int64_t exqIssueInflightCapPerPort = 0;
   bool exqCapacityCountsInflight = false;
-  std::string memBarMode;
   bool enforceSameCycleSrcHazard = false;
   bool enableCrossFuIi = false;
 };
@@ -83,6 +88,12 @@ struct ParamBundle {
   std::unordered_map<std::string, std::unordered_map<std::string, int64_t>> forwardingByForm;
   std::unordered_map<std::string, std::unordered_map<std::string, int64_t>> initiationIntervalByForm;
   UarchConfig uarch;
+};
+
+struct ModelWarning {
+  std::string kind;
+  std::map<std::string, std::string> fields;
+  int64_t count = 1;
 };
 
 } // namespace vfsim

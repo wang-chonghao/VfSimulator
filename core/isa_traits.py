@@ -41,6 +41,8 @@ def _read_isa_entry(pdb: Any, op: str, dtype: str) -> dict[str, Any]:
     try:
         for lookup_op in lookup_ops:
             try:
+                if hasattr(pdb, "get_inst_form"):
+                    return dict(pdb.get_inst_form(lookup_op, form=dtype, dtype=dtype))
                 return dict(pdb.get_inst(lookup_op, dtype=dtype))
             except Exception:
                 continue
@@ -51,6 +53,11 @@ def _read_isa_entry(pdb: Any, op: str, dtype: str) -> dict[str, Any]:
 
 def get_op_traits(op: Any, pdb: Any = None, dtype: str = "fp32") -> OpTraits:
     opu = str(op or "").upper()
+    if pdb is not None and hasattr(pdb, "resolve_inst"):
+        try:
+            return OpTraits(op_class=pdb.resolve_inst(opu, form=dtype, dtype=dtype).op_class)
+        except Exception:
+            pass
     inst = _read_isa_entry(pdb, opu, dtype)
 
     op_class = str(
@@ -78,10 +85,10 @@ def get_op_traits(op: Any, pdb: Any = None, dtype: str = "fp32") -> OpTraits:
     if canon == "VSTS":
         return OpTraits(op_class="STORE")
 
-    if canon in ("VLD", "VST", "VSTUS", "VSTAS"):
-        raise MissingIsaConfigError(
-            f"Missing ISA config for LSU op={canon!r}, dtype={dtype!r}"
-        )
+    if canon.startswith("VLD"):
+        return OpTraits(op_class="LOAD")
+    if canon.startswith("VST"):
+        return OpTraits(op_class="STORE")
 
     return OpTraits(op_class="COMPUTE")
 

@@ -25,6 +25,82 @@ class ISUController:
     def __init__(self, core) -> None:
         self.core = core
 
+    def _use_fu_round_robin_fifo(self) -> bool:
+        policy = str(
+            getattr(self.core, "shq_exq_dispatch_policy", "fu_round_robin_fifo")
+        ).lower()
+        return policy in (
+            "fu_round_robin_fifo",
+            "fu_rr_fifo",
+            "fu_round_robin",
+            "fu_round_robin_exu0_reserve",
+        )
+
+    def _use_exu0_reserve(self) -> bool:
+        policy = str(
+            getattr(self.core, "shq_exq_dispatch_policy", "fu_round_robin_fifo")
+        ).lower()
+        return policy == "fu_round_robin_exu0_reserve"
+
+    def _dispatch_exu_tag(self, u: Any) -> str:
+        profile = getattr(u, "profile", None)
+        if profile is not None:
+            return profile.dispatch_exu
+        try:
+            return str(
+                self.core._inst_params(u.op, form=u.form).get("dispatch_exu", "")
+            ).upper()
+        except Exception:
+            return ""
+
+    def _exu0_only_pressure_count(self, start_index: int) -> int:
+        lookahead = int(getattr(self.core, "exu0_reserve_lookahead", 0))
+        if lookahead <= 0:
+            return 0
+        min_count = max(1, int(getattr(self.core, "exu0_reserve_min_count", 1)))
+        seen_compute = 0
+        seen_exu0_only = 0
+        for cand in self.core.SHQ[start_index + 1 :]:
+            seen_compute += 1
+            if self._dispatch_exu_tag(cand) == "EXU0_ONLY":
+                seen_exu0_only += 1
+            if seen_compute >= lookahead:
+                break
+        return seen_exu0_only if seen_exu0_only >= min_count else 0
+
+    def _apply_exu0_reserve(
+        self,
+        index: int,
+        u: Any,
+        legal_ports: Set[int],
+        candidates: List[int],
+    ) -> List[int]:
+        if not self._use_exu0_reserve():
+            return candidates
+        if 0 not in candidates:
+            return candidates
+        if self._dispatch_exu_tag(u) == "EXU0_ONLY":
+            return candidates
+        if 0 not in legal_ports or len(legal_ports) <= 1:
+            return candidates
+        pressure = self._exu0_only_pressure_count(index)
+        if pressure <= 0 or len(candidates) <= 1:
+            return candidates
+
+        occupancy = [self.exq_occ(port) for port in range(self.core.issue_ports)]
+
+        def balance_error(port: int) -> float:
+            projected = list(occupancy)
+            projected[port] += 1
+            non_exu0 = projected[1:]
+            if not non_exu0:
+                return 0.0
+            non_exu0_average = sum(non_exu0) / len(non_exu0)
+            return abs((non_exu0_average - projected[0]) - pressure)
+
+        best_error = min(balance_error(port) for port in candidates)
+        return [port for port in candidates if balance_error(port) == best_error]
+
     def remove_issued(self, queue_name: str, issued: List[Any]) -> None:
         if not issued:
             return
@@ -47,6 +123,25 @@ class ISUController:
             total += len(q["ALU"]) + len(q["SFU"])
         return int(total)
 
+    def select_fu_rr_port(self, fu_type: str, candidates: List[int]) -> int:
+        if not candidates:
+            raise ValueError("select_fu_rr_port() requires at least one candidate")
+        ptrs = getattr(self.core, "shq_exq_rr_ptr_by_fu", None)
+        if ptrs is None:
+            self.core.shq_exq_rr_ptr_by_fu = {"ALU": 0, "SFU": 0}
+            ptrs = self.core.shq_exq_rr_ptr_by_fu
+        ptr = int(ptrs.get(fu_type, 0))
+        issue_ports = max(1, int(self.core.issue_ports))
+        candidate_set = set(candidates)
+        for off in range(issue_ports):
+            port = (ptr + off) % issue_ports
+            if port in candidate_set:
+                ptrs[fu_type] = (port + 1) % issue_ports
+                return port
+        chosen = min(candidates)
+        ptrs[fu_type] = (chosen + 1) % issue_ports
+        return chosen
+
     def predict_exq_issue_cycle(
         self,
         port: int,
@@ -54,26 +149,48 @@ class ISUController:
         op: str,
         recv_cycle: int,
         form: Optional[str] = None,
+        profile: Any = None,
     ) -> int:
         q_fu = self.core.exq_wait[port][fu_type]
         pred = int(recv_cycle)
         if q_fu:
             prev = q_fu[-1]
             prev_pred = int(getattr(prev, "exq_pred_issue", recv_cycle))
-            ii = self.core._get_ii(prev.op, op, prev_form=prev.form, cur_form=form)
+            ii = self.core._get_ii(
+                prev.op,
+                op,
+                prev_form=prev.form,
+                cur_form=form,
+                prev_profile=prev.profile,
+                cur_profile=profile,
+            )
             pred = max(pred, prev_pred + ii)
         else:
             prev_op = self.core.last_op[fu_type][port]
             prev_form = self.core.last_form[fu_type][port]
             prev_issue = self.core.last_issue_cycle[fu_type][port]
-            ii = self.core._get_ii(prev_op, op, prev_form=prev_form, cur_form=form)
+            ii = self.core._get_ii(
+                prev_op,
+                op,
+                prev_form=prev_form,
+                cur_form=form,
+                prev_profile=self.core.last_profile[fu_type][port],
+                cur_profile=profile,
+            )
             pred = max(pred, prev_issue + ii)
 
         if self.core.predict_exq_issue_with_cross_fu:
             prev_op_exu = self.core.last_op_exu[port]
             prev_form_exu = self.core.last_form_exu[port]
             prev_issue_exu = self.core.last_issue_cycle_exu[port]
-            ii_exu = self.core._get_ii(prev_op_exu, op, prev_form=prev_form_exu, cur_form=form)
+            ii_exu = self.core._get_ii(
+                prev_op_exu,
+                op,
+                prev_form=prev_form_exu,
+                cur_form=form,
+                prev_profile=self.core.last_profile_exu[port],
+                cur_profile=profile,
+            )
             pred = max(pred, prev_issue_exu + ii_exu)
         return pred
 
@@ -85,7 +202,7 @@ class ISUController:
     ) -> int:
         issued_ex: List[Any] = []
         ex_count = 0
-        for u in self.core.SHQ:
+        for index, u in enumerate(self.core.SHQ):
             if u.state != "ready":
                 continue
             if ex_count >= self.core.issue_ports:
@@ -99,15 +216,15 @@ class ISUController:
             ):
                 continue
 
-            fu_type = self.core._get_fu_type(u.op, u.form)
+            fu_type = self.core._get_fu_type(u.op, u.form, u.profile)
             chosen_port = self.core._pick_exu_port(
-                fu_type, u.op, cycle, exu_used_this_cycle, u.form
+                fu_type, u.op, cycle, exu_used_this_cycle, u.form, u.profile
             )
             if chosen_port is None:
                 continue
 
             u.start_cycle = cycle
-            u.done_cycle = cycle + self.core._latency(u.op, u.form)
+            u.done_cycle = cycle + self.core._latency(u.op, u.form, u.profile)
             u.state = "running"
             self.core._schedule_src_release_from_start(u)
             self.core._log("start", u)
@@ -120,16 +237,19 @@ class ISUController:
                 self.core.last_issue_cycle_exu[chosen_port] = cycle
                 self.core.last_op_exu[chosen_port] = u.op
                 self.core.last_form_exu[chosen_port] = u.form
+                self.core.last_profile_exu[chosen_port] = u.profile
             else:
                 self.core.last_issue_cycle[fu_type][chosen_port] = cycle
                 self.core.last_op[fu_type][chosen_port] = u.op
                 self.core.last_form[fu_type][chosen_port] = u.form
+                self.core.last_profile[fu_type][chosen_port] = u.profile
             exu_used_this_cycle[chosen_port] = True
             u.exu_port = chosen_port
             self.core.exq_inflight[chosen_port] += 1
 
             for pd in u.preg_dst:
                 self.core.preg_producer[pd] = (u.op, u.form, u.start_cycle, "COMPUTE")
+                self.core.preg_producer_profile[pd] = u.profile
                 self.core.preg_producer_uop[pd] = u
                 self.core.preg_pending.discard(pd)
 
@@ -146,8 +266,13 @@ class ISUController:
         issued_shq: List[Any] = []
         shq_to_exq_cnt = [0] * self.core.issue_ports
         ex_count = 0
+        use_fu_rr_fifo = self._use_fu_round_robin_fifo()
+        blocked_fu_types: Set[str] = set()
 
-        for u in self.core.SHQ:
+        for index, u in enumerate(self.core.SHQ):
+            fu_type = self.core._get_fu_type(u.op, u.form, u.profile)
+            if use_fu_rr_fifo and fu_type in blocked_fu_types:
+                continue
             if u.state != "ready":
                 continue
             if ex_count >= self.core.issue_ports:
@@ -159,10 +284,11 @@ class ISUController:
                 and (not self.core.theoretical_limit_mode)
                 and (issued_srcs_this_cycle & cur_srcs)
             ):
+                if use_fu_rr_fifo:
+                    blocked_fu_types.add(fu_type)
                 continue
 
-            fu_type = self.core._get_fu_type(u.op, u.form)
-            legal_ports = set(self.core._eligible_exu_ports(u.op, u.form))
+            legal_ports = set(self.core._eligible_exu_ports(u.op, u.form, u.profile))
             candidates: List[int] = []
             for port in range(self.core.issue_ports):
                 if port not in legal_ports:
@@ -174,24 +300,33 @@ class ISUController:
                     continue
                 candidates.append(port)
             if not candidates:
+                all_ports = set(range(self.core.issue_ports))
+                if use_fu_rr_fifo and all_ports.issubset(legal_ports):
+                    blocked_fu_types.add(fu_type)
                 continue
+            candidates = self._apply_exu0_reserve(index, u, legal_ports, candidates)
 
             recv_cycle = cycle + self.core.exq_recv_delay
-            if self.core.shq_exq_static_rr:
+            if use_fu_rr_fifo:
+                chosen_port = self.select_fu_rr_port(fu_type, candidates)
+                predicted_issue = self.predict_exq_issue_cycle(
+                    chosen_port, fu_type, u.op, recv_cycle, u.form, u.profile
+                )
+            elif self.core.shq_exq_static_rr:
                 ordered = sorted(
                     candidates,
                     key=lambda p: ((p - self.core.shq_exq_rr_ptr) % self.core.issue_ports, p),
                 )
                 chosen_port = ordered[0]
                 predicted_issue = self.predict_exq_issue_cycle(
-                    chosen_port, fu_type, u.op, recv_cycle, u.form
+                    chosen_port, fu_type, u.op, recv_cycle, u.form, u.profile
                 )
                 self.core.shq_exq_rr_ptr = (chosen_port + 1) % self.core.issue_ports
             else:
                 best = None
                 for port in candidates:
                     predicted_issue = self.predict_exq_issue_cycle(
-                        port, fu_type, u.op, recv_cycle, u.form
+                        port, fu_type, u.op, recv_cycle, u.form, u.profile
                     )
                     occ = self.exq_occ(port)
                     key = (predicted_issue, occ, port)
@@ -251,6 +386,8 @@ class ISUController:
                     cand.op,
                     prev_form=prev_form_exu,
                     cur_form=cand.form,
+                    prev_profile=self.core.last_profile_exu[port],
+                    cur_profile=cand.profile,
                 )
                 if cycle < prev_issue_exu + ii_exu:
                     continue
@@ -265,7 +402,7 @@ class ISUController:
             _, fu_type, u = best
             q_port[fu_type].popleft()
             u.start_cycle = cycle
-            u.done_cycle = cycle + self.core._latency(u.op, u.form)
+            u.done_cycle = cycle + self.core._latency(u.op, u.form, u.profile)
             u.state = "running"
             self.core._schedule_src_release_from_start(u)
             self.core._log("start", u)
@@ -274,13 +411,16 @@ class ISUController:
             self.core.last_issue_cycle_exu[port] = cycle
             self.core.last_op_exu[port] = u.op
             self.core.last_form_exu[port] = u.form
+            self.core.last_profile_exu[port] = u.profile
             self.core.last_issue_cycle[fu_type][port] = cycle
             self.core.last_op[fu_type][port] = u.op
             self.core.last_form[fu_type][port] = u.form
+            self.core.last_profile[fu_type][port] = u.profile
             exu_used_this_cycle[port] = True
             self.core.exq_inflight[port] += 1
 
             for pd in u.preg_dst:
                 self.core.preg_producer[pd] = (u.op, u.form, u.start_cycle, "COMPUTE")
+                self.core.preg_producer_profile[pd] = u.profile
                 self.core.preg_producer_uop[pd] = u
                 self.core.preg_pending.discard(pd)

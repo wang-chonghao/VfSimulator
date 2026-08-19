@@ -21,6 +21,8 @@
 
 namespace vfsim {
 
+class ControlUnit;
+
 struct Uop {
   int64_t instId = 0;
   std::string op;
@@ -32,18 +34,28 @@ struct Uop {
   std::vector<std::string> pregDst;
   std::vector<std::optional<std::string>> pregOld;
 
+  // Immutable scheduling profile copied at rename. Avoid pointers into
+  // ParamDB fallback maps because later insertions may rehash them.
+  std::string opClass = "COMPUTE";
+  std::string fuType = "ALU";
+  std::string dispatchExu;
+  int64_t latency = 1;
+
   std::string state = "blocked";
   int64_t readyCycle = 0;
   std::optional<int64_t> startCycle;
   std::optional<int64_t> doneCycle;
+  std::optional<std::string> blockedReason;
 
   std::optional<std::string> producerOpForStore;
   std::optional<std::string> producerFormForStore;
   std::optional<int64_t> producerStartForStore;
-  std::vector<Uop *> memDepUops;
   int64_t topBlockId = 0;
   std::vector<int64_t> iterStack;
   bool isLastInTopBlock = false;
+  int64_t streamSeq = -1;
+  std::string staticInstructionId;
+  std::vector<std::pair<std::string, int64_t>> iterationPath;
   int exuPort = -1;
   int64_t shqReadyCycle = 0;
   int64_t lsqReadyCycle = 0;
@@ -71,6 +83,7 @@ struct HistoryRecord {
   int64_t id = 0;
   std::string op;
   std::string state;
+  std::optional<std::string> blockedReason;
   int64_t ready = 0;
   std::optional<int64_t> start;
   std::optional<int64_t> done;
@@ -81,6 +94,9 @@ struct HistoryRecord {
   std::vector<std::optional<std::string>> pregOld;
   std::optional<std::string> producerOpForStore;
   std::optional<int64_t> producerStartForStore;
+  std::string staticInstructionId;
+  std::vector<std::pair<std::string, int64_t>> iterationPath;
+  int64_t streamSeq = -1;
 };
 
 struct SimpleLogRecord {
@@ -89,6 +105,9 @@ struct SimpleLogRecord {
   std::string op;
   std::vector<std::string> dst;
   std::vector<std::string> src;
+  std::string staticInstructionId;
+  std::vector<std::pair<std::string, int64_t>> iterationPath;
+  int64_t streamSeq = -1;
 };
 
 class OoOCore {
@@ -104,10 +123,21 @@ public:
   int getRobSize() const noexcept { return static_cast<int>(rob_.size()); }
   int getLsqSize() const noexcept { return static_cast<int>(lsq_.size()); }
   int getShqSize() const noexcept { return static_cast<int>(shq_.size()); }
+  std::optional<int> getExuPortForInst(int64_t instId) const;
+  std::optional<std::string> getPregSrcForInst(int64_t instId,
+                                               size_t index) const;
+  std::optional<std::string> getPregDstForInst(int64_t instId,
+                                               size_t index) const;
+  std::vector<int> getEligibleExuPorts(const std::string &op,
+                                       const std::string &form) const;
+  bool hasPendingLsuBefore(int64_t streamSeq, const std::string &opClass) const;
   virtual std::unordered_map<std::string, int> updateIduVisibility(int64_t cycle);
 
   virtual void accept(const DynamicInst &inst) = 0;
   virtual void step() = 0;
+  void setControlUnit(const ControlUnit *controlUnit) noexcept {
+    controlUnit_ = controlUnit;
+  }
   virtual int64_t vfEndCycle() const;
   virtual void dumpHistory(const std::string &path) const;
   virtual void dumpSimpleLogs(const std::string &startPath,
@@ -121,6 +151,7 @@ protected:
   bool enableIsuQueueModel_ = false;
   int loadPorts_ = 2;
   int issuePorts_ = 2;
+  bool threePortsMode_ = false;
   int storePorts_ = 1;
   int shqDepth_ = 58;
   int lsqDepth_ = 24;
@@ -139,6 +170,8 @@ protected:
   std::deque<Uop> rob_;
 
   std::unordered_map<std::string, ProducerInfo> pregProducer_;
+  mutable std::unordered_map<std::string, int64_t> forwardingPairCache_;
+  mutable std::unordered_map<std::string, int64_t> initiationIntervalPairCache_;
   std::vector<int64_t> lastIssueCycleALU_;
   std::vector<int64_t> lastIssueCycleSFU_;
   std::vector<std::string> lastOpALU_;
@@ -150,11 +183,9 @@ protected:
   std::vector<std::string> lastFormExu_;
   std::vector<int> exqInflight_;
 
-  int loadDoneLatency_ = 9;
   int oooToShqDelay_ = 1;
   int oooToLsqDelay_ = 1;
   int exqRecvDelay_ = 1;
-  bool memBarStrong_ = false;
   bool enforceSameCycleSrcHazard_ = true;
   bool enableExqGreedyBalance_ = false;
   bool enableShqCreditModel_ = false;
@@ -163,6 +194,10 @@ protected:
   bool exqCapacityCountsInflight_ = false;
   int exqDepth_ = 26;
   int shqToExqPortPerCycle_ = 1;
+  std::string shqExqDispatchPolicy_ = "fu_round_robin_fifo";
+  int exu0ReserveLookahead_ = 0;
+  int exu0ReserveMinCount_ = 1;
+  std::unordered_map<std::string, int> shqExqRrPtrByFu_{{"ALU", 0}, {"SFU", 0}};
   int exqIssueInflightCapPerPort_ = 0;
   int computeInflightCap_ = 0;
   int shqReleaseDelay_ = 1;
@@ -174,9 +209,6 @@ protected:
   std::unordered_map<int64_t, int> visiblePregFreeEvents_;
   std::unordered_map<int64_t, int> visibleShqReleaseEvents_;
   std::unordered_map<int64_t, int> shqReleaseEvents_;
-  std::unordered_map<int64_t, int> blockOutstandingStores_;
-  std::unordered_map<int64_t, bool> blockLastInstDone_;
-  std::unordered_map<int64_t, int64_t> blockReleaseCycle_;
   int iduMailboxPregReleaseDelta_ = 0;
   int iduMailboxShqReleaseDelta_ = 0;
   int consumerReleaseStartOffset_ = 0;
@@ -192,29 +224,31 @@ protected:
   std::vector<HistoryRecord> history_;
   std::vector<SimpleLogRecord> startLogs_;
   std::vector<SimpleLogRecord> doneLogs_;
+  const ControlUnit *controlUnit_ = nullptr;
 
   virtual std::string classifyOpClass(const std::string &op,
                                       const std::string &form) const;
   bool isRegisterValue(const std::string &name) const;
-  bool isUBValue(const std::string &name) const;
   int64_t computeReadyTimeForSrc(const ProducerInfo &producerInfo,
                                  const std::string &consumerOp,
                                  const std::string &consumerForm) const;
   int64_t computeLoadReadyCycle(const Uop &u) const;
+  bool blockedByControlUnit(const Uop &u) const;
   std::tuple<int64_t, std::optional<std::string>,
              std::optional<std::string>, std::optional<int64_t>>
   computeStoreReadyCycle(const Uop &u) const;
-  int64_t dataStoreCost(const std::string &producerOp,
-                        const std::string &producerForm) const;
   std::string getFuType(const std::string &op, const std::string &form) const;
   std::vector<int> eligibleExuPorts(const std::string &op,
                                     const std::string &form) const;
+  std::vector<int> eligibleExuPorts(const Uop &u) const;
   int64_t getIi(const std::string *prevOp, const std::string *prevForm,
                 const std::string &curOp, const std::string &curForm) const;
   void log(const std::string &event, const Uop &u);
   void logStartSimple(const Uop &u);
   void logDoneSimple(const Uop &u);
+  void logMembarBlocked(Uop &u);
   Uop *findRobUop(int64_t instId);
+  const Uop *findRobUop(int64_t instId) const;
   bool isCurrentMapping(const std::string &preg) const;
   void scheduleSrcReleaseFromStart(const Uop &u);
   void runSrcReleaseEvents(int64_t cycle);
@@ -225,6 +259,11 @@ protected:
   int64_t predictExqIssueCycle(int port, const std::string &fuType,
                                const std::string &op, const std::string &form,
                                int64_t recvCycle) const;
+  bool useFuRoundRobinFifo() const;
+  bool useExu0Reserve() const;
+  int exu0OnlyPressureCount(size_t startIndex) const;
+  int selectFuRoundRobinPort(const std::string &fuType,
+                             const std::vector<int> &candidates);
   void scheduleShqRelease(int64_t cycle, int count = 1);
   void runShqReleaseEvents(int64_t cycle);
 

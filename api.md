@@ -1,43 +1,43 @@
 # VF Simulator API
 
-This document describes the current public input interface for VF Simulator.
+本文说明 VF Simulator 当前公开输入接口。
 
-The simulator supports two input paths:
+模拟器支持两条输入路径：
 
-1. JSON trace input through `main.py --trace`.
-2. CCE/DSL input through `main.py --cce`, parsed from `__VEC_SCOPE__`.
+1. 通过 `main.py --trace` 读取 JSON trace。
+2. 通过 `main.py --cce` 读取 CCE/DSL，并从 `__VEC_SCOPE__` 中解析 VF 代码。
 
-Both paths are lowered to the same internal trace format and run through the current mainline model:
+两条路径都会降到同一种内部 trace 格式，并运行当前主线模型：
 
 ```text
-queue_level4 + vreg live-range normalization + start+4 release
+queue_level4 + vreg 活跃范围规范化 + start+4 释放
 ```
 
-## Command Line
+## 命令行
 
-Run a JSON trace:
+运行 JSON trace：
 
 ```bash
 python main.py --trace VFtest/GeLU_poly.json --out_dir results/demo_json
 ```
 
-Run a CCE/DSL file:
+运行 CCE/DSL 文件：
 
 ```bash
 python main.py --cce cce_code/GeLU_poly.dsl --out_dir results/demo_cce
 ```
 
-Select a named VF kernel when a CCE file has multiple `__VEC_SCOPE__` blocks:
+如果一个 CCE 文件里有多个 `__VEC_SCOPE__` block，需要选择指定 VF kernel：
 
 ```bash
 python main.py --cce path/to/file.dsl --cce-kernel kernel_name --out_dir results/demo_kernel
 ```
 
-The old `--ooo-model` selector is no longer part of the public mainline CLI. The default model is selected inside `main.py`.
+旧的 `--ooo-model` 选择器已不再是公开主线命令行接口。默认模型在 `main.py` 内部选择。
 
-## JSON Trace Format
+## JSON Trace 格式
 
-Minimal example:
+最小示例：
 
 ```json
 {
@@ -52,104 +52,100 @@ Minimal example:
       "iters": "I",
       "unroll": "U",
       "body": [
-        { "type": "inst", "op": "VLD", "dst": ["V0"], "src": ["memA"] },
+        { "type": "inst", "op": "VLDS", "dst": ["V0"], "src": ["memA"] },
         { "type": "inst", "op": "VADDS", "dst": ["V1"], "src": ["V0"] },
-        { "type": "inst", "op": "VST", "dst": ["memB"], "src": ["V1"] }
+        { "type": "inst", "op": "VSTS", "dst": ["memB"], "src": ["V1"] }
       ]
     }
   ]
 }
 ```
 
-Fields:
+字段：
 
-- `dtype`: instruction data type, commonly `fp32` or `fp16`.
-- `params`: symbolic parameters referenced by `iters` and `unroll`.
-- `program`: top-level VF program list.
-- `type=loop`: loop block with `iters`, `unroll`, and `body`.
-- `type=inst`: instruction with `op`, `dst`, and `src`.
+- `dtype`：指令数据类型，常见值是 `fp32` 或 `fp16`。
+- `params`：`iters` 和 `unroll` 引用的符号参数。
+- `program`：顶层 VF 程序列表。
+- `type=loop`：loop block，包含 `iters`、`unroll`、`body`。
+- `type=inst`：指令，包含 `op`、`dst`、`src`。
 
-Nested loops are supported. The analyzer infers top-level loop bounds and dispatch structure from the program tree.
+支持嵌套循环。分析器会从程序树推导顶层循环边界和发射结构。
 
-## CCE/DSL Input
+## CCE/DSL 输入
 
-The CCE adapter parses vector code inside `__VEC_SCOPE__` and converts supported instructions into `VFInfo`, then into the simulator trace format.
+CCE 适配器会解析 `__VEC_SCOPE__` 内的向量代码，把支持的指令转换成 `VFInfo`，再降到模拟器 trace 格式。
 
-Example:
+示例：
 
 ```bash
 python main.py --cce cce_code/GeLU_poly.dsl --out_dir results/gelu_poly_cce
 ```
 
-Programmatic use:
+程序化用法：
 
 ```python
 from api.cce_adapter import parse_cce_vf_info
-from api.simulator_costmodel import predict_vf_cycles
+from api.simulator_costmodel import CoreVfCostModel
 
 vf_info = parse_cce_vf_info("cce_code/GeLU_poly.dsl")
-cycles = predict_vf_cycles(vf_info)
+cycles = CoreVfCostModel().predict_vf_cycles(vf_info)
 print(cycles)
 ```
 
-Useful API files:
+相关 API 文件：
 
-- `api/vf_costmodel.py`: `VFInfo`, `InstInfo`, `MemInfo` data classes.
-- `api/cce_adapter.py`: CCE/DSL parser.
-- `api/vf_lowering.py`: lowers `VFInfo` to simulator trace.
-- `api/input_api.py`: shared CLI input loader.
-- `api/simulator_costmodel.py`: programmatic simulator wrapper.
+- `api/vf_info.py`：`VFInfo`、`VFLoop`、`VFInst`、`ValueInfo`、`MemInfo`、`Membar` 数据类。
+- `api/vf_costmodel.py`：兼容 re-export，并定义抽象接口 `VfCostModel`。
+- `api/cce_adapter.py`：CCE/DSL 解析器。
+- `api/vf_lowering.py`：把 `VFInfo` 降到模拟器 trace。
+- `api/input_api.py`：命令行输入的共享加载器。
+- `api/simulator_costmodel.py`：程序化模拟器封装。
 
-## Memory And Register Operands
+## 内存和寄存器操作数
 
-The newer API can represent operand location through `MemInfo.location`, with expected values:
+类型化 API 通过 `ValueInfo.storage` 表示操作数存储位置。`MemInfo` 是 `ValueInfo` 的兼容别名，构造函数仍接受 `name=` 和 `location=` 这两个历史别名。当前 storage 值包括：
 
-- `register`
+- `Register`
 - `UB`
+- `Scalar`
 
-The current lowering path still keeps compatibility with historical JSON traces that use names such as `V0`, `V1`, `memA`, and `mem_inter_*`.
+当前 lowering 路径仍兼容历史 JSON trace 使用的名字，例如 `V0`、`V1`、`memA`、`mem_inter_*`。
 
-Recommended naming for JSON traces:
+JSON trace 推荐命名：
 
-- vector registers: `V0`, `V1`, `V2`, ...
-- input/output UB memory: `memA`, `memB`, `memOut`, ...
-- intermediate cross-block memory: `mem_inter_*`
+- 向量寄存器：`V0`、`V1`、`V2` 等。
+- 输入/输出 UB 内存：`memA`、`memB`、`memOut` 等。
+- 中间 UB 内存：`mem_inter_*`。该名字只作为普通 UB operand 兼容，不再触发特殊屏障语义。
 
-## Explicit Memory Barriers
+## 显式内存屏障
 
-CCE parsing can represent explicit memory barrier semantics when they are visible in the source. For older JSON traces, cross-block dependency is usually modeled with:
+CCE 解析可以在源代码可见时表示显式内存屏障语义。当前后端只通过显式 `Membar`
+节点建模 memory ordering；`mem_inter_*` 等名字不再触发隐式跨 block strong barrier。
+旧 JSON trace 若需要表达 store/load 或 load/store ordering，应显式插入 `Membar`。
 
-```text
-VST mem_inter_* in one block
-VLD mem_inter_* in a later block
-```
+## 理论上界选项
 
-With `mem_bar_mode = strong`, this creates the intended ordering between blocks.
-
-## Theoretical-Limit Options
-
-Current public theoretical-limit flags:
+当前公开理论上界参数：
 
 ```bash
 --theoretical-limit-vloop-only
 --theoretical-limit-vloop-only-legacy-forwarding-direct-issue
 ```
 
-The older generic `--theoretical-limit` flag is not the active interface.
+旧的通用 `--theoretical-limit` 参数不是当前活跃接口。
 
-## Output
+## 输出
 
-The canonical model timing is printed as:
+规范模型时序会打印为：
 
 ```text
 VF end cycle (with drain) = N
 ```
 
-Common output files:
+常见输出文件：
 
 - `start_by_cycle.json`
 - `done_by_cycle.json`
 - `idu_to_ooo.json`
 - `vloop_trace.json`
 - `sim_history.json`
-

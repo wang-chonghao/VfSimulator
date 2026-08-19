@@ -25,8 +25,15 @@ struct DynamicInst {
   std::string type = "inst";
   std::string op;
   std::string form;
+  std::string barrier;
+  int64_t pc = -1;
+  int64_t streamSeq = -1;
   std::vector<std::string> src;
   std::vector<std::string> dst;
+  std::vector<bool> srcValueRelease;
+  std::vector<bool> dstValueKeep;
+  std::string staticInstructionId;
+  std::vector<std::pair<std::string, int64_t>> iterationPath;
 
   std::vector<int64_t> loopStack;
   std::vector<int64_t> iterStack;
@@ -51,6 +58,10 @@ public:
       std::unordered_map<int, std::vector<int64_t>> topBlockLoopBounds = {},
       int64_t totalTopBlocks = 0,
       std::string dtype = "fp32");
+
+  IFU(std::vector<DynamicInst> expandedInstructions,
+      std::unordered_map<int, std::vector<int64_t>> topBlockLoopBounds,
+      int64_t totalTopBlocks);
 
   bool done() const;
   std::optional<DynamicInst> nextInst();
@@ -92,15 +103,18 @@ private:
 
   int64_t pc_ = 0;
   int64_t instId_ = 0;
+  int64_t streamSeq_ = 0;
   int64_t unrollGroup_ = 0;
   std::deque<DynamicInst> pending_;
   std::vector<LoopFrame> frames_;
   std::vector<std::pair<int64_t, std::vector<int64_t>>> vloopTrace_;
   std::unordered_map<int, std::vector<int64_t>> topBlockLoopBounds_;
+  bool preexpanded_ = false;
 
   void buildIndices();
   static bool containsAnyLoop(const std::vector<LinearProgramNode> &nodes);
   static bool isInst(const LinearProgramNode &node);
+  static bool isMembar(const LinearProgramNode &node);
   static bool isLoopBegin(const LinearProgramNode &node);
   static bool isLoopEnd(const LinearProgramNode &node);
 
@@ -121,7 +135,13 @@ private:
   std::vector<int64_t> calcBlockEndLevelsNormal() const;
   bool isLastInTopBlockNormal() const;
   DynamicInst emitNormalInst(const LinearProgramNode &node);
+  DynamicInst emitNormalMembar(const LinearProgramNode &node);
   void buildPendingUnrolled(LoopFrame &frame);
+  std::optional<LinearProgramNode> firstMembarInLoopBody(int64_t beginIdx) const;
+  void recordMembarUnrollDisabled(const LinearProgramNode &loopNode,
+                                  const LinearProgramNode &membarNode,
+                                  int64_t loopId,
+                                  int64_t requestedUnroll) const;
 
   void updateLastDispatch(const DynamicInst &inst, int64_t cycle);
   void triggerNextVloops(const DynamicInst &inst, int64_t cycle);

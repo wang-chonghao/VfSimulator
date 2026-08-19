@@ -7,7 +7,12 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 #include "native/ProgramVregLiveRangeNormalization.h"
+#include "native/IFU.h"
+#include "native/OOO.h"
+#include "native/ParamDB.h"
+#include "native/ProgramFlatten.h"
 
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -30,6 +35,14 @@ ProgramNode inst(std::string op, std::vector<std::string> dst,
 ProgramNode loop(std::vector<ProgramNode> body) {
   ProgramLoopNode value;
   value.iters = "32";
+  value.unroll = "1";
+  value.body = std::move(body);
+  return ProgramNode::makeLoop(std::move(value));
+}
+
+ProgramNode loopWithIters(std::string iters, std::vector<ProgramNode> body) {
+  ProgramLoopNode value;
+  value.iters = std::move(iters);
   value.unroll = "1";
   value.body = std::move(body);
   return ProgramNode::makeLoop(std::move(value));
@@ -97,5 +110,123 @@ int main() {
           "fresh register uses explicit Register storage");
   require(valueIt->second.valueId == fresh,
           "fresh register value id matches the generated slot");
+
+  VfInfo accumulatorInfo;
+  accumulatorInfo.values.emplace("v5", regValue("v5"));
+  accumulatorInfo.values.emplace("v6", regValue("v6"));
+  accumulatorInfo.values.emplace("v7", regValue("v7"));
+  accumulatorInfo.values.emplace("v9", regValue("v9"));
+  accumulatorInfo.body = {loopWithIters(
+      "4",
+      {
+          inst("VLDS", {"v6"}, {"mem0"}),
+          inst("VEXP", {"v7"}, {"v6"}),
+          inst("VADD", {"v5"}, {"v7", "v5"}),
+          inst("VEXP", {"v9"}, {"v5"}),
+      })};
+  normalizeProgramVregLiveRanges(accumulatorInfo);
+  const auto &accumulatorBody = accumulatorInfo.body.front().loop->body;
+  require(accumulatorBody[2].inst.src[1] == accumulatorBody[2].inst.dst[0],
+          "loop-carried accumulator must write its entry slot");
+  require(accumulatorBody[3].inst.dst[0] != accumulatorBody[2].inst.dst[0],
+          "temporary result must not reuse a loop-carried slot");
+
+  ProgramAnalysis accumulatorAnalysis(accumulatorInfo.params,
+                                      accumulatorInfo.values);
+  ProgramFlatten accumulatorFlattener;
+  const auto &accumulatorLinear =
+      accumulatorFlattener.flatten(accumulatorInfo.body);
+  IFU accumulatorIfu(
+      accumulatorLinear,
+      accumulatorInfo.params,
+      nullptr,
+      accumulatorAnalysis.inferTopBlockLoopBounds(accumulatorInfo.body),
+      1,
+      "fp32");
+  const auto dynamicAccumulator = accumulatorIfu.take(16);
+  ParamDB db(std::filesystem::path(VFSIM_SOURCE_ROOT));
+  OoOCoreMainline accumulatorCore(db.uarch(), db, "fp32",
+                                  accumulatorInfo.values);
+  std::vector<int64_t> accumulatorIds;
+  for (const DynamicInst &dynamicInst : dynamicAccumulator) {
+    accumulatorCore.accept(dynamicInst);
+    if (dynamicInst.op == "VADD")
+      accumulatorIds.push_back(dynamicInst.instId);
+  }
+  require(accumulatorIds.size() == 4,
+          "expected four dynamic accumulator instructions");
+  for (size_t index = 1; index < accumulatorIds.size(); ++index) {
+    require(
+        accumulatorCore.getPregSrcForInst(accumulatorIds[index], 1) ==
+            accumulatorCore.getPregDstForInst(accumulatorIds[index - 1], 0),
+        "dynamic accumulator source must consume the previous iteration destination");
+  }
+
+  VfInfo exitAliasInfo;
+  for (const std::string &name : {"v5", "v6", "v7", "v8"})
+    exitAliasInfo.values.emplace(name, regValue(name));
+  exitAliasInfo.body = {
+      loopWithIters(
+          "1",
+          {
+              inst("VLDS", {"v6"}, {"mem0"}),
+              inst("VADD", {"v5"}, {"v7", "v5"}),
+          }),
+      inst("VSTS", {"mem1"}, {"v5"}),
+  };
+  normalizeProgramVregLiveRanges(exitAliasInfo);
+  const std::string firstLoopExit =
+      exitAliasInfo.body[0].loop->body[1].inst.dst[0];
+  require(firstLoopExit != "v5",
+          "single-iteration loop should expose its reused exit slot");
+  require(exitAliasInfo.body[1].inst.src[0] == firstLoopExit,
+          "following sibling must consume the loop exit alias");
+
+  VfInfo redefinitionInfo;
+  for (const std::string &name : {"v5", "v6", "v7", "v8"})
+    redefinitionInfo.values.emplace(name, regValue(name));
+  redefinitionInfo.body = {
+      loopWithIters(
+          "1",
+          {
+              inst("VLDS", {"v6"}, {"mem0"}),
+              inst("VADD", {"v5"}, {"v7", "v5"}),
+          }),
+      loopWithIters(
+          "4",
+          {
+              inst("VADD", {"v5"}, {"v8", "v8"}),
+              inst("VSTS", {"mem1"}, {"v5"}),
+          }),
+  };
+  normalizeProgramVregLiveRanges(redefinitionInfo);
+  const auto &redefinitionBody = redefinitionInfo.body[1].loop->body;
+  require(redefinitionBody[0].inst.dst[0] == "v5" &&
+              redefinitionBody[1].inst.src[0] == "v5",
+          "loop-local redefinition must kill a prior sibling alias");
+
+  VfInfo zeroLoopInfo;
+  zeroLoopInfo.params.emplace("ZERO", 0);
+  for (const std::string &name : {"v5", "v6", "v7", "v8"})
+    zeroLoopInfo.values.emplace(name, regValue(name));
+  zeroLoopInfo.body = {
+      loopWithIters(
+          "1",
+          {
+              inst("VLDS", {"v6"}, {"mem0"}),
+              inst("VADD", {"v5"}, {"v7", "v5"}),
+          }),
+      loopWithIters(
+          "ZERO",
+          {
+              inst("VADD", {"v5"}, {"v8", "v8"}),
+          }),
+      inst("VSTS", {"mem1"}, {"v5"}),
+  };
+  normalizeProgramVregLiveRanges(zeroLoopInfo);
+  const std::string zeroLoopEntry =
+      zeroLoopInfo.body[0].loop->body[1].inst.dst[0];
+  require(zeroLoopInfo.body[2].inst.src[0] == zeroLoopEntry,
+          "zero-iteration loop must not kill an incoming alias");
   return 0;
 }

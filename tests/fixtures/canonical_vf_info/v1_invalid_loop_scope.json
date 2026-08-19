@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "values": {
+    "acc.entry": {
+      "definition_id": "acc.entry",
+      "logical_id": "acc",
+      "storage": "Register",
+      "dtype": "fp32"
+    },
+    "acc.back": {
+      "definition_id": "acc.back",
+      "logical_id": "acc",
+      "storage": "Register",
+      "dtype": "fp32",
+      "producer_node_id": "inst.inner"
+    },
+    "acc.exit": {
+      "definition_id": "acc.exit",
+      "logical_id": "acc",
+      "storage": "Register",
+      "dtype": "fp32",
+      "producer_node_id": "loop.acc"
+    }
+  },
+  "context": [
+    {
+      "kind": "loop",
+      "loop_id": "loop.acc",
+      "induction": {"variable_id": "i", "start": 0, "step": 1},
+      "count": 4,
+      "unroll": 1,
+      "carried_values": [
+        {
+          "logical_id": "acc",
+          "entry_value_id": "acc.entry",
+          "back_edge_value_id": "acc.back",
+          "exit_value_id": "acc.exit"
+        }
+      ],
+      "body": [
+        {
+          "kind": "loop",
+          "loop_id": "loop.inner",
+          "induction": {"variable_id": "j", "start": 0, "step": 1},
+          "count": 0,
+          "unroll": 1,
+          "carried_values": [],
+          "body": [
+            {
+              "kind": "instruction",
+              "instruction_id": "inst.inner",
+              "opcode": "VADD",
+              "instruction_class": "compute",
+              "form": "fp32",
+              "inputs": [
+                {"value_id": "acc.entry", "role": "source", "dtype": "fp32"},
+                {"value_id": "acc.entry", "role": "source", "dtype": "fp32"}
+              ],
+              "outputs": [
+                {"value_id": "acc.back", "role": "destination", "dtype": "fp32"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

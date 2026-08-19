@@ -41,6 +41,14 @@ ProgramNode ProgramNode::makeLoop(ProgramLoopNode value) {
   return node;
 }
 
+ProgramNode ProgramNode::makeMembar(ProgramMembarNode value) {
+  ProgramNode node;
+  node.kind = Kind::Membar;
+  node.membar = std::move(value);
+  node.loop.reset();
+  return node;
+}
+
 ProgramAnalysis::ProgramAnalysis(ParamMap params,
                                  std::unordered_map<std::string, ValueInfo> values)
     : params_(std::move(params)), values_(std::move(values)) {}

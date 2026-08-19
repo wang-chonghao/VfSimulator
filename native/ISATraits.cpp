@@ -34,10 +34,9 @@ OpClass opClassFromString(const std::string &text) {
 
 OpClass opClassFromNameFallback(const std::string &op) {
   const std::string canon = canonicalOp(op);
-  if (canon == "VLDS" || canon == "VLD")
+  if (canon.rfind("VLD", 0) == 0)
     return OpClass::Load;
-  if (canon == "VSTS" || canon == "VST" || canon == "VSTUS" ||
-      canon == "VSTAS")
+  if (canon.rfind("VST", 0) == 0)
     return OpClass::Store;
   return OpClass::Compute;
 }

@@ -1,0 +1,107 @@
+#ifdef __CCE_KT_TEST__
+#define __aicore__
+#else
+#define __aicore__ [aicore]
+#endif
+
+#include <stdint.h>
+
+__attribute__((always_inline)) inline [aicore] void
+fa_softmax_macro_instr_ir_layout_ub(__ubuf__ float *scores,
+                                    __ubuf__ bfloat16_t *x_exp,
+                                    __ubuf__ float *new_global_max,
+                                    __ubuf__ float *new_global_sum,
+                                    __ubuf__ bfloat16_t *nz_out) {
+    constexpr uint16_t kRows = 128;
+    constexpr uint16_t kCols = 64;
+    constexpr float kScale = 0.125f;
+    constexpr uint64_t kVsstbConfig = ((kRows + 1) << 16) | 1u;
+
+    __VEC_SCOPE__ {
+        vector_bool pred_b8_all = pset_b8(PAT_ALL);
+        vector_bool pred_b16_all = pset_b16(PAT_ALL);
+        vector_bool pred_b32_all = pset_b32(PAT_ALL);
+        vector_bool pred_b16_vl64 = pset_b16(PAT_VL64);
+
+        vector_f32 max0;
+        vector_f32 max1;
+        vector_f32 max2;
+        vector_f32 max3;
+        vlds(max0, scores, 0 * kCols, NORM);
+        vlds(max1, scores, 1 * kCols, NORM);
+        vlds(max2, scores, 2 * kCols, NORM);
+        vlds(max3, scores, 3 * kCols, NORM);
+
+        __ubuf__ float *p0 = scores + 4 * kCols;
+        __ubuf__ float *p1 = scores + 5 * kCols;
+        __ubuf__ float *p2 = scores + 6 * kCols;
+        __ubuf__ float *p3 = scores + 7 * kCols;
+        for (uint16_t row = 4; row < kRows; row += 4) {
+            vector_f32 vrow;
+            vlds(vrow, p0, 4 * kCols, NORM, POST_UPDATE);
+            vmax(max0, max0, vrow, pred_b16_all, MODE_ZEROING);
+            vlds(vrow, p1, 4 * kCols, NORM, POST_UPDATE);
+            vmax(max1, max1, vrow, pred_b16_all, MODE_ZEROING);
+            vlds(vrow, p2, 4 * kCols, NORM, POST_UPDATE);
+            vmax(max2, max2, vrow, pred_b16_all, MODE_ZEROING);
+            vlds(vrow, p3, 4 * kCols, NORM, POST_UPDATE);
+            vmax(max3, max3, vrow, pred_b16_all, MODE_ZEROING);
+        }
+
+        vmax(max0, max0, max1, pred_b16_all, MODE_ZEROING);
+        vmax(max2, max2, max3, pred_b16_all, MODE_ZEROING);
+        vmax(max0, max0, max2, pred_b16_all, MODE_ZEROING);
+        vsts(max0, new_global_max, 0, NORM_B16, pred_b16_all);
+        vmuls(max0, max0, kScale, pred_b16_all);
+
+        vector_f32 sum;
+        vdup(sum, 0.0f, pred_b8_all, MODE_ZEROING);
+
+        __ubuf__ float *input_ptr = scores;
+        (void)x_exp;
+        __ubuf__ half *nz_ptr = (__ubuf__ half *)nz_out;
+        for (uint16_t row = 0; row < kRows; ++row) {
+            vector_f32 x;
+            vector_f32 sub;
+            vector_f32 expv;
+            vector_f16 cvt;
+
+            vld(x, input_ptr, vag_b32(64), NORM);
+            vmuls(x, x, kScale, pred_b16_all);
+            vsub(sub, x, max0, pred_b32_all);
+            vexp(expv, sub, pred_b32_all, MODE_ZEROING);
+            vmulscvt(cvt, expv, 1.0f, pred_b32_all, PART_EVEN);
+            vpack((vector_u16 &)cvt, (vector_u32 &)cvt, LOWER, MODE_ZEROING);
+            vsstb(cvt, nz_ptr, kVsstbConfig, pred_b16_vl64, POST_UPDATE);
+            vadd(sum, expv, sum, pred_b8_all, MODE_ZEROING);
+        }
+
+        vsts(sum, new_global_sum, 0, NORM_B32, pred_b8_all);
+    }
+}
+
+extern "C" __global__ __aicore__ void foo_add(
+    __gm__ float *__restrict__ input_scores,
+    __gm__ bfloat16_t *__restrict__ output_x_exp,
+    __gm__ float *__restrict__ output_new_global_max,
+    __gm__ float *__restrict__ output_new_global_sum,
+    __gm__ bfloat16_t *__restrict__ output_nz) {
+    __ubuf__ float *scores = (__ubuf__ float *)get_imm(0x00000);
+    __ubuf__ float *new_global_max = (__ubuf__ float *)get_imm(0x08000);
+    __ubuf__ float *new_global_sum = (__ubuf__ float *)get_imm(0x08100);
+    __ubuf__ bfloat16_t *x_exp = (__ubuf__ bfloat16_t *)get_imm(0x08200);
+    __ubuf__ bfloat16_t *nz_out = (__ubuf__ bfloat16_t *)get_imm(0x0c200);
+
+    copy_gm_to_ubuf_align_v2(scores, input_scores, 0, 1, 128 * 64 * 4, 0, 0, 0, 0, 0, 0);
+    set_flag(PIPE_MTE2, PIPE_V, (event_t)0);
+    wait_flag(PIPE_MTE2, PIPE_V, (event_t)0);
+
+    fa_softmax_macro_instr_ir_layout_ub(scores, x_exp, new_global_max, new_global_sum, nz_out);
+
+    set_flag(PIPE_V, PIPE_MTE3, (event_t)0);
+    wait_flag(PIPE_V, PIPE_MTE3, (event_t)0);
+    (void)output_x_exp;
+    copy_ubuf_to_gm_align_v2(output_nz, nz_out, 0, 1, 128 * 64 * 2, 0, 0, 0);
+    copy_ubuf_to_gm_align_v2(output_new_global_max, new_global_max, 0, 1, 64 * 4, 0, 0, 0);
+    copy_ubuf_to_gm_align_v2(output_new_global_sum, new_global_sum, 0, 1, 64 * 4, 0, 0, 0);
+}
