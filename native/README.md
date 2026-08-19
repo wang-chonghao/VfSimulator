@@ -27,10 +27,13 @@
 - `SimulatorRunner`：驱动主循环并输出日志。
 - `CanonicalProgramLowering`：处理已验证的 canonical definition、loop-carried
   binding、动态身份和值生命周期标记。
+- `LegacyVfInfoAdapter`：把旧 `VfInfo`/legacy JSON 的逻辑值版本化为 canonical
+  definition；旧输入不会形成第二套 Core 执行路径。
 - 共享配置结构：显式、可移植地描述跨语言配置 schema。
 
 公开运行入口：
 
 - `runCanonicalVfInfo()`：canonical 直接入口，跳过 legacy value lowering、vreg
   live-range normalization 和 single-super-iteration rewriting。
-- `runVfInfo()`：为 legacy JSON、命令行工具和对比回归保留的迁移入口。
+- `runLegacyVfInfo()`：显式适配旧 `VfInfo`，随后复用 `runCanonicalVfInfo()`。
+- `runVfInfo()`：仅为弃用的源码兼容包装；新代码不得使用。

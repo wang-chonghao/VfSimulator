@@ -191,7 +191,7 @@
       "properties": {
         "kind": {"const": "membar"},
         "instruction_id": {"type": "string", "minLength": 1},
-        "barrier": {"enum": ["VST_VLD", "VLD_VST"]},
+        "barrier": {"type": "string", "minLength": 1},
         "dependencies": {"type": "array", "items": {"$ref": "#/$defs/dependency"}},
         "source_location": {"anyOf": [{"$ref": "#/$defs/sourceLocation"}, {"type": "null"}]}
       }

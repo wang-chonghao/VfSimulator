@@ -24,15 +24,21 @@ struct SimulationResult {
   std::string resultsDir;
 };
 
-SimulationResult runVfInfo(const VfInfo &vfInfo,
-                           const ParamDB &db,
-                           const std::string &resultsDir = {},
-                           int64_t maxCycles = 1000000);
-
 SimulationResult runCanonicalVfInfo(const CanonicalVfInfo &vfInfo,
                                     const ParamDB &db,
                                     const std::string &resultsDir = {},
                                     int64_t maxCycles = 1000000);
+
+SimulationResult runLegacyVfInfo(const VfInfo &vfInfo,
+                                 const ParamDB &db,
+                                 const std::string &resultsDir = {},
+                                 int64_t maxCycles = 1000000);
+
+[[deprecated("use runCanonicalVfInfo() or runLegacyVfInfo()")]]
+SimulationResult runVfInfo(const VfInfo &vfInfo,
+                           const ParamDB &db,
+                           const std::string &resultsDir = {},
+                           int64_t maxCycles = 1000000);
 
 SimulationResult runSimulation(IFU &ifu,
                                IDU &idu,

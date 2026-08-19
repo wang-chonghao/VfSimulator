@@ -2,17 +2,17 @@
 
 本文说明从 CCE 代码使用 VFSim 作为 VF cost model 时的当前 API 边界。
 
-API 支持迁移期和 canonical 两类明确输入路径：
+API 以 canonical 为正式预测契约，同时保留显式命名的 legacy adapter：
 
 1. 把一个 `__VEC_SCOPE__` CCE kernel 解析成 `VFInfo` 对象。
 2. 将同一 CCE kernel 解析并版本化为 `CanonicalVfInfo`。
 3. 在 Python 中直接构造 `VFInfo`，或使用 `VfInfoBuilder` 构造 canonical 对象。
 
-迁移期和 canonical 分别调用明确入口：
+正式入口与迁移期入口分别为：
 
 ```python
-cycles = model.predict_vf_cycles(vf_info)
 canonical_cycles = model.predict_canonical_vf_cycles(canonical_vf_info)
+legacy_cycles = model.predict_legacy_vf_cycles(vf_info)
 ```
 
 `core/` 下的后端模拟器不直接解析 CCE 源码。API 层负责面向源代码的输入；旧入口保留 `VFInfo`，新入口通过 `ValueVersioningPass` 生成 canonical definition，两者不隐式互相回退。
@@ -25,12 +25,9 @@ CCE __VEC_SCOPE__ kernel
         v
 CCE parser / adapter
         |
-        +----> VFInfo -> predict_vf_cycles()
+        +----> CanonicalVfInfo -> predict_canonical_vf_cycles()
         |
-        +----> ValueVersioningPass -> CanonicalVfInfo
-                                      |
-                                      v
-                         predict_canonical_vf_cycles()
+        +----> VFInfo -> LegacyVfInfoAdapter -> CanonicalVfInfo
         |
         v
 core/ simulator backend
@@ -42,10 +39,10 @@ predicted cycles
 直接 Python 用法会绕过 CCE parser：
 
 ```text
-Python 代码构造 VFInfo
+Python 代码构造 CanonicalVfInfo
         |
         v
-VfCostModel.predict_vf_cycles(VFInfo)
+VfCostModel.predict_canonical_vf_cycles(CanonicalVfInfo)
         |
         v
 core/ simulator backend
@@ -246,7 +243,7 @@ Membar(type="VLD_VST")
 ```python
 class VfCostModel(ABC):
     @abstractmethod
-    def predict_vf_cycles(self, vf_info: VFInfo) -> int:
+    def predict_canonical_vf_cycles(self, vf_info: CanonicalVfInfo) -> int:
         pass
 ```
 
@@ -274,13 +271,13 @@ class VfCostModel(ABC):
 当前 adapter：
 
 ```python
-InputAPI.load_json_trace(path)
+InputAPI.load_legacy_json_vf_info(path)
 InputAPI.load_legacy_json_canonical(path)
 ```
 
 当前形态：
 
-- `load_json_trace()` 保留旧 `VFInfo` 行为。
+- `load_legacy_json_vf_info()` 显式保留旧 `VFInfo` 行为；`load_json_trace()` 仅为弃用包装。
 - `load_legacy_json_canonical()` 明确执行 legacy 推断和值版本化。
 - 严格 `load_canonical_json()` 不会回退到 legacy adapter。
 
@@ -311,7 +308,7 @@ vf_info = VFInfo(
     ]
 )
 
-cycles = CoreVfCostModel().predict_vf_cycles(vf_info)
+cycles = CoreVfCostModel().predict_legacy_vf_cycles(vf_info)
 ```
 
 ## 示例：CCE API
@@ -326,9 +323,7 @@ from api.simulator_costmodel import CoreVfCostModel
 
 print(list_cce_vf_kernels("cce_code/GeLU_poly.dsl"))
 
-vf_info = parse_cce_vf_info("cce_code/GeLU_poly.dsl")
 model = CoreVfCostModel()
-cycles = model.predict_vf_cycles(vf_info)
 canonical = parse_cce_canonical_vf_info("cce_code/GeLU_poly.dsl")
 canonical_cycles = model.predict_canonical_vf_cycles(canonical)
 ```
@@ -360,9 +355,10 @@ vf_info = parse_cce_vf_info(
 - `list_cce_vf_kernels(path)`：列出所有包含 `__VEC_SCOPE__` block 的函数。
 - `parse_cce_vf_info(path, kernel_name=None, loop_params=None)`：解析一个 CCE kernel 为 `VFInfo`。
 - `parse_cce_canonical_vf_info(path, kernel_name=None, loop_params=None)`：生成带 definition、affine memory access、induction 和 source location 的 `CanonicalVfInfo`。
-- `InputAPI.load_cce_file(path, kernel_name=None, loop_params=None)`：`main.py` 使用的仓库输入边界。
-- `InputAPI.load_cce_canonical(path, kernel_name=None, loop_params=None)`：canonical CCE 仓库输入边界。
-- `CoreVfCostModel().predict_vf_cycles(vf_info)`：运行解析出的 `VFInfo`。
+- `InputAPI.load_cce_canonical(path, kernel_name=None, loop_params=None)`：`main.py` 使用的仓库输入边界，直接生成 `CanonicalVfInfo`。
+- `InputAPI.load_cce_vf_info(path, kernel_name=None, loop_params=None)`：显式返回迁移期 `VFInfo`。
+- `CoreVfCostModel().predict_canonical_vf_cycles(vf_info)`：正式 canonical 预测入口。
+- `CoreVfCostModel().predict_legacy_vf_cycles(vf_info)`：显式 legacy 适配入口。
 - C++ `runCanonicalVfInfo(vf_info, db)`：直接运行编译器构造的 canonical 输入，不经过旧寄存器 normalization。
 - `predict_cce_file_cycles(path, kernel_name=None, loop_params=None, out_dir="results/api_costmodel")`：针对单个 CCE 文件的便利 wrapper。
 

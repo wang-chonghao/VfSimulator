@@ -66,14 +66,6 @@ def _apply_case_transform(trace_obj: Dict[str, Any], case: Dict[str, Any]) -> Di
     return out
 
 
-def _lower_trace_to_vfinfo_payload(trace_obj: Dict[str, Any]) -> Dict[str, Any]:
-    from api.json_adapter import JsonVfInfoAdapter
-    from api.vf_lowering import VFInfoLowerer
-
-    vf_info = JsonVfInfoAdapter.from_payload(trace_obj)
-    return VFInfoLowerer().lower(vf_info)
-
-
 def _run_cmd(cmd: List[str], cwd: Path) -> str:
     proc = subprocess.run(cmd, cwd=str(cwd), text=True, capture_output=True)
     text = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
@@ -96,7 +88,7 @@ def _run_native_on_trace(
     max_cycles: int,
 ) -> Dict[str, Any]:
     run_dir.mkdir(parents=True, exist_ok=True)
-    payload = _lower_trace_to_vfinfo_payload(trace_obj)
+    payload = trace_obj
     trace_path = run_dir / "vfinfo_input.json"
     _dump_json(trace_path, payload)
 

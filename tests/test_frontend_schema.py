@@ -159,7 +159,7 @@ class CanonicalVfInfoValidatorTest(unittest.TestCase):
         )
         invalid_membar = CanonicalMembar(
             "membar.invalid",
-            "UNKNOWN",
+            "",
             source_location=membar_location,
         )
 
@@ -177,7 +177,7 @@ class CanonicalVfInfoValidatorTest(unittest.TestCase):
         )
         self.assertEqual(by_code["invalid_loop_count"].location, loop_location)
         self.assertEqual(
-            by_code["unsupported_membar_type"].location,
+            by_code["missing_membar_type"].location,
             membar_location,
         )
 
@@ -489,12 +489,19 @@ class CanonicalVfInfoValidatorTest(unittest.TestCase):
     def test_membar_and_loop_parameter_validation(self):
         invalid = self._contract((
             CanonicalLoop("loop.bad", InductionVariable("i"), "UNKNOWN", 0),
-            CanonicalMembar("membar.bad", "ALL"),
+            CanonicalMembar("membar.bad", ""),
         ))
         codes = {item.code for item in validate_canonical_vf_info(invalid).errors}
         self.assertIn("unresolved_parameter", codes)
         self.assertIn("invalid_loop_unroll", codes)
-        self.assertIn("unsupported_membar_type", codes)
+        self.assertIn("missing_membar_type", codes)
+
+    def test_nonempty_unmodeled_membar_is_left_to_control_unit_warning(self):
+        vf_info = CanonicalVfInfo(
+            context=(CanonicalMembar("membar.unknown", "VV_ALL"),),
+            values={},
+        )
+        self.assertTrue(validate_canonical_vf_info(vf_info).ok)
 
 
 if __name__ == "__main__":

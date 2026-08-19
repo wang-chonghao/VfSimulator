@@ -58,7 +58,7 @@ int main(int argc, char **argv) {
 
     const VfInfo vfInfo = loadJsonVfInfo(args.tracePath);
     const auto result =
-        runVfInfo(vfInfo, db, args.outDir.string(), args.maxCycles);
+        runLegacyVfInfo(vfInfo, db, args.outDir.string(), args.maxCycles);
 
     std::cout << "cyclesExecuted=" << result.cyclesExecuted << "\n";
     std::cout << "vfEndCycle=" << result.vfEndCycle << "\n";

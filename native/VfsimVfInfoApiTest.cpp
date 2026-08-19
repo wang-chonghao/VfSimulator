@@ -3,6 +3,7 @@
 
 #include "api/native/CanonicalVfInfo.h"
 #include "api/native/InstructionCatalog.h"
+#include "api/native/LegacyVfInfoAdapter.h"
 #include "api/native/UarchOverrideSchema.h"
 #include "api/native/VfInfo.h"
 #include "native/CanonicalProgramLowering.h"
@@ -328,13 +329,13 @@ int main() {
   CanonicalVfInfo invalidContract = canonicalContract;
   CanonicalMembar unsupportedMembar;
   unsupportedMembar.instructionId = "membar.invalid";
-  unsupportedMembar.barrier = "ALL";
+  unsupportedMembar.barrier = "";
   invalidContract.context.push_back(
       CanonicalNode::makeMembar(std::move(unsupportedMembar)));
   const auto invalidResult = validateCanonicalVfInfo(invalidContract);
   if (invalidResult.ok() || invalidResult.diagnostics.back().code !=
-                                "unsupported_membar_type")
-    throw std::runtime_error("invalid native Membar was not diagnosed");
+                                "missing_membar_type")
+    throw std::runtime_error("missing native Membar type was not diagnosed");
 
   const auto sharedInvalidJson = json::parseFile(
       std::filesystem::path(VFSIM_SOURCE_ROOT) /
@@ -412,7 +413,39 @@ int main() {
       body[3].inst.form != "f32_to_f16" ||
       body[5].inst.form != "fp16")
     throw std::runtime_error("instruction forms were not inferred from ValueInfo");
-  const SimulationResult result = runVfInfo(vfInfo, db);
+
+  VfInfo legacyAccumulator;
+  legacyAccumulator.values.emplace(
+      "acc", value("acc", ValueStorageKind::Register, "fp32"));
+  legacyAccumulator.values.emplace(
+      "rhs", value("rhs", ValueStorageKind::Register, "fp32"));
+  legacyAccumulator.values.emplace(
+      "output", value("output", ValueStorageKind::UB, "fp32"));
+  ProgramLoopNode accumulatorLoop;
+  accumulatorLoop.iters = "2";
+  accumulatorLoop.body = {
+      inst("VADD", {"acc"}, {"acc", "rhs"}),
+  };
+  legacyAccumulator.body.push_back(
+      ProgramNode::makeLoop(std::move(accumulatorLoop)));
+  legacyAccumulator.body.push_back(inst("VSTS", {"output"}, {"acc"}));
+  const CanonicalVfInfo adaptedAccumulator =
+      adaptLegacyVfInfoToCanonical(legacyAccumulator);
+  const auto adaptedLoop = std::get<std::shared_ptr<const CanonicalLoop>>(
+      adaptedAccumulator.context.front().payload);
+  if (adaptedLoop->carriedValues.size() != 1 ||
+      adaptedLoop->carriedValues.front().logicalId != "acc")
+    throw std::runtime_error(
+        "legacy accumulator loop did not produce an acc carried value");
+  const auto &adaptedStore = std::get<CanonicalInstruction>(
+      adaptedAccumulator.context.back().payload);
+  if (adaptedStore.inputs.empty() ||
+      adaptedStore.inputs.front().valueId !=
+          adaptedLoop->carriedValues.front().exitValueId)
+    throw std::runtime_error(
+        "legacy post-loop store does not consume the accumulator exit value");
+
+  const SimulationResult result = runLegacyVfInfo(vfInfo, db);
   if (result.cyclesExecuted != 72 || result.vfEndCycle != 84)
     throw std::runtime_error("mixed-dtype VfInfo result changed: cycles=" +
                              std::to_string(result.cyclesExecuted) +

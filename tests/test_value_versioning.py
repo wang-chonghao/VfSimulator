@@ -12,6 +12,7 @@ from api.frontend.schema import (
     SourceLocation,
 )
 from api.frontend.validator import validate_canonical_vf_info
+from api.frontend.legacy_vf_info_adapter import LegacyVfInfoAdapter
 from api.frontend.value_versioning import ValueVersioningPass
 from api.input_api import InputAPI
 from api.simulator_costmodel import CoreVfCostModel
@@ -23,6 +24,32 @@ from core.param_db import ParamDB
 
 
 class ValueVersioningPassTest(unittest.TestCase):
+    def test_only_legacy_adapter_repairs_omitted_scalar_operand(self):
+        vf_info = VFInfo(
+            values={
+                "src": ValueInfo("src", "Register", "fp32"),
+                "dst": ValueInfo("dst", "Register", "fp32"),
+            },
+            context=[VFInst("VADDS", ["src"], ["dst"], "fp32")],
+        )
+
+        with self.assertRaises(VfInfoValidationError) as captured:
+            InputAPI.to_canonical(vf_info)
+        self.assertTrue(
+            any(
+                diagnostic.code == "catalog_operand_count_mismatch"
+                for diagnostic in captured.exception.diagnostics
+            )
+        )
+
+        canonical = LegacyVfInfoAdapter().to_canonical(vf_info)
+        instruction = canonical.context[0]
+        self.assertEqual(len(instruction.inputs), 2)
+        self.assertEqual(instruction.inputs[1].role, OperandRole.SCALAR)
+        self.assertEqual(
+            canonical.uarch["canonical_dynamic_instruction_limit"], 0
+        )
+
     def _accumulator_vf_info(self, *, count=4, unroll=1):
         values = {
             "input": ValueInfo("input", "UB", "fp32", (64,)),
@@ -188,9 +215,9 @@ class ValueVersioningPassTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "register_alias.cce"
             path.write_text(source, encoding="utf-8")
-            vf_info = InputAPI.load_cce_file(path, "alias_case")
+            vf_info = InputAPI.load_cce_vf_info(path, "alias_case")
             canonical = InputAPI.load_cce_canonical(path, "alias_case")
-            result = CoreVfCostModel(out_dir=tmpdir).run_vf_info(vf_info)
+            result = CoreVfCostModel(out_dir=tmpdir).run_legacy_vf_info(vf_info)
 
         self.assertIsInstance(vf_info.context[1], VFAlias)
         first_dup, second_dup, add = canonical.context
@@ -519,7 +546,7 @@ class ValueVersioningPassTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "canonical.cce"
             path.write_text(source, encoding="utf-8")
-            legacy = InputAPI.load_cce_file(path, "canonical_vf")
+            legacy = InputAPI.load_cce_vf_info(path, "canonical_vf")
             canonical = InputAPI.load_cce_canonical(path, "canonical_vf")
 
         loop = canonical.context[0]
@@ -552,7 +579,7 @@ class ValueVersioningPassTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as out_dir:
             result = CoreVfCostModel(out_dir=out_dir).run_canonical_vf_info(canonical)
         with tempfile.TemporaryDirectory() as out_dir:
-            legacy_cycles = CoreVfCostModel(out_dir=out_dir).predict_vf_cycles(legacy)
+            legacy_cycles = CoreVfCostModel(out_dir=out_dir).predict_legacy_vf_cycles(legacy)
         self.assertGreater(result["vf_end_cycle"], 0)
         self.assertEqual(result["vf_end_cycle"], legacy_cycles)
 
