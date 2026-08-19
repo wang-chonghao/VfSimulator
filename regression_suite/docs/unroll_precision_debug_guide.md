@@ -130,10 +130,10 @@ python tools/run_cost_model_regression.py --tier smoke
 ```
 
 默认与 `precision_compare_3modes.md` 中的
-`queue_level4+ooo-transfer-delay` 列比较，对应基线文件：
+`queue_level4+rr-reserve(min1 cap7)` 列比较，对应基线文件：
 
 ```text
-regression_suite/cases/baseline_queue_level4_ooo_transfer_delay.json
+regression_suite/cases/baseline_balanced_exu0_reserve.json
 ```
 
 更新 baseline：

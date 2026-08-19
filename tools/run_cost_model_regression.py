@@ -371,8 +371,8 @@ def main() -> None:
     parser.add_argument(
         "--baseline",
         type=str,
-        default="regression_suite/cases/baseline_queue_level4_ooo_transfer_delay.json",
-        help="Path to queue_level4+ooo-transfer-delay baseline JSON",
+        default="regression_suite/cases/baseline_balanced_exu0_reserve.json",
+        help="Path to the balanced EXU0 reservation baseline JSON",
     )
     parser.add_argument(
         "--out-dir",

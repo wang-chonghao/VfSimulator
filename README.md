@@ -183,6 +183,7 @@ VFtest/              JSON trace 示例和部分回归输入
 regression_suite/
   cases/
     cost_model_regression_cases.json
+    baseline_balanced_exu0_reserve.json
     baseline_queue_level4_ooo_transfer_delay.json
     baseline_consumer_done.json
     archive/
@@ -214,7 +215,8 @@ python tools/run_cost_model_regression.py --tier full --update-baseline
 ```
 
 默认输出写到 `results/regression_suite/latest/`。稳定、整理过的报告应放在 `regression_suite/reports/`。
-默认对比 baseline 来自 `regression_suite/reports/precision_compare_3modes.md` 中的 `queue_level4+ooo-transfer-delay` 列。
+默认 baseline 为 `baseline_balanced_exu0_reserve.json`，对应平衡 EXU0 预留策略：
+`lookahead=8`、`min_count=1`、每端口执行中上限 `cap=7`。旧 baseline 仅用于历史对比。
 
 ## Ascend Runner
 

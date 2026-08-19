@@ -60,11 +60,11 @@ results/regression_suite/latest/current_metrics.json
 results/regression_suite/latest/compare_summary.json
 ```
 
-The default regression baseline is
-`regression_suite/cases/baseline_queue_level4_ooo_transfer_delay.json`, sourced
-from the `queue_level4+ooo-transfer-delay` column in
-`regression_suite/reports/precision_compare_3modes.md`. The older
-`baseline_consumer_done.json` is retained only for historical comparison.
+The default regression baseline is now
+`regression_suite/cases/baseline_balanced_exu0_reserve.json`, corresponding to
+the `queue_level4+rr-reserve(min1 cap7)` column in
+`regression_suite/reports/precision_compare_3modes.md`. The transfer-delay and
+consumer-done baselines are retained only for historical comparison.
 
 To isolate whether the v2 schema conversion changed model results, the same
 smoke suite was run again with the old JSON configs exported from `HEAD`:
