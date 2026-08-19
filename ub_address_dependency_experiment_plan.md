@@ -23,7 +23,8 @@
 
 ## 2. 分支与阶段范围
 
-- 基线提交：`master@5972f25`。
+- 初始计划基线：`master@5972f25`。
+- 实际开发基线：合入最新 RR/Canonical 前端后的 `ded85be`。
 - 实验分支：`ub-address-dependency-experiment`。
 - 本次开发只实现 Python 前端与 Python Core，用于实验性验证语义和性能收益。
 - 第一阶段可以增加默认关闭的实验字段，但不改变默认行为和已有回归结果。
@@ -602,3 +603,119 @@ C++ 同步只能作为实验结论之后的独立开发工作。
 - loop/unroll 使用动态地址和动态顺序，不依赖静态 pc。
 - A/B 报告能够把真实局部依赖收益与地址解析不足区分开。
 - 文档明确该模式是假设硬件实验，不代表当前 NPU 已具备此能力。
+
+## 14. 当前实现状态与验证结果
+
+### 14.1 已完成
+
+截至本轮开发，Python MVP 已完成以下链路：
+
+```text
+CanonicalVfInfo
++ PythonUbAddressExperimentMetadata
+  -> ExperimentalCanonicalCoreLowering
+  -> IFU 动态 byte range
+  -> Uop.memory_ranges
+  -> LSQ start gate
+```
+
+具体实现包括：
+
+- CCE 参数和局部 pointer 保留元素宽度、稳定 `base_object_id`、独立
+  `pointer_state_id`、初始 byte offset、普通访问 offset 和 POST_UPDATE delta。
+- POST_UPDATE 按“本次访问使用当前 pointer，之后再更新”的顺序执行。
+- loop 内动态 pointer 声明，以及对已经动态更新过的 pointer 再做静态 alias
+  snapshot，当前会明确拒绝，不静默产生错误地址。
+- `BRC_*`、`ONEPT_*` 的 UB span 按单元素处理；其它未经确认的 mode 保持
+  unresolved。
+- IFU 根据 `iteration_path`、induction value 和参数求值 affine byte range；普通
+  loop、结构化 unroll 和 POST_UPDATE 均按动态 `stream_seq` 推进。
+- LSQ 只增加 `STORE -> LOAD` 和 `LOAD -> STORE` 两个方向的依赖。具体 range
+  overlap 时建立精确边；range 不完整时按 same-base/global 保守 fallback。
+- producer 在 cycle `N` 完成时，consumer 最早在 `N+1` start，与当前显式 Membar
+  的可见性边界一致。
+- history 和简化日志输出 `memory_ranges`、`blocked_reason` 和
+  `blocked_by_inst_ids`；`model_warnings.json` 输出
+  `ub_address_dependency_fallback`。
+- A/B runner 从同一个 Canonical 输入生成两侧，只移除方向性 Membar，并校验动态
+  op/form 分布完全一致。
+- 实验 runner 输出精确访问比例、精确/回退依赖边、fallback 数量以及两种阻塞周期。
+
+实验开关没有写入共享 Canonical v1 schema 或 C++ 生成配置。它只由
+`ExperimentalCanonicalCoreLowering` 注入 Python Core payload；普通 Canonical 或
+legacy payload 不能直接启用 `range_overlap`。这保证本轮 diff 不包含 `native/` 或
+`api/native/`。
+
+### 14.2 定向微基准
+
+`VSTS tmp[i] -> Membar(VST_VLD) -> VLDS tmp[i]`，`i=0..3`：
+
+| 指标 | 结果 |
+|---|---:|
+| 全局 Membar | 64 cycle |
+| 局部地址依赖 | 63 cycle |
+| 节省 | 1 cycle |
+| 加速比 | 1.0159x |
+| 精确访问比例 | 12/12，100% |
+| 精确依赖边 | 4 |
+| fallback 依赖边 | 0 |
+
+日志逐项验证 `load[i].start == store[i].done + 1`，且第一个 post-barrier load
+不需要等待最后一个 store 完成。
+
+定向测试还覆盖：
+
+- `LOAD -> STORE` 逐地址放行。
+- 同 base 不重叠、不同 base 不建依赖。
+- 部分 range overlap、多个 overlap producer 取最大 `done+1`。
+- unknown span 回退 same-base，缺 metadata 回退 global，并写 warning。
+- 普通 offset、独立 POST_UPDATE pointer、pointer cast/alias chain。
+- loop/unroll 动态 induction offset 和每 lane 一次 pointer update。
+- 实验入口拒绝 legacy 输入和缺少实验 metadata 的手工开关。
+
+### 14.3 GeLU 穿刺
+
+输入：`GeLU_poly_split_only_I96_penalty1.dsl`。
+
+| 指标 | 结果 |
+|---|---:|
+| 全局 Membar | 1867 cycle |
+| 局部地址依赖 | 1850 cycle |
+| 节省 | 17 cycle |
+| 加速比 | 1.0092x |
+| 动态非 Membar 指令 | 4224，两侧一致 |
+| 精确访问比例 | 0/1536，0% |
+| 精确依赖边 | 0 |
+| fallback 依赖边 | 230 |
+| fallback warning 实例 | 30（same-base 30，global 0） |
+| Membar blocked cycles | 1212 |
+| UB dependency blocked cycles | 694 |
+
+该 case 使用的 `NORM/NORM_B32` span 尚无经确认的范围定义。因此这 17 cycle 收益只
+能解释为：不同原始 UB buffer 之间不再被全局 barrier 互相等待，而同一 base 内仍
+采用保守 fallback；不能把它解释为精确 range overlap 的完整收益。
+
+### 14.4 RMSNorm 穿刺状态
+
+`RMSNorm_T4_ref_no_newton.dsl` 当前在既有 Catalog 校验阶段被合法但尚未登记的
+`UNPK_B16`（后续还有 `PART_EVEN` 变体）阻塞，尚未进入本实验 lowering。为了遵守
+“Catalog 是统一语义来源”和“本轮不修改 C++ generated Catalog”的范围，本分支未在
+CCE parser 中增加实验专用 opcode/config 特判。需要先由独立 Catalog 任务补齐这些
+合法调用变体，再运行 RMSNorm A/B 数据。
+
+### 14.5 默认回归
+
+- `python3 -m unittest discover tests`：`186/186` 通过。
+- 完整 cost-model regression：通过。
+- 默认 `disabled` 结果与开发前基线提交 `ded85be` 逐项一致。
+- 相对仓库基准文件，`gelu_poly_i96_u6/u8` 仍分别为 `+15/+11` cycle；在
+  `ded85be` 上复跑结果相同，不是本实验引入。
+- 未修改任何 C++ Native 文件。
+
+### 14.6 A/B 可比性和地址宽度收尾
+
+- 实验侧移除 loop body 内的方向 Membar 时，保留基线因 Membar 产生的有效 `unroll=1`，避免收益混入动态指令重排。
+- A/B 除了比较 op/form 直方图，还必须按 `stream_seq` 比较 `(static_instruction_id, iteration_path, op, form)` 完整动态顺序。
+- `bfloat16_t` 明确是 2-byte CCE 元素类型；实验模式下未知 UB 元素宽度直接报错，不再静默当作 1 byte。
+- 已知 `base_object_id` 不同时不建依赖且不记 fallback warning。
+- LSU 历史仅保留尚未完成或本周期刚完成的记录，保持 `consumer_start >= producer_done + 1` 边界同时避免历史无界增长。

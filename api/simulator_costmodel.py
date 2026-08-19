@@ -106,6 +106,20 @@ class CoreVfCostModel(VfCostModel):
             raise RuntimeError("payload key 'uarch' must be a dict when provided")
         uarch.update(trace_uarch)
         uarch = self._mainline_uarch(uarch)
+        ub_dependency_mode = str(uarch.get("ub_dependency_mode", "disabled"))
+        if ub_dependency_mode not in {"disabled", "range_overlap"}:
+            raise RuntimeError(
+                "Unsupported ub_dependency_mode "
+                f"{ub_dependency_mode!r}; expected 'disabled' or 'range_overlap'"
+            )
+        if (
+            ub_dependency_mode == "range_overlap"
+            and payload.get("ub_address_experiment") is not True
+        ):
+            raise RuntimeError(
+                "range_overlap requires ExperimentalCanonicalCoreLowering "
+                "and Python UB address experiment metadata"
+            )
         dynamic_instruction_limit = int(
             uarch.get("canonical_dynamic_instruction_limit", 20_000)
         )
@@ -117,6 +131,7 @@ class CoreVfCostModel(VfCostModel):
             dtype=dtype,
             structured_value_identity=True,
             structured_dynamic_instruction_limit=dynamic_instruction_limit,
+            ub_dependency_mode=ub_dependency_mode,
         )
 
         idu = IDU(

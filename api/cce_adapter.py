@@ -21,6 +21,7 @@ from api.frontend.instruction_catalog import (
 )
 from api.frontend.schema import SourceLocation
 from api.frontend.value_versioning import ValueVersioningPass
+from api.frontend.ub_access_modes import span_bytes_for_access_mode
 from api.vf_info import (
     Membar,
     MemInfo,
@@ -48,7 +49,7 @@ _LOCAL_SCALAR_DECL_RE = re.compile(
 )
 _LOCAL_UB_POINTER_DECL_RE = re.compile(
     r"^\s*(?:(?:const|volatile|static)\s+)*__ubuf__\s+"
-    r"[A-Za-z_]\w*\s*\*\s*(?P<name>[A-Za-z_]\w*)\s*=\s*"
+    r"(?P<dtype>[A-Za-z_]\w*)\s*\*\s*(?P<name>[A-Za-z_]\w*)\s*=\s*"
     r"(?P<initializer>.+?)\s*;\s*$",
     re.DOTALL,
 )
@@ -68,6 +69,7 @@ class CCEVFScope:
     declaration_source: str
     params: Sequence[str]
     param_storage: Dict[str, str]
+    param_element_sizes: Dict[str, int]
     source_path: str
 
 
@@ -107,6 +109,9 @@ def extract_cce_vf_scopes(path: str | Path) -> List[CCEVFScope]:
                 declaration_source=body[: vec_match.start()],
                 params=_parse_param_names(match.group("params")),
                 param_storage=_parse_param_storage(match.group("params")),
+                param_element_sizes=_parse_ub_param_element_sizes(
+                    match.group("params")
+                ),
                 source_path=str(source_path),
             )
         )
@@ -156,10 +161,43 @@ def parse_cce_canonical_vf_info(
     )
 
 
+def parse_cce_canonical_with_ub_experiment_metadata(
+    path: str | Path,
+    kernel_name: str | None = None,
+    loop_params: Optional[Dict[str, int]] = None,
+):
+    """Parse CCE and return canonical input plus Python-only UB metadata."""
+
+    source_path = Path(path)
+    source = _strip_comments(source_path.read_text(encoding="utf-8"))
+    scope = _select_scope(extract_cce_vf_scopes(source_path), kernel_name)
+    resolved_loop_params = dict(loop_params or {})
+    resolved_loop_params.update(_infer_call_argument_constants(source, scope))
+    parser = _VFScopeParser(
+        scope,
+        resolved_loop_params,
+        ub_address_experiment=True,
+    )
+    vf_info = canonicalize_vf_info(
+        VFInfo(context=parser.parse(), params=resolved_loop_params)
+    )
+    return ValueVersioningPass().run_with_ub_experiment_metadata(
+        vf_info,
+        source={"adapter": "cce", "path": str(Path(path))},
+    )
+
+
 class _VFScopeParser:
-    def __init__(self, scope: CCEVFScope, loop_params: Dict[str, int]) -> None:
+    def __init__(
+        self,
+        scope: CCEVFScope,
+        loop_params: Dict[str, int],
+        *,
+        ub_address_experiment: bool = False,
+    ) -> None:
         self.scope = scope
         self.loop_params = loop_params
+        self.ub_address_experiment = bool(ub_address_experiment)
         self.register_dtypes = _extract_vector_decls(scope.declaration_source)
         self.register_names = set(self.register_dtypes)
         self.ub_names = {
@@ -168,6 +206,25 @@ class _VFScopeParser:
         self.ub_aliases: Dict[str, tuple[str, str]] = {
             name: (name, "0") for name in self.ub_names
         }
+        self.ub_pointer_initial_bytes: Dict[str, str] = {
+            name: "0" for name in self.ub_names
+        }
+        self.ub_pointer_element_sizes: Dict[str, int] = {}
+        for name in self.ub_names:
+            element_size = int(scope.param_element_sizes.get(name, 0))
+            if self.ub_address_experiment and element_size <= 0:
+                raise ValueError(
+                    "UB address experiment requires a known element width for "
+                    f"parameter {name!r}"
+                )
+            self.ub_pointer_element_sizes[name] = (
+                element_size if element_size > 0 else 1
+            )
+        self._next_pointer_state_id = 0
+        self.ub_pointer_state_ids: Dict[str, str] = {
+            name: self._new_pointer_state_id(name) for name in self.ub_names
+        }
+        self.updated_pointer_names: set[str] = set()
         self.scalar_names = {
             name for name, storage in scope.param_storage.items() if storage == "Scalar"
         }
@@ -197,8 +254,15 @@ class _VFScopeParser:
         saved_scalar_initializers = dict(self.local_scalar_initializers)
         saved_ub_names = set(self.ub_names)
         saved_ub_aliases = dict(self.ub_aliases)
+        saved_pointer_initial_bytes = dict(self.ub_pointer_initial_bytes)
+        saved_pointer_element_sizes = dict(self.ub_pointer_element_sizes)
+        saved_pointer_state_ids = dict(self.ub_pointer_state_ids)
+        saved_updated_pointer_names = set(self.updated_pointer_names)
+        updated_pointer_names_after_block: set[str] = set()
         try:
-            return self._parse_block_contents(text, induction_variables, base_line)
+            nodes = self._parse_block_contents(text, induction_variables, base_line)
+            updated_pointer_names_after_block = set(self.updated_pointer_names)
+            return nodes
         finally:
             self.register_dtypes = saved_dtypes
             self.register_names = saved_names
@@ -208,6 +272,16 @@ class _VFScopeParser:
             self.local_scalar_initializers = saved_scalar_initializers
             self.ub_names = saved_ub_names
             self.ub_aliases = saved_ub_aliases
+            self.ub_pointer_initial_bytes = saved_pointer_initial_bytes
+            self.ub_pointer_element_sizes = saved_pointer_element_sizes
+            self.ub_pointer_state_ids = saved_pointer_state_ids
+            self.updated_pointer_names = saved_updated_pointer_names
+            if self.ub_address_experiment:
+                self.updated_pointer_names.update(
+                    updated_pointer_names_after_block.intersection(
+                        saved_pointer_state_ids
+                    )
+                )
 
     def _parse_block_contents(
         self,
@@ -298,7 +372,10 @@ class _VFScopeParser:
             self._record_local_scalar_decl_statement(stmt)
             return None
         if _LOCAL_UB_POINTER_DECL_RE.fullmatch(stmt):
-            self._record_local_ub_pointer_decl_statement(stmt)
+            self._record_local_ub_pointer_decl_statement(
+                stmt,
+                induction_variables=induction_variables,
+            )
             return None
         if _VOID_USE_RE.fullmatch(stmt):
             return None
@@ -623,24 +700,61 @@ class _VFScopeParser:
             ),
             None,
         )
-        ub_reference = self._parse_ub_reference(
+        update_operand = next(
+            (operand for operand in spec.operands if operand.name == "update"),
+            None,
+        )
+        ub_reference = self._parse_ub_reference_details(
             args[memory_operand.argument_index]
         )
         if ub_reference is None:
             return ()
-        base_name, alias_offset = ub_reference
-        offset: int | str = alias_offset
+        (
+            base_name,
+            reference_offset,
+            pointer_name,
+            pointer_initial_bytes,
+            inline_offset,
+            element_size_bytes,
+        ) = ub_reference
+        is_post_update = bool(
+            update_operand is not None
+            and update_operand.argument_index < len(args)
+            and args[update_operand.argument_index].strip() == "POST_UPDATE"
+        )
+        raw_call_offset = "0"
         if offset_operand is not None and offset_operand.argument_index < len(args):
             raw_offset = args[offset_operand.argument_index].strip()
             if not re.fullmatch(r"vag_b(?:16|32)\s*\(.*\)", raw_offset, re.DOTALL):
-                expanded_offset = self._expand_offset_expression(raw_offset)
-                offset = self._combine_offset_expressions(
-                    alias_offset, expanded_offset
-                )
+                raw_call_offset = self._expand_offset_expression(raw_offset)
+        offset: int | str = reference_offset
+        if not is_post_update:
+            offset = self._combine_offset_expressions(
+                reference_offset, raw_call_offset
+            )
         mode = None
         if mode_operand is not None and mode_operand.argument_index < len(args):
             mode = args[mode_operand.argument_index].strip()
-        span = 1 if mode and (mode.startswith("BRC_") or mode.startswith("ONEPT_")) else None
+        mode_span_bytes = span_bytes_for_access_mode(
+            mode,
+            element_size_bytes=element_size_bytes,
+        )
+        span = 1 if mode_span_bytes is not None else None
+        inline_bytes = self._scale_offset_expression(
+            inline_offset, element_size_bytes
+        )
+        call_bytes = self._scale_offset_expression(
+            raw_call_offset, element_size_bytes
+        )
+        access_offset_bytes = inline_bytes
+        post_update_delta_bytes: int | str = 0
+        if is_post_update:
+            post_update_delta_bytes = call_bytes
+            self.updated_pointer_names.add(pointer_name)
+        else:
+            access_offset_bytes = self._combine_offset_expressions(
+                inline_bytes, call_bytes
+            )
         return (
             VFMemoryAccess(
                 value_id=base_name,
@@ -652,8 +766,29 @@ class _VFScopeParser:
                 offset=offset,
                 span=span,
                 mode=mode,
+                pointer_state_id=self.ub_pointer_state_ids[pointer_name],
+                pointer_initial_offset_bytes=pointer_initial_bytes,
+                access_offset_bytes=access_offset_bytes,
+                post_update_delta_bytes=post_update_delta_bytes,
+                span_bytes=mode_span_bytes,
             ),
         )
+
+    def _new_pointer_state_id(self, name: str) -> str:
+        state_id = (
+            f"{self.scope.kernel_name}:{name}:"
+            f"{self._next_pointer_state_id}"
+        )
+        self._next_pointer_state_id += 1
+        return state_id
+
+    @staticmethod
+    def _scale_offset_expression(expression: str, scale: int) -> str:
+        if expression.strip() == "0":
+            return "0"
+        if scale == 1:
+            return expression
+        return f"({expression}) * {scale}"
 
     @staticmethod
     def _combine_offset_expressions(lhs: str, rhs: str) -> str:
@@ -667,6 +802,15 @@ class _VFScopeParser:
         return self.ub_aliases.get(name, (name, "0"))
 
     def _parse_ub_reference(self, expression: str) -> tuple[str, str] | None:
+        details = self._parse_ub_reference_details(expression)
+        if details is None:
+            return None
+        return details[0], details[1]
+
+    def _parse_ub_reference_details(
+        self,
+        expression: str,
+    ) -> tuple[str, str, str, str, str, int] | None:
         value = _strip_ub_reference_wrappers(expression)
         match = re.fullmatch(
             r"(?P<base>[A-Za-z_]\w*)(?:\s*\+\s*(?P<offset>.+))?",
@@ -679,13 +823,30 @@ class _VFScopeParser:
         if source_name not in self.ub_names:
             return None
         base_name, alias_offset = self._resolve_ub_alias(source_name)
+        pointer_initial_bytes = self.ub_pointer_initial_bytes.get(
+            source_name, "0"
+        )
+        element_size_bytes = int(
+            self.ub_pointer_element_sizes.get(source_name, 1)
+        )
         offset = match.group("offset")
         if offset is None:
-            return base_name, alias_offset
+            return (
+                base_name,
+                alias_offset,
+                source_name,
+                pointer_initial_bytes,
+                "0",
+                element_size_bytes,
+            )
         inline_offset = self._expand_offset_expression(offset)
         return (
             base_name,
             self._combine_offset_expressions(alias_offset, inline_offset),
+            source_name,
+            pointer_initial_bytes,
+            inline_offset,
+            element_size_bytes,
         )
 
     def _expand_offset_expression(self, expression: str) -> str:
@@ -783,19 +944,55 @@ class _VFScopeParser:
                 continue
             self.local_scalar_initializers[name] = initializer.strip()
 
-    def _record_local_ub_pointer_decl_statement(self, stmt: str) -> None:
+    def _record_local_ub_pointer_decl_statement(
+        self,
+        stmt: str,
+        *,
+        induction_variables: frozenset[str],
+    ) -> None:
         match = _LOCAL_UB_POINTER_DECL_RE.fullmatch(stmt)
         if not match:
             raise ValueError(f"Unsupported local UB pointer declaration: {stmt}")
+        if self.ub_address_experiment and induction_variables:
+            raise ValueError(
+                "UB address experiment does not support pointer declarations "
+                f"inside dynamic loops: {stmt}"
+            )
         name = match.group("name")
+        dtype = match.group("dtype")
         initializer = match.group("initializer").strip()
-        ub_reference = self._parse_ub_reference(initializer)
+        ub_reference = self._parse_ub_reference_details(initializer)
         if ub_reference is None:
             raise ValueError(
                 f"Unsupported local UB pointer initializer: {stmt}"
             )
+        (
+            base_name,
+            reference_offset,
+            source_pointer,
+            source_initial_bytes,
+            inline_offset,
+            source_element_size,
+        ) = ub_reference
+        if self.ub_address_experiment and source_pointer in self.updated_pointer_names:
+            raise ValueError(
+                "UB address experiment cannot snapshot an already POST_UPDATE "
+                f"pointer in a new alias: {stmt}"
+            )
         self.ub_names.add(name)
-        self.ub_aliases[name] = ub_reference
+        self.ub_aliases[name] = (base_name, reference_offset)
+        self.ub_pointer_initial_bytes[name] = self._combine_offset_expressions(
+            source_initial_bytes,
+            self._scale_offset_expression(inline_offset, source_element_size),
+        )
+        element_size = _c_type_size_bytes(dtype)
+        if self.ub_address_experiment and element_size is None:
+            raise ValueError(
+                "UB address experiment requires a known element width for "
+                f"local pointer {name!r} with type {dtype!r}"
+            )
+        self.ub_pointer_element_sizes[name] = element_size or 1
+        self.ub_pointer_state_ids[name] = self._new_pointer_state_id(name)
 
     def _loop_count_from_header(self, header: str) -> tuple[int, str, int, int]:
         parts = [part.strip() for part in header.split(";")]
@@ -859,6 +1056,44 @@ def _parse_param_storage(params: str) -> Dict[str, str]:
         name = match.group(1)
         storage[name] = "UB" if "__ubuf__" in cleaned else "Scalar"
     return storage
+
+
+def _c_type_size_bytes(dtype: str) -> int | None:
+    normalized = str(dtype).strip().lower()
+    if normalized in {
+        "half",
+        "bfloat16",
+        "bfloat16_t",
+        "bf16",
+        "short",
+        "uint16_t",
+        "int16_t",
+    }:
+        return 2
+    if normalized in {"float", "uint32_t", "int32_t", "unsigned", "int"}:
+        return 4
+    if normalized in {"double", "uint64_t", "int64_t", "long"}:
+        return 8
+    if normalized in {"char", "uint8_t", "int8_t"}:
+        return 1
+    return None
+
+
+def _parse_ub_param_element_sizes(params: str) -> Dict[str, int]:
+    sizes: Dict[str, int] = {}
+    for raw in _split_args(params):
+        if "__ubuf__" not in raw:
+            continue
+        match = re.search(
+            r"__ubuf__\s+(?:const\s+)?(?P<dtype>[A-Za-z_]\w*)"
+            r"\s*[*&]+\s*(?P<name>[A-Za-z_]\w*)",
+            raw,
+        )
+        if match is None:
+            continue
+        size = _c_type_size_bytes(match.group("dtype"))
+        sizes[match.group("name")] = size or 0
+    return sizes
 
 
 def _infer_call_argument_constants(source: str, scope: CCEVFScope) -> Dict[str, int]:

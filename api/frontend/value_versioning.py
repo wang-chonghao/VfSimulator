@@ -40,6 +40,29 @@ def _safe_id(value: str) -> str:
     return text or "value"
 
 
+def _dtype_size_bytes(dtype: str | None) -> int | None:
+    normalized = str(normalize_dtype(dtype) or "").lower()
+    if normalized in {"fp16", "bf16", "b16", "int16", "uint16"}:
+        return 2
+    if normalized in {"fp32", "b32", "int32", "uint32"}:
+        return 4
+    if normalized in {"int8", "uint8"}:
+        return 1
+    if normalized in {"int64", "uint64", "fp64"}:
+        return 8
+    return None
+
+
+def _scale_affine(expression: AffineExpression, factor: int) -> AffineExpression:
+    return AffineExpression(
+        constant=expression.constant * factor,
+        terms=tuple(
+            AffineTerm(term.variable_id, term.coefficient * factor)
+            for term in expression.terms
+        ),
+    )
+
+
 def _affine_expression(
     value: int | str,
     *,
@@ -124,8 +147,23 @@ class ValueVersioningPass:
         self._logical_values = {}
         self._params: dict[str, int] = {}
         self._node_ids: set[str] = set()
+        self._ub_experiment_accesses: dict[str, tuple[object, ...]] = {}
+        self._collect_ub_experiment_metadata = False
 
     def run(self, vf_info: VFInfo, *, source: Mapping[str, object] | None = None) -> CanonicalVfInfo:
+        return self._run(
+            vf_info,
+            source=source,
+            collect_ub_experiment_metadata=False,
+        )
+
+    def _run(
+        self,
+        vf_info: VFInfo,
+        *,
+        source: Mapping[str, object] | None,
+        collect_ub_experiment_metadata: bool,
+    ) -> CanonicalVfInfo:
         from api.vf_info import canonicalize_vf_info
 
         normalized = canonicalize_vf_info(vf_info)
@@ -135,6 +173,10 @@ class ValueVersioningPass:
         self._logical_values = dict(normalized.values)
         self._params = dict(normalized.params)
         self._node_ids = set()
+        self._ub_experiment_accesses = {}
+        self._collect_ub_experiment_metadata = bool(
+            collect_ub_experiment_metadata
+        )
 
         environment: dict[str, str] = {}
         context, _ = self._version_nodes(
@@ -156,6 +198,25 @@ class ValueVersioningPass:
 
             raise VfInfoValidationError(validation.errors)
         return canonical
+
+    def run_with_ub_experiment_metadata(
+        self,
+        vf_info: VFInfo,
+        *,
+        source: Mapping[str, object] | None = None,
+    ):
+        from .ub_address_experiment import PythonUbAddressExperimentMetadata
+
+        canonical = self._run(
+            vf_info,
+            source=source,
+            collect_ub_experiment_metadata=True,
+        )
+        metadata = PythonUbAddressExperimentMetadata(
+            accesses_by_instruction=dict(self._ub_experiment_accesses)
+        )
+        metadata.validate(canonical)
+        return canonical, metadata
 
     def _next_node_id(self, kind: str, preferred: str | None = None) -> str:
         if preferred:
@@ -349,19 +410,90 @@ class ValueVersioningPass:
             if storage != StorageKind.UB:
                 current[logical_id] = definition_id
 
-        return (
-            CanonicalInstruction(
-                instruction_id=instruction_id,
-                opcode=node.name,
-                instruction_class=instruction_class,
-                form=str(node.form or "fp32"),
-                inputs=tuple(inputs),
-                outputs=tuple(outputs),
-                attributes=dict(node.attributes),
-                source_location=node.source_location,
-            ),
-            current,
+        instruction = CanonicalInstruction(
+            instruction_id=instruction_id,
+            opcode=node.name,
+            instruction_class=instruction_class,
+            form=str(node.form or "fp32"),
+            inputs=tuple(inputs),
+            outputs=tuple(outputs),
+            attributes=dict(node.attributes),
+            source_location=node.source_location,
         )
+        self._record_ub_experiment_accesses(
+            instruction_id,
+            node.memory_accesses,
+            induction_variables,
+        )
+        return instruction, current
+
+    def _record_ub_experiment_accesses(
+        self,
+        instruction_id: str,
+        accesses: tuple[VFMemoryAccess, ...],
+        induction_variables: frozenset[str],
+    ) -> None:
+        if not self._collect_ub_experiment_metadata or not accesses:
+            return
+        from .ub_address_experiment import UbStaticAccess
+
+        static_accesses = []
+        for access in accesses:
+            logical = self._logical_values.get(str(access.value_id))
+            if logical is None or logical.storage != "UB":
+                continue
+            base_object_id = f"ub.{_safe_id(str(access.value_id))}"
+            element_size = _dtype_size_bytes(logical.dtype)
+            pointer_initial = _affine_expression(
+                access.pointer_initial_offset_bytes
+                if access.pointer_initial_offset_bytes is not None
+                else 0,
+                params=self._params,
+                induction_variables=induction_variables,
+            )
+            if access.access_offset_bytes is not None:
+                access_offset = _affine_expression(
+                    access.access_offset_bytes,
+                    params=self._params,
+                    induction_variables=induction_variables,
+                )
+            else:
+                element_offset = _affine_expression(
+                    access.offset,
+                    params=self._params,
+                    induction_variables=induction_variables,
+                )
+                access_offset = (
+                    _scale_affine(element_offset, element_size)
+                    if element_size is not None
+                    else element_offset
+                )
+            post_update = _affine_expression(
+                access.post_update_delta_bytes
+                if access.post_update_delta_bytes is not None
+                else 0,
+                params=self._params,
+                induction_variables=induction_variables,
+            )
+            span_bytes = access.span_bytes
+            if span_bytes is None and access.span is not None and element_size is not None:
+                span_bytes = int(access.span) * element_size
+            static_accesses.append(
+                UbStaticAccess(
+                    base_object_id=base_object_id,
+                    pointer_state_id=(
+                        access.pointer_state_id or base_object_id
+                    ),
+                    pointer_initial_offset_bytes=pointer_initial,
+                    access_offset_bytes=access_offset,
+                    post_update_delta_bytes=post_update,
+                    access_kind=access.access_kind,
+                    span_bytes=span_bytes,
+                    access_mode=access.mode,
+                )
+            )
+        if static_accesses:
+            self._ub_experiment_accesses[instruction_id] = tuple(static_accesses)
 
     def _operand(
         self,

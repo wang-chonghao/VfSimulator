@@ -29,6 +29,8 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.ub_address_dependency import UbDynamicAddressGenerator
+
 def _is_pow2(u: int) -> bool:
     return u > 0 and (u & (u - 1)) == 0
 
@@ -112,12 +114,19 @@ class IFUUnroll:
         dtype: str = "fp32",
         structured_value_identity: bool = False,
         structured_dynamic_instruction_limit: int | None = None,
+        ub_dependency_mode: str = "disabled",
     ):
         self.nodes = [dict(x) for x in (linear_nodes or [])]
         self.params = dict(params or {})
         self.db = pdb
         self.dtype = str(dtype)
         self.structured_value_identity = bool(structured_value_identity)
+        self.ub_dependency_mode = str(ub_dependency_mode)
+        self.ub_address_generator = (
+            UbDynamicAddressGenerator(self.params)
+            if self.ub_dependency_mode == "range_overlap"
+            else None
+        )
         uarch = self.db.get_uarch() if self.db is not None else {}
         configured_limit = (
             structured_dynamic_instruction_limit
@@ -558,6 +567,9 @@ class IFUUnroll:
         out["block_key_by_level"] = self._build_block_key_by_level(loop_stack, iter_stack)
         out["block_end_levels"] = self._calc_block_end_levels_normal()
 
+        if self.ub_address_generator is not None:
+            self.ub_address_generator.attach(out)
+
         return out
 
     def _emit_normal_membar(self, n: Dict[str, Any]) -> Dict[str, Any]:
@@ -758,6 +770,8 @@ class IFUUnroll:
                 self.inst_id += 1
                 inst["stream_seq"] = self.stream_seq
                 self.stream_seq += 1
+                if self.ub_address_generator is not None:
+                    self.ub_address_generator.attach(inst)
                 pending.append(inst)
 
         if pending:

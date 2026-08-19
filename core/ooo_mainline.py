@@ -414,6 +414,11 @@ class RenameController:
             iteration_path=iteration_path,
             src_value_instances=src_value_instances,
             dst_value_instances=dst_value_instances,
+            memory_ranges=[
+                dict(item)
+                for item in inst.get("memory_ranges", [])
+                if isinstance(item, dict)
+            ],
         )
         setattr(u, "preg_src_gen", preg_src_gen)
 
@@ -423,6 +428,7 @@ class RenameController:
         if profile.op_class in ("LOAD", "STORE"):
             u.lsq_ready_cycle = int(self.core.cycle) + max(0, int(self.core.ooo_to_lsq_delay))
             self.core.LSQ.append(u)
+            self.core._record_ub_lsu(u)
         else:
             u.shq_ready_cycle = int(self.core.cycle) + max(0, int(self.core.ooo_to_shq_delay))
             self.core.SHQ.append(u)
@@ -780,6 +786,8 @@ class OoOCoreMainline(OoOCore):
             if self._blocked_by_control_unit(u):
                 self._log_membar_blocked(u)
                 continue
+            if self._blocked_by_ub_dependency(u):
+                continue
 
             u.start_cycle = c
             u.blocked_reason = None
@@ -861,6 +869,8 @@ class OoOCoreMainline(OoOCore):
                 break
             if self._blocked_by_control_unit(u):
                 self._log_membar_blocked(u)
+                continue
+            if self._blocked_by_ub_dependency(u):
                 continue
             if u.producer_op_for_store is None:
                 continue

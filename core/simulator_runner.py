@@ -276,8 +276,11 @@ def run_simulation(
             instruction_warnings=pdb.get_warnings(),
         )
 
-    return {
+    result = {
         "cycles_executed": int(cycle),
         "vf_end_cycle": int(ooo.vf_end_cycle()),
         "results_dir": str(results_dir),
     }
+    if hasattr(ooo, "memory_ordering_stats"):
+        result["memory_ordering_stats"] = ooo.memory_ordering_stats()
+    return result

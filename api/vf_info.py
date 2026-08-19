@@ -74,6 +74,11 @@ class VFMemoryAccess:
     offset: int | str = 0
     span: int | None = None
     mode: str | None = None
+    pointer_state_id: str | None = None
+    pointer_initial_offset_bytes: int | str | None = None
+    access_offset_bytes: int | str | None = None
+    post_update_delta_bytes: int | str | None = None
+    span_bytes: int | None = None
 
 
 @dataclass

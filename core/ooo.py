@@ -10,6 +10,7 @@ import json
 
 from core.isa_traits import is_compute_op, is_load_op, is_store_op
 from core.instruction_profile import InstructionProfile
+from core.ub_address_dependency import DynamicMemoryRange, dependency_conflict
 from core.value_storage import ValueStorageLookup
 
 
@@ -49,6 +50,8 @@ class Uop:
     exu_port: Optional[int] = None
     shq_ready_cycle: int = 0
     lsq_ready_cycle: int = 0
+    memory_ranges: List[Dict[str, Any]] = field(default_factory=list)
+    blocked_by_inst_ids: List[int] = field(default_factory=list)
 
 
 class OoOCore:
@@ -58,6 +61,7 @@ class OoOCore:
         self.value_storage = ValueStorageLookup(values)
         self.theoretical_limit_mode = bool(uarch.get("theoretical_limit_mode", False))
         self.three_ports_mode = bool(uarch.get("three_ports_mode", False))
+        self.ub_dependency_mode = str(uarch.get("ub_dependency_mode", "disabled"))
 
         self.load_ports = int(uarch.get("load_ports", 2))
         self.issue_ports = int(uarch.get("issue_ports", 2))  # total EXU count
@@ -79,6 +83,16 @@ class OoOCore:
         self.SHQ: List[Uop] = []   # compute queue (SHQ)
         self.LSQ: List[Uop] = []   # VLD/VST only
         self.ROB: Deque[Uop] = deque()
+        self.ub_lsu_history: List[Uop] = []
+        self._ub_history_pruned_cycle = -1
+        self._ub_fallback_warning_keys: set[tuple[Any, ...]] = set()
+        self._ub_dependency_edges: set[tuple[int, int]] = set()
+        self._ub_precise_dependency_edges: set[tuple[int, int]] = set()
+        self._ub_fallback_dependency_edges: set[tuple[int, int]] = set()
+        self._ub_precise_accesses = 0
+        self._ub_total_accesses = 0
+        self._ub_dependency_blocked_cycles = 0
+        self._membar_blocked_cycles = 0
 
         # dependency tracking
         self.preg_producer: Dict[str, Tuple[str, str, int, str]] = {}
@@ -156,6 +170,8 @@ class OoOCore:
             "form": u.form,
             "state": u.state,
             "blocked_reason": u.blocked_reason,
+            "blocked_by_inst_ids": list(u.blocked_by_inst_ids),
+            "memory_ranges": list(u.memory_ranges),
             "ready": u.ready_cycle,
             "start": u.start_cycle,
             "done": u.done_cycle,
@@ -182,6 +198,7 @@ class OoOCore:
             "form": u.form,
             "dst": u.dst,
             "src": u.src,
+            "memory_ranges": list(u.memory_ranges),
         })
 
     def _log_done_simple(self, u: Uop) -> None:
@@ -411,10 +428,163 @@ class OoOCore:
         )
 
     def _log_membar_blocked(self, u: Uop) -> None:
+        self._membar_blocked_cycles += 1
         old_reason = u.blocked_reason
         u.blocked_reason = "membar"
         self._log("blocked", u)
         u.blocked_reason = old_reason
+
+    @staticmethod
+    def _dynamic_range(raw: Dict[str, Any], access_kind: str) -> DynamicMemoryRange:
+        return DynamicMemoryRange(
+            base_object_id=raw.get("base_object_id"),
+            byte_start=raw.get("byte_start"),
+            byte_end=raw.get("byte_end"),
+            access_kind=str(raw.get("access_kind", access_kind)),
+            unresolved_reason=raw.get("unresolved_reason"),
+        )
+
+    def _record_ub_dependency_fallback(
+        self,
+        u: Uop,
+        *,
+        reason: str,
+        fallback_scope: str,
+    ) -> None:
+        key = (u.inst_id, reason, fallback_scope)
+        if key in self._ub_fallback_warning_keys:
+            return
+        self._ub_fallback_warning_keys.add(key)
+        if hasattr(self.db, "record_warning"):
+            self.db.record_warning(
+                "ub_address_dependency_fallback",
+                op=u.op,
+                static_instruction_id=u.static_instruction_id,
+                stream_seq=u.stream_seq,
+                base_object_id=(
+                    u.memory_ranges[0].get("base_object_id")
+                    if u.memory_ranges
+                    else None
+                ),
+                reason=reason,
+                fallback_scope=fallback_scope,
+            )
+
+    def _ub_dependency_blockers(self, u: Uop) -> List[int]:
+        if self.ub_dependency_mode != "range_overlap" or u.profile is None:
+            return []
+        current_class = u.profile.op_class
+        prior_class = "STORE" if current_class == "LOAD" else "LOAD"
+        if current_class not in {"LOAD", "STORE"}:
+            return []
+        self._prune_ub_lsu_history()
+        current_ranges = [
+            self._dynamic_range(item, current_class.lower())
+            for item in u.memory_ranges
+        ] or [DynamicMemoryRange(None, None, None, current_class.lower(), "missing_metadata")]
+        blockers: List[int] = []
+        for prior in self.ub_lsu_history:
+            if prior is u or prior.profile is None:
+                continue
+            if prior.profile.op_class != prior_class:
+                continue
+            if prior.stream_seq >= u.stream_seq:
+                continue
+            if prior.done_cycle is not None and self.cycle > prior.done_cycle:
+                continue
+            prior_ranges = [
+                self._dynamic_range(item, prior_class.lower())
+                for item in prior.memory_ranges
+            ] or [DynamicMemoryRange(None, None, None, prior_class.lower(), "missing_metadata")]
+            conflicts = False
+            conflict_used_fallback = False
+            for prior_range in prior_ranges:
+                for current_range in current_ranges:
+                    conflict, fallback_scope, reason = dependency_conflict(
+                        prior_range, current_range
+                    )
+                    if conflict and fallback_scope is not None:
+                        self._record_ub_dependency_fallback(
+                            u,
+                            reason=str(reason),
+                            fallback_scope=fallback_scope,
+                        )
+                    if conflict:
+                        conflicts = True
+                        conflict_used_fallback = fallback_scope is not None
+                        break
+                if conflicts:
+                    break
+            if conflicts:
+                blockers.append(prior.inst_id)
+                edge = (prior.inst_id, u.inst_id)
+                self._ub_dependency_edges.add(edge)
+                if conflict_used_fallback:
+                    self._ub_fallback_dependency_edges.add(edge)
+                else:
+                    self._ub_precise_dependency_edges.add(edge)
+        return blockers
+
+    def _prune_ub_lsu_history(self) -> None:
+        if self._ub_history_pruned_cycle == self.cycle:
+            return
+        self._ub_history_pruned_cycle = self.cycle
+        self.ub_lsu_history[:] = [
+            prior
+            for prior in self.ub_lsu_history
+            if prior.done_cycle is None or self.cycle <= prior.done_cycle
+        ]
+
+    def _blocked_by_ub_dependency(self, u: Uop) -> bool:
+        blockers = self._ub_dependency_blockers(u)
+        u.blocked_by_inst_ids = blockers
+        if not blockers:
+            return False
+        self._ub_dependency_blocked_cycles += 1
+        old_reason = u.blocked_reason
+        u.blocked_reason = "ub_address_dependency"
+        self._log("blocked", u)
+        u.blocked_reason = old_reason
+        return True
+
+    def _record_ub_lsu(self, u: Uop) -> None:
+        if self.ub_dependency_mode != "range_overlap":
+            return
+        self.ub_lsu_history.append(u)
+        ranges = [
+            self._dynamic_range(item, "") for item in u.memory_ranges
+        ]
+        self._ub_total_accesses += max(1, len(ranges))
+        self._ub_precise_accesses += sum(item.resolved for item in ranges)
+
+    def memory_ordering_stats(self) -> Dict[str, Any]:
+        total = int(self._ub_total_accesses)
+        precise = int(self._ub_precise_accesses)
+        same_base_fallbacks = sum(
+            key[2] == "same_base" for key in self._ub_fallback_warning_keys
+        )
+        global_fallbacks = sum(
+            key[2] == "global" for key in self._ub_fallback_warning_keys
+        )
+        return {
+            "precise_access_count": precise,
+            "total_access_count": total,
+            "precise_access_ratio": (precise / total if total else 0.0),
+            "local_dependency_edges": len(self._ub_dependency_edges),
+            "precise_dependency_edges": len(
+                self._ub_precise_dependency_edges
+            ),
+            "fallback_dependency_edges": len(
+                self._ub_fallback_dependency_edges
+            ),
+            "fallback_warning_count": len(self._ub_fallback_warning_keys),
+            "same_base_fallback_count": same_base_fallbacks,
+            "global_fallback_count": global_fallbacks,
+            "membar_blocked_cycles": int(self._membar_blocked_cycles),
+            "ub_dependency_blocked_cycles": int(
+                self._ub_dependency_blocked_cycles
+            ),
+        }
 
     def _store_ready_cycle(self, u: Uop) -> Tuple[int, Optional[str], Optional[str], Optional[int]]:
         for ps in u.preg_src:
