@@ -11,7 +11,6 @@
 
 #include "native/IDU.h"
 #include "native/OOO.h"
-#include "api/native/VfInfo.h"
 #include "api/native/CanonicalVfInfo.h"
 
 #include <string>
@@ -23,11 +22,6 @@ struct SimulationResult {
   int64_t vfEndCycle = 0;
   std::string resultsDir;
 };
-
-SimulationResult runVfInfo(const VfInfo &vfInfo,
-                           const ParamDB &db,
-                           const std::string &resultsDir = {},
-                           int64_t maxCycles = 1000000);
 
 SimulationResult runCanonicalVfInfo(const CanonicalVfInfo &vfInfo,
                                     const ParamDB &db,

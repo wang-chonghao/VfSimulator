@@ -6,6 +6,7 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
+#include "api/native/LegacyVfInfoAdapter.h"
 #include "native/IFU.h"
 #include "native/IDU.h"
 #include "native/OOO.h"
@@ -28,6 +29,13 @@
 namespace {
 
 using namespace vfsim;
+
+SimulationResult runLegacyForTest(const VfInfo &vfInfo, const ParamDB &db,
+                                  const std::string &resultsDir = {},
+                                  int64_t maxCycles = 1000000) {
+  return runCanonicalVfInfo(adaptLegacyVfInfoToCanonical(vfInfo), db,
+                            resultsDir, maxCycles);
+}
 
 void require(bool cond, const std::string &msg) {
   if (!cond)
@@ -533,7 +541,7 @@ void verifyNativeVpackVsstbScheduling(const ParamDB &db) {
   vfInfo.body = {makeLoopNode("1", {vlds, vpack, vsstb})};
 
   const auto outDir = std::filesystem::temp_directory_path() / "vfsim_native_vpack_vsstb";
-  const auto result = runVfInfo(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
+  const auto result = runLegacyForTest(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
   require(result.vfEndCycle > 0, "native VPACK/VSSTB scheduling did not complete");
   const std::string starts = readText(outDir / "start_by_cycle.json");
   const std::string warnings = readText(outDir / "model_warnings.json");
@@ -586,7 +594,7 @@ void verifyExplicitMembarTiming(const ParamDB &db) {
        makeInstNode("VADDS", {"v2"}, {"v0"})})};
 
   const auto outDir = std::filesystem::temp_directory_path() / "vfsim_native_membar";
-  const auto result = runVfInfo(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
+  const auto result = runLegacyForTest(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
   require(result.vfEndCycle > 0, "native membar run did not complete");
   const std::string starts = readText(outDir / "start_by_cycle.json");
   const std::string dones = readText(outDir / "done_by_cycle.json");
@@ -613,7 +621,7 @@ void verifyMembarUsesDynamicStreamSequence(const ParamDB &db) {
        makeInstNode("VLDS", {"v1"}, {"memC"})})};
 
   const auto outDir = std::filesystem::temp_directory_path() / "vfsim_native_membar_dynamic";
-  (void)runVfInfo(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
+  (void)runLegacyForTest(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
   const std::string starts = readText(outDir / "start_by_cycle.json");
   const std::string dones = readText(outDir / "done_by_cycle.json");
   const int64_t firstPostBarrierLoadStart = cycleForInstId(starts, 2);
@@ -632,7 +640,7 @@ void verifyNativeLoadStoreDurationUsesOwnLatency() {
        makeInstNode("VSTS", {"memB"}, {"v0"})})};
 
   const auto outDir = std::filesystem::temp_directory_path() / "vfsim_native_lsu_duration";
-  (void)runVfInfo(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
+  (void)runLegacyForTest(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
   const std::string starts = readText(outDir / "start_by_cycle.json");
   const std::string dones = readText(outDir / "done_by_cycle.json");
   require(cycleForInstId(dones, 0) - cycleForInstId(starts, 0) == 5,
@@ -651,7 +659,7 @@ void verifyNativeNoImplicitUbStoreLoadDependency(const ParamDB &db) {
        makeInstNode("VLDS", {"v1"}, {"memA"})})};
 
   const auto outDir = std::filesystem::temp_directory_path() / "vfsim_native_store_load_dep";
-  (void)runVfInfo(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
+  (void)runLegacyForTest(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
   const std::string starts = readText(outDir / "start_by_cycle.json");
   const std::string dones = readText(outDir / "done_by_cycle.json");
   require(cycleForInstId(starts, 2) < cycleForInstId(dones, 1),
@@ -666,7 +674,7 @@ void verifyUnsupportedMembarWarning(const ParamDB &db) {
       {makeMembarNode("VV_ALL"),
        makeInstNode("VLDS", {"v0"}, {"memA"})})};
   const auto outDir = std::filesystem::temp_directory_path() / "vfsim_native_bad_membar";
-  (void)runVfInfo(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
+  (void)runLegacyForTest(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
   const std::string warnings = readText(outDir / "model_warnings.json");
   require(warnings.find("unsupported_membar_type") != std::string::npos,
           "native unsupported membar must write warning");
@@ -754,7 +762,7 @@ void verifyNativeUnknownVcvtFallsBack(const ParamDB &db) {
       {makeInstNode("vcvt", {"ival"}, {"half"})})};
 
   const auto outDir = std::filesystem::temp_directory_path() / "vfsim_native_unknown_vcvt";
-  (void)runVfInfo(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
+  (void)runLegacyForTest(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
   const std::string warnings = readText(outDir / "model_warnings.json");
   require(warnings.find("unsupported_isa_op") != std::string::npos,
           "native unknown vcvt must fall back through ParamDB warning");
@@ -771,7 +779,7 @@ void verifySingleIterationLoopRunner(const ParamDB &db) {
        makeInstNode("VADD", {"V3"}, {"V1", "V2"}),
        makeInstNode("VSTS", {"memC"}, {"V3"})})};
 
-  const auto result = runVfInfo(vfInfo, db, "", /*maxCycles=*/100000);
+  const auto result = runLegacyForTest(vfInfo, db, "", /*maxCycles=*/100000);
   require(result.cyclesExecuted == 43,
           "single-iteration canonicalized run cycles mismatch: " +
               std::to_string(result.cyclesExecuted));

@@ -7,6 +7,7 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 #include "api/native/JsonVfInfoAdapter.h"
+#include "api/native/LegacyVfInfoAdapter.h"
 #include "native/ParamDB.h"
 #include "native/SimulatorRunner.h"
 
@@ -57,8 +58,9 @@ int main(int argc, char **argv) {
     ParamDB db(root);
 
     const VfInfo vfInfo = loadJsonVfInfo(args.tracePath);
-    const auto result =
-        runVfInfo(vfInfo, db, args.outDir.string(), args.maxCycles);
+    const auto result = runCanonicalVfInfo(
+        adaptLegacyVfInfoToCanonical(vfInfo), db, args.outDir.string(),
+        args.maxCycles);
 
     std::cout << "cyclesExecuted=" << result.cyclesExecuted << "\n";
     std::cout << "vfEndCycle=" << result.vfEndCycle << "\n";
