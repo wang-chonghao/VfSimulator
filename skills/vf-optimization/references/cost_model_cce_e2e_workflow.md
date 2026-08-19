@@ -1,10 +1,10 @@
-# Cost Model and CCE End-to-End Workflow
+# Cost Model 与 CCE 端到端工作流
 
-This document describes the current end-to-end flow from CCE source to model prediction and model-vs-CCE comparison.
+本文说明从 CCE 源码到 VfSim 预测，以及 VfSim 与 CCE/Camodel 结果对比的当前工作流。
 
-## 1. Model Path From CCE Source
+## 1. 从 CCE 源码运行模型
 
-The mainline model can read CCE/DSL directly:
+主线模型可以直接读取 CCE/DSL：
 
 ```bash
 python main.py ^
@@ -12,19 +12,19 @@ python main.py ^
   --out_dir results/tmp_model/gelu_poly_cce
 ```
 
-Internally this path is:
+内部链路为：
 
 ```text
-CCE/DSL source
-  -> extract __VEC_SCOPE__ kernel
-  -> api.cce_adapter.parse_cce_vf_info
-  -> VFInfo
-  -> api.vf_lowering.VFInfoLowerer
-  -> simulator payload
+CCE/DSL 源码
+  -> 提取 __VEC_SCOPE__ kernel
+  -> api.cce_adapter.parse_cce_canonical_vf_info
+  -> CanonicalVfInfo
+  -> api.frontend.CoreLoweringPass
+  -> Core payload
   -> core simulator
 ```
 
-If the file contains multiple VF kernels:
+文件包含多个 VF kernel 时需要显式选择：
 
 ```bash
 python main.py ^
@@ -33,47 +33,92 @@ python main.py ^
   --out_dir results/tmp_model/selected_kernel
 ```
 
-Useful API calls:
+对应 Python API：
 
 ```python
-from api.cce_adapter import list_cce_vf_kernels, parse_cce_vf_info
-from api.simulator_costmodel import CoreVfCostModel, predict_cce_file_cycles
-
-kernels = list_cce_vf_kernels("cce_code/example.dsl")
-vf_info = parse_cce_vf_info("cce_code/example.dsl", kernel_name=kernels[0])
-cycles = CoreVfCostModel(out_dir="results/api_costmodel/example").predict_vf_cycles(vf_info)
-```
-
-## 2. Direct VFInfo Path
-
-You can bypass JSON/CCE and construct `VFInfo` directly:
-
-```python
-from api.vf_costmodel import MemInfo, VFInfo, VFInst, VFLoop
+from api.cce_adapter import list_cce_vf_kernels, parse_cce_canonical_vf_info
 from api.simulator_costmodel import CoreVfCostModel
 
-vf = VFInfo(
-    context=[
-        VFLoop(
-            count=16,
-            unroll=1,
-            body=[
-                VFInst("VLD", src=[MemInfo("x", "UB")], dst=[MemInfo("a", "Register")]),
-                VFInst("VADDS", src=[MemInfo("a", "Register")], dst=[MemInfo("b", "Register")]),
-                VFInst("VST", src=[MemInfo("b", "Register")], dst=[MemInfo("y", "UB")]),
-            ],
-        )
-    ]
+kernels = list_cce_vf_kernels("cce_code/example.dsl")
+vf_info = parse_cce_canonical_vf_info(
+    "cce_code/example.dsl",
+    kernel_name=kernels[0],
 )
-
-cycles = CoreVfCostModel(out_dir="results/api_costmodel/direct").predict_vf_cycles(vf)
+cycles = CoreVfCostModel(
+    out_dir="results/api_costmodel/example"
+).predict_canonical_vf_cycles(vf_info)
 ```
 
-This is useful for unit tests and micro-architecture experiments.
+也可以直接调用便利函数：
 
-## 3. Running CCE/Camodel
+```python
+from api.simulator_costmodel import predict_cce_file_cycles
 
-CCE native simulation is still a separate environment-dependent path. The common helper is:
+cycles = predict_cce_file_cycles(
+    "cce_code/example.dsl",
+    kernel_name="selected_kernel",
+)
+```
+
+## 2. 直接构造输入
+
+新代码应使用 `VfInfoBuilder` 构造 `CanonicalVfInfo`，避免依赖迁移期 `VFInfo` 的隐式补全：
+
+```python
+from api.frontend import (
+    CanonicalOperand,
+    InstructionClass,
+    OperandRole,
+    StorageKind,
+)
+from api.input_api import InputAPI
+from api.simulator_costmodel import CoreVfCostModel
+
+builder = InputAPI.new_vf_info_builder()
+for value_id in ("lhs.entry", "rhs.entry"):
+    builder.register_value(
+        value_id,
+        logical_id=value_id.split(".")[0],
+        storage=StorageKind.REGISTER,
+        dtype="fp32",
+    )
+builder.register_value(
+    "sum.def0",
+    logical_id="sum",
+    storage=StorageKind.REGISTER,
+    dtype="fp32",
+    producer_node_id="inst.add",
+)
+builder.add_instruction(
+    "inst.add",
+    opcode="VADD",
+    instruction_class=InstructionClass.COMPUTE,
+    form="fp32",
+    inputs=(
+        CanonicalOperand("lhs.entry", OperandRole.SOURCE, "fp32"),
+        CanonicalOperand("rhs.entry", OperandRole.SOURCE, "fp32"),
+    ),
+    outputs=(
+        CanonicalOperand("sum.def0", OperandRole.DESTINATION, "fp32"),
+    ),
+)
+canonical = builder.build()
+cycles = CoreVfCostModel().predict_canonical_vf_cycles(canonical)
+```
+
+旧 `VFInfo` 仍可用于已有测试和迁移期调用，但必须使用显式 legacy 入口：
+
+```python
+from api.simulator_costmodel import CoreVfCostModel
+
+cycles = CoreVfCostModel().predict_legacy_vf_cycles(legacy_vf_info)
+```
+
+`predict_vf_cycles()` 仅为弃用的源码兼容包装，新代码不应继续调用。
+
+## 3. 运行 CCE/Camodel
+
+CCE native 仿真依赖独立环境，常用辅助命令为：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\run_cce_round.ps1 `
@@ -82,7 +127,7 @@ powershell -ExecutionPolicy Bypass -File tools\run_cce_round.ps1 `
   -TotalElems 6144
 ```
 
-If WSL distribution naming or user context causes launch failures, pass the distro explicitly:
+如果 WSL distribution 名称或用户上下文导致启动失败，可以显式指定：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\run_cce_round.ps1 `
@@ -92,30 +137,32 @@ powershell -ExecutionPolicy Bypass -File tools\run_cce_round.ps1 `
   -WslDistro "-Ubuntu"
 ```
 
-Known caveat: Codex may run outside the normal Windows user context, so WSL commands that work manually can fail from the agent process. In that case, run the CCE command manually and let the model workflow consume the generated dumps.
+自动化进程的 Windows/WSL 用户上下文可能与手工终端不同。此时可以手工运行 CCE，再让模型侧工具读取生成的 dump。
 
-Common CCE/camodel dump files:
+常见 CCE/Camodel dump：
 
 - `core0.veccore0.instr_popped_log.dump`
 - `core0.veccore0.instr_log.dump`
 - `core0.veccore0.rvec.EXU.dump`
 - `core0.veccore0.rvec.IDU.dump`
 
-CCE timing is usually compared as:
+CCE 时序通常按下式统计：
 
 ```text
 CCE VF total = VF_end - VF_start
 ```
 
-Model timing is:
+模型侧使用：
 
 ```text
 VF end cycle (with drain)
 ```
 
-## 4. IPC Comparison
+对比前必须确认两侧使用相同的 VF 起止和排空口径。
 
-For CCE EXU dump versus model start log:
+## 4. IPC 对比
+
+使用 CCE EXU dump 和模型 start log 绘制 IPC：
 
 ```bash
 python tools/plot_cce_model_ipc_compare.py ^
@@ -127,44 +174,45 @@ python tools/plot_cce_model_ipc_compare.py ^
   --out-csv results/ipc_compare/cce_vs_model.csv
 ```
 
-The IPC comparison should usually count compute instructions only. Exclude VLD/VST, SEND, and PSET-like instructions when the goal is compute-issue behavior.
+分析计算发射行为时，通常只统计 compute 指令，排除 VLD/VST、SEND 和 PSET 类指令。若分析 LSU 或前端拥塞，则应单独定义统计集合，不能混用计算 IPC 口径。
 
-## 5. JSON Trace Fallback
+## 5. 旧 JSON 回归输入
 
-JSON remains supported for regression tests and hand-written micro cases:
+旧 JSON 仍用于回归测试和手写微用例：
 
 ```json
 {
   "dtype": "fp32",
-  "params": { "I": 16, "U": 1 },
+  "params": {"I": 16, "U": 1},
   "program": [
     {
       "type": "loop",
       "iters": "I",
       "unroll": "U",
       "body": [
-        { "type": "inst", "op": "VLD", "dst": ["V0"], "src": ["memA"] },
-        { "type": "inst", "op": "VADDS", "dst": ["V1"], "src": ["V0"] },
-        { "type": "inst", "op": "VST", "dst": ["memB"], "src": ["V1"] }
+        {"type": "inst", "op": "VLD", "dst": ["V0"], "src": ["memA"]},
+        {"type": "inst", "op": "VADDS", "dst": ["V1"], "src": ["V0"]},
+        {"type": "inst", "op": "VST", "dst": ["memB"], "src": ["V1"]}
       ]
     }
   ]
 }
 ```
 
-Run it with:
+运行命令：
 
 ```bash
 python main.py --trace VFtest/GeLU_poly.json --out_dir results/tmp_model/gelu_poly_json
 ```
 
-## 6. Accuracy Comparison Workflow
+`main.py` 会通过 `LegacyCanonicalJsonAdapter` 将旧 JSON 转换为 `CanonicalVfInfo`，随后复用同一 `CoreLoweringPass` 和 Core 执行路径。旧 JSON 不拥有独立模拟语义。
 
-For a regression suite:
+## 6. 精度对比流程
 
-1. Make sure each case has a CCE/camodel reference time in the manifest or result table.
-2. Run the model on the same logical VF structure, loop count, unroll, and precision.
-3. Compare `model_vf_end` with CCE/camodel VF total.
-4. Inspect outliers using `start_by_cycle.json`, `idu_to_ooo.json`, and CCE IDU/EXU dumps.
+1. 确认每个 case 在 manifest 或结果表中具有 CCE/Camodel 参考时间。
+2. 确认两侧使用相同的 VF 指令、loop count、unroll、dtype 和 Membar 语义。
+3. 比较 `model_vf_end` 与 CCE/Camodel VF total。
+4. 对异常 case 检查 `start_by_cycle.json`、`idu_to_ooo.json`、`sim_history.json` 和 CCE IDU/EXU dump。
+5. 记录模型 commit、配置 commit、输入文件和统计口径，避免不同版本结果混用。
 
-Be careful when comparing CCE-generated dumps with model inputs: CCE may split or transform loops even when source code visually contains a single loop. Always verify actual `vloop_pc` segments or equivalent dump evidence before claiming one-to-one loop structure.
+CCE 编译结果可能拆分、合并或变换源码中的 loop。即使源码看起来只有一个 loop，也必须检查实际 `vloop_pc` 分段或等价 dump 证据，再判断 CCE 与模型是否具有一一对应的动态结构。

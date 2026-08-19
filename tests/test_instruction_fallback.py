@@ -390,7 +390,7 @@ class InstructionFallbackTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             out_dir = Path(tmpdir)
-            CoreVfCostModel(base_dir=ROOT, out_dir=out_dir)._run_lowered_payload(payload)
+            CoreVfCostModel(base_dir=ROOT, out_dir=out_dir).run_payload(payload)
             starts = [
                 json.loads(line)
                 for line in (out_dir / "start_by_cycle.json").read_text().splitlines()
@@ -591,7 +591,7 @@ class InstructionFallbackTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             out_dir = Path(tmpdir)
-            CoreVfCostModel(base_dir=ROOT, out_dir=out_dir)._run_lowered_payload(payload)
+            CoreVfCostModel(base_dir=ROOT, out_dir=out_dir).run_payload(payload)
             warnings = json.loads((out_dir / "model_warnings.json").read_text(encoding="utf-8"))
             starts = [
                 json.loads(line)
@@ -1036,7 +1036,7 @@ class InstructionFallbackTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             out_dir = Path(tmpdir)
-            CoreVfCostModel(base_dir=ROOT, out_dir=out_dir)._run_lowered_payload(payload)
+            CoreVfCostModel(base_dir=ROOT, out_dir=out_dir).run_payload(payload)
             starts = [
                 json.loads(line)
                 for line in (out_dir / "start_by_cycle.json").read_text().splitlines()
@@ -1145,7 +1145,7 @@ class InstructionFallbackTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             out_dir = Path(tmpdir)
-            CoreVfCostModel(base_dir=ROOT, out_dir=out_dir)._run_lowered_payload(payload)
+            CoreVfCostModel(base_dir=ROOT, out_dir=out_dir).run_payload(payload)
             starts = [
                 json.loads(line)
                 for line in (out_dir / "start_by_cycle.json").read_text().splitlines()

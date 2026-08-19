@@ -5,9 +5,8 @@ import argparse
 import os
 from typing import Any, Dict
 
+from api.frontend import CanonicalVfInfo, CoreLoweringPass
 from api.input_api import InputAPI
-from api.vf_info import VFInfo
-from api.vf_lowering import VFInfoLowerer
 from core.flatten import Flattener
 from core.idu import IDU
 from core.ifu import IFUUnroll
@@ -17,10 +16,8 @@ from core.ooo_factory import (
     resolve_model_uarch,
 )
 from core.param_db import ParamDB
-from core.program_canonicalization import canonicalize_single_super_iteration_loops
 from core.program_analysis import ProgramAnalyzer
 from core.simulator_runner import dump_model_warnings, run_simulation
-from core.vreg_live_range_normalization import normalize_program_vreg_live_ranges
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -29,7 +26,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cce",
         type=str,
-        help="Path to a CCE/DSL file. When provided, parse __VEC_SCOPE__ into VFInfo.",
+        help="Path to a CCE/DSL file. When provided, parse __VEC_SCOPE__ into CanonicalVfInfo.",
     )
     parser.add_argument(
         "--cce-kernel",
@@ -84,7 +81,10 @@ def resolve_input_path(base_dir: str, path_arg: str) -> str:
     return os.path.join(base_dir, path_arg)
 
 
-def load_input_vf_info(base_dir: str, args: argparse.Namespace) -> tuple[VFInfo, str]:
+def load_input_canonical_vf_info(
+    base_dir: str,
+    args: argparse.Namespace,
+) -> tuple[CanonicalVfInfo, str]:
     if args.trace and args.cce:
         raise RuntimeError("Please provide only one input: --trace or --cce")
 
@@ -96,7 +96,7 @@ def load_input_vf_info(base_dir: str, args: argparse.Namespace) -> tuple[VFInfo,
         if args.cce_kernel:
             print(f"[INFO] CCE kernel = {args.cce_kernel}")
         return (
-            InputAPI.load_cce_file(cce_path, kernel_name=args.cce_kernel),
+            InputAPI.load_cce_canonical(cce_path, kernel_name=args.cce_kernel),
             cce_path,
         )
 
@@ -104,7 +104,7 @@ def load_input_vf_info(base_dir: str, args: argparse.Namespace) -> tuple[VFInfo,
     if not os.path.exists(trace_path):
         raise RuntimeError(f"Trace file not found: {trace_path}")
     print(f"[INFO] Loading trace: {trace_path}")
-    return InputAPI.load_json_trace(trace_path), trace_path
+    return InputAPI.load_legacy_json_canonical(trace_path), trace_path
 
 
 def build_uarch(
@@ -220,12 +220,14 @@ def main():
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
     try:
-        vf_info, _ = load_input_vf_info(base_dir, args)
+        vf_info, _ = load_input_canonical_vf_info(base_dir, args)
     except Exception as exc:
         print(f"[ERROR] {exc}")
         return
 
-    trace = VFInfoLowerer().lower(vf_info)
+    lowering = CoreLoweringPass()
+    lowering.ensure_current_core_compatible(vf_info)
+    trace = lowering.lower(vf_info)
 
     dtype = trace.get("dtype", "fp32")
     params = trace.get("params", {}) or {}
@@ -234,34 +236,7 @@ def main():
     if program is None:
         raise RuntimeError("trace.json missing key 'program'")
     db = ParamDB(base_dir=base_dir)
-    canonical_input = bool(trace.get("canonical_input"))
-    if canonical_input:
-        norm_stats = {"renamed_operands": 0, "reused_slots": 0}
-        canonicalization_stats = {
-            "expanded_loops": 0,
-            "expanded_instructions": 0,
-        }
-        print("[INFO] canonical input: legacy vreg normalization = OFF")
-    else:
-        program, values, norm_stats = normalize_program_vreg_live_ranges(
-            program,
-            values=values,
-            params=params,
-        )
-        print(
-            "[INFO] vreg live-range normalization = ON, changed_chains =",
-            int(norm_stats.get("changed_fields", norm_stats.get("changed_chains", 0))),
-        )
-        program, canonicalization_stats = canonicalize_single_super_iteration_loops(
-            program,
-            params,
-            pdb=db,
-            dtype=dtype,
-        )
-    print(
-        "[INFO] single-super-iteration loops expanded =",
-        int(canonicalization_stats["expanded_loops"]),
-    )
+    print("[INFO] canonical input: legacy lowering and vreg normalization = OFF")
     scan_instruction_fallback_warnings(program, db, dtype)
 
     analyzer = ProgramAnalyzer(params, values=values)
@@ -277,15 +252,16 @@ def main():
     if not isinstance(trace_uarch, dict):
         raise RuntimeError("trace.json key 'uarch' must be a dict when provided")
     uarch = build_uarch(db, trace_uarch, args)
+    dynamic_instruction_limit = int(
+        uarch.get("canonical_dynamic_instruction_limit", 20_000)
+    )
     ifu = IFUUnroll(
         linear,
         params,
         pdb=db,
         dtype=dtype,
-        structured_value_identity=canonical_input,
-        structured_dynamic_instruction_limit=int(
-            uarch.get("canonical_dynamic_instruction_limit", 20_000)
-        ),
+        structured_value_identity=True,
+        structured_dynamic_instruction_limit=dynamic_instruction_limit,
     )
 
     idu = IDU(

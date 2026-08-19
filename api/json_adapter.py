@@ -145,10 +145,10 @@ class LegacyCanonicalJsonAdapter:
 
     @staticmethod
     def from_payload(payload: Dict[str, Any]):
-        from api.frontend.value_versioning import ValueVersioningPass
+        from api.frontend.legacy_vf_info_adapter import LegacyVfInfoAdapter
 
         vf_info = JsonVfInfoAdapter.from_payload(payload)
-        return ValueVersioningPass().run(
+        return LegacyVfInfoAdapter().to_canonical(
             vf_info,
             source={"adapter": "legacy_json"},
         )

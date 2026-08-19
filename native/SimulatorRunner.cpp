@@ -8,12 +8,10 @@
 
 #include "native/SimulatorRunner.h"
 
+#include "api/native/LegacyVfInfoAdapter.h"
 #include "native/ControlUnit.h"
 #include "native/CanonicalProgramLowering.h"
 #include "native/ISATraits.h"
-#include "native/ProgramCanonicalization.h"
-#include "native/ProgramFlatten.h"
-#include "native/ProgramVregLiveRangeNormalization.h"
 #include "native/ValueStorage.h"
 
 #include <deque>
@@ -177,28 +175,19 @@ void dumpModelWarnings(const ParamDB &db, const std::string &path) {
 
 } // namespace
 
+SimulationResult runLegacyVfInfo(const VfInfo &input,
+                                 const ParamDB &db,
+                                 const std::string &resultsDir,
+                                 int64_t maxCycles) {
+  return runCanonicalVfInfo(adaptLegacyVfInfoToCanonical(input), db,
+                            resultsDir, maxCycles);
+}
+
 SimulationResult runVfInfo(const VfInfo &input,
                            const ParamDB &db,
                            const std::string &resultsDir,
                            int64_t maxCycles) {
-  VfInfo vfInfo = input;
-  lowerVfInfoValueIds(vfInfo);
-  normalizeProgramVregLiveRanges(vfInfo);
-  const auto program = canonicalizeSingleSuperIterationLoops(
-      vfInfo.body, vfInfo.params, db, vfInfo.defaultDtype);
-  ProgramAnalysis analysis(vfInfo.params, vfInfo.values);
-  const auto loopBounds = analysis.inferTopBlockLoopBounds(program);
-  ProgramFlatten flattener(vfInfo.params);
-  const auto &linear = flattener.flatten(program);
-  const int topBlocks = static_cast<int>(loopBounds.size());
-
-  IFU ifu(linear, vfInfo.params, &db, loopBounds, topBlocks,
-          vfInfo.defaultDtype);
-  IDU idu(db.uarch(), db, vfInfo.params, {}, topBlocks, loopBounds,
-          vfInfo.defaultDtype, vfInfo.values);
-  OoOCoreMainline ooo(db.uarch(), db, vfInfo.defaultDtype, vfInfo.values);
-  return runSimulation(ifu, idu, ooo, db.uarch(), vfInfo.params, resultsDir,
-                       maxCycles, vfInfo.values);
+  return runLegacyVfInfo(input, db, resultsDir, maxCycles);
 }
 
 SimulationResult runCanonicalVfInfo(const CanonicalVfInfo &vfInfo,

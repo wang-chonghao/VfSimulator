@@ -28,7 +28,6 @@ from api.frontend.schema import (
 from api.frontend.uarch_validation import validate_uarch_overrides
 
 
-_SUPPORTED_MEMBAR_TYPES = frozenset({"VST_VLD", "VLD_VST"})
 _INT64_MIN = -(2**63)
 _INT64_MAX = 2**63 - 1
 _INPUT_ROLES = frozenset(
@@ -467,11 +466,12 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
                                 path=node_path,
                             )
                     except ValueError:
-                        error(
-                            "catalog_instruction_form_mismatch",
-                            "Instruction form conflicts with Catalog semantics",
-                            path=node_path,
-                        )
+                        if not catalog_spec.virtual:
+                            error(
+                                "catalog_instruction_form_mismatch",
+                                "Instruction form conflicts with Catalog semantics",
+                                path=node_path,
+                            )
                 validate_scalar_map(node.attributes, f"{node_path}.attributes")
                 for operand_index, operand in enumerate(node.inputs):
                     operand_path = f"{node_path}.inputs[{operand_index}]"
@@ -706,8 +706,8 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
             if isinstance(node, CanonicalMembar):
                 register_node_id(node.instruction_id, node_path, node.source_location)
                 validate_location(node.source_location, f"{node_path}.source_location")
-                if node.barrier not in _SUPPORTED_MEMBAR_TYPES:
-                    error("unsupported_membar_type", "Unsupported Membar type", path=node_path)
+                if not node.barrier:
+                    error("missing_membar_type", "Membar type is required", path=node_path)
                 validate_dependencies(node.dependencies, node.instruction_id, f"{node_path}.dependencies")
                 current_node_location = previous_location
                 continue

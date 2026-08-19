@@ -1247,15 +1247,15 @@ Python API 路径也必须写出同样的 `model_warnings.json`，不能只在 C
 
 `Flattener` 和 `IFU` 先支持 CoreIR，同时保留历史 dict 兼容入口。
 
-#### 阶段四：main.py 不再调用 VFInfoLowerer 历史 lowering
+#### 阶段四：main.py 不再调用 VFInfoLowerer 历史 lowering（已完成）
 
 新链路：
 
 ```text
-InputAPI -> VFInfo -> canonicalize/resolve -> CoreIR -> simulation
+旧 JSON / 旧 VFInfo / CCE -> CanonicalVfInfo -> CoreLoweringPass -> simulation
 ```
 
-`VFInfoLowerer` 保留为兼容老工具的 adapter，退出主线。
+`VFInfoLowerer` 保留为兼容 API 名称，但内部同样执行 Canonical 版本化和 lowering；Python/C++ 公共预测入口均已退出旧 normalization 主线。
 
 #### 阶段五：日志和回归更新
 

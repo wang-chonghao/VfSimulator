@@ -124,7 +124,10 @@ class IFUUnroll:
             if structured_dynamic_instruction_limit is not None
             else uarch.get("canonical_dynamic_instruction_limit", 20_000)
         )
-        self.structured_dynamic_instruction_limit = max(1, int(configured_limit))
+        parsed_limit = int(configured_limit)
+        self.structured_dynamic_instruction_limit = (
+            None if parsed_limit <= 0 else parsed_limit
+        )
 
         # loop matching
         self.begin_to_end: Dict[int, int] = {}
@@ -949,7 +952,10 @@ class IFUUnroll:
                 if inst is None:
                     break
                 expanded.append(inst)
-                if len(expanded) > self.structured_dynamic_instruction_limit:
+                if (
+                    self.structured_dynamic_instruction_limit is not None
+                    and len(expanded) > self.structured_dynamic_instruction_limit
+                ):
                     raise RuntimeError(
                         "Canonical dynamic instruction count exceeds "
                         f"canonical_dynamic_instruction_limit="
