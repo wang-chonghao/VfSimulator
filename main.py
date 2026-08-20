@@ -298,6 +298,7 @@ def main():
     write_warning_log(results_dir, vreg_capacity_warnings, db.get_warnings())
 
     print(f"Wrote {os.path.join(results_dir, 'sim_history.json')}")
+    print(f"Wrote Perfetto trace to {sim_result['trace_path']}")
     print(f"Wrote logs to {results_dir}")
     print("VF end cycle (with drain) =", int(sim_result["vf_end_cycle"]))
     print(f"Wrote idu_to_ooo.json to {results_dir}")

@@ -8,6 +8,7 @@ from collections import deque
 from typing import Any, Dict
 
 from core.control_unit import ControlUnit
+from core.perfetto_trace import dump_perfetto_trace
 from core.isa_traits import get_op_class
 from core.isa_traits import uses_lsq, uses_shared_shq_credit, uses_shq_queue
 from core.value_storage import ValueStorageLookup
@@ -268,6 +269,13 @@ def run_simulation(
         os.path.join(results_dir, "start_by_cycle.json"),
         os.path.join(results_dir, "done_by_cycle.json"),
     )
+    trace_path = os.path.join(results_dir, "trace.json")
+    dump_perfetto_trace(
+        trace_path,
+        ooo.cyc_start_log,
+        ooo.cyc_done_log,
+        issue_ports=int(getattr(ooo, "issue_ports", 2)),
+    )
     idu.dump_dispatch_log(os.path.join(results_dir, "idu_to_ooo.json"))
     idu.dump_vloop_trace(os.path.join(results_dir, "vloop_trace.json"))
     if pdb is not None and hasattr(pdb, "get_warnings"):
@@ -280,4 +288,5 @@ def run_simulation(
         "cycles_executed": int(cycle),
         "vf_end_cycle": int(ooo.vf_end_cycle()),
         "results_dir": str(results_dir),
+        "trace_path": trace_path,
     }

@@ -215,6 +215,11 @@ python tools/run_cost_model_regression.py --tier full --update-baseline
 ```
 
 默认输出写到 `results/regression_suite/latest/`。稳定、整理过的报告应放在 `regression_suite/reports/`。
+
+每次 Python Core 仿真还会在结果目录生成 `trace.json`。该文件采用 Perfetto 支持的
+Chrome Trace Event JSON 格式，可直接上传到 `https://ui.perfetto.dev/`。时间轴按
+`1 cycle = 1 us` 映射，分为 `Load Unit`、`EXU Unit`（含 `EXU0/EXU1` 子轨）和
+`Store Unit`，每个时间片表示指令从 start 到 done 的执行区间。
 默认对比 baseline 来自 `regression_suite/reports/precision_compare_3modes.md` 中的 `queue_level4+rr-reserve(min1 cap7)` 列。旧 `queue_level4+ooo-transfer-delay` baseline 仅用于历史追溯。
 
 ## Ascend Runner

@@ -226,6 +226,7 @@ class ISUController:
             u.start_cycle = cycle
             u.done_cycle = cycle + self.core._latency(u.op, u.form, u.profile)
             u.state = "running"
+            u.exu_port = chosen_port
             self.core._schedule_src_release_from_start(u)
             self.core._log("start", u)
             self.core._log_start_simple(u)
@@ -244,7 +245,6 @@ class ISUController:
                 self.core.last_form[fu_type][chosen_port] = u.form
                 self.core.last_profile[fu_type][chosen_port] = u.profile
             exu_used_this_cycle[chosen_port] = True
-            u.exu_port = chosen_port
             self.core.exq_inflight[chosen_port] += 1
 
             for pd in u.preg_dst:
