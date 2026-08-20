@@ -66,14 +66,6 @@ def _apply_case_transform(trace_obj: Dict[str, Any], case: Dict[str, Any]) -> Di
     return out
 
 
-def _lower_trace_to_vfinfo_payload(trace_obj: Dict[str, Any]) -> Dict[str, Any]:
-    from api.json_adapter import JsonVfInfoAdapter
-    from api.vf_lowering import VFInfoLowerer
-
-    vf_info = JsonVfInfoAdapter.from_payload(trace_obj)
-    return VFInfoLowerer().lower(vf_info)
-
-
 def _run_cmd(cmd: List[str], cwd: Path) -> str:
     proc = subprocess.run(cmd, cwd=str(cwd), text=True, capture_output=True)
     text = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
@@ -96,7 +88,7 @@ def _run_native_on_trace(
     max_cycles: int,
 ) -> Dict[str, Any]:
     run_dir.mkdir(parents=True, exist_ok=True)
-    payload = _lower_trace_to_vfinfo_payload(trace_obj)
+    payload = trace_obj
     trace_path = run_dir / "vfinfo_input.json"
     _dump_json(trace_path, payload)
 
@@ -266,7 +258,10 @@ def _print_summary(summary: Dict[str, Any]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run native C++ VF cost model regression suite")
     parser.add_argument("--suite", default="regression_suite/cases/cost_model_regression_cases.json")
-    parser.add_argument("--baseline", default="regression_suite/cases/baseline_queue_level4_ooo_transfer_delay.json")
+    parser.add_argument(
+        "--baseline",
+        default="regression_suite/cases/baseline_queue_level4_rr_reserve_min1_cap7.json",
+    )
     parser.add_argument("--out-dir", default="results/native_regression_suite/latest")
     parser.add_argument("--tier", choices=["smoke", "full"], default="smoke")
     parser.add_argument("--runner", default="build-native/vfsim_native_json_runner")

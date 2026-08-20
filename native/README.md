@@ -23,13 +23,20 @@
 - `ProgramFlatten`：递归展平 loop/inst 程序树。
 - `IFU`：动态展开循环并生成 top-block 元数据。
 - `IDU`：执行 dispatch gate、VLOOP 可见性和信用计数。
-- `OOO`：执行 rename、ready、execute 和 retire 主流程。
+- `OOO`：执行 rename、ready、execute 和 retire 主流程。load/store 共享
+  `ub_slots` 个 UB 发射槽；默认 load 优先，当真实空闲物理寄存器数低于
+  `lsu_store_priority_preg_threshold` 时切换为 store 优先，同类指令按动态年龄仲裁。
 - `SimulatorRunner`：驱动主循环并输出日志。
 - `CanonicalProgramLowering`：处理已验证的 canonical definition、loop-carried
   binding、动态身份和值生命周期标记。
 - `LegacyVfInfoAdapter`：把旧 `VfInfo`/legacy JSON 的逻辑值版本化为 canonical
   definition；旧输入不会形成第二套 Core 执行路径。
 - 共享配置结构：显式、可移植地描述跨语言配置 schema。
+
+当前 LSU 仲裁只保留寄存器压力阈值策略，不再接受 `lsu_issue_policy`：
+
+- `ub_slots=2`：每拍 load/store 启动总数上限；
+- `lsu_store_priority_preg_threshold=1`：freelist 为空时优先启动 ready store。
 
 编译器公开运行入口只有一个：
 

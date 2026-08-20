@@ -40,6 +40,8 @@ struct UarchConfig {
   bool threePortsMode = false;
   int64_t loadPorts = 0;
   int64_t storePorts = 0;
+  int64_t ubSlots = 2;
+  int64_t lsuStorePriorityPregThreshold = 1;
   int64_t iduWindowWidth = 0;
   int64_t iduIssueWidth = 0;
   int64_t ldqWidth = 0;
