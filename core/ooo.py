@@ -66,6 +66,19 @@ class OoOCore:
         self.load_ports = int(uarch.get("load_ports", 2))
         self.issue_ports = int(uarch.get("issue_ports", 2))  # total EXU count
         self.store_ports = int(uarch.get("store_ports", 1))
+        self.ub_slots = int(uarch.get("ub_slots", 2))
+        if self.load_ports <= 0 or self.store_ports <= 0 or self.ub_slots <= 0:
+            raise ValueError("load_ports, store_ports, and ub_slots must be positive")
+        if "lsu_issue_policy" in uarch:
+            raise ValueError(
+                "lsu_issue_policy has been removed; configure "
+                "lsu_store_priority_preg_threshold instead"
+            )
+        self.lsu_store_priority_preg_threshold = int(
+            uarch.get("lsu_store_priority_preg_threshold", 1)
+        )
+        if self.lsu_store_priority_preg_threshold < 0:
+            raise ValueError("lsu_store_priority_preg_threshold must be non-negative")
         self.shq_depth = int(uarch.get("shq_depth", 58))
         self.lsq_depth = int(uarch.get("LDQ_width", 24))
         self.preg_num = int(uarch.get("vreg", uarch.get("vreg_num", 68)))

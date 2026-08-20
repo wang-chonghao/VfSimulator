@@ -15,7 +15,7 @@ regression_suite/
   README.md
   cases/
     cost_model_regression_cases.json
-    baseline_balanced_exu0_reserve.json
+    baseline_queue_level4_rr_reserve_min1_cap7.json
     baseline_queue_level4_ooo_transfer_delay.json
     baseline_consumer_done.json
     archive/
@@ -34,8 +34,8 @@ regression_suite/
 ## 文件说明
 
 - `cases/cost_model_regression_cases.json`：主测试集清单，包含 case id、trace、参数、CCE/camodel 参考时间和容忍阈值。
-- `cases/baseline_balanced_exu0_reserve.json`：主线默认基线，对应 `precision_compare_3modes.md` 的 `queue_level4+rr-reserve(min1 cap7)` 列。
-- `cases/baseline_queue_level4_ooo_transfer_delay.json`：旧 OoO transfer-delay 基线，仅用于历史对比。
+- `cases/baseline_queue_level4_rr_reserve_min1_cap7.json`：主线默认基线，对应 `precision_compare_3modes.md` 的 `queue_level4+rr-reserve(min1 cap7)` 列。
+- `cases/baseline_queue_level4_ooo_transfer_delay.json`：历史 OoO transfer-delay 基线，仅用于结果追溯。
 - `cases/baseline_consumer_done.json`：历史 consumer-done 基线，仅用于结果追溯。
 - `cases/archive/`：历史 queue-level 对比实验的 case/baseline，保留供追溯，不作为主线默认入口。
 - `inputs/json/`：主回归 manifest 使用的 JSON trace 副本，使回归包能自包含地复现输入。
@@ -45,8 +45,8 @@ regression_suite/
 
 ## 一键命令
 
-基线使用平衡 EXU0 预留策略：向后观察 8 条 SHQ 指令、`min_count=1`、
-每端口执行中指令上限 `cap=7`。确认需要整体刷新时运行：
+基线来源于 `precision_compare_3modes.md` 的
+`queue_level4+rr-reserve(min1 cap7)` 列。确认需要整体刷新时运行：
 
 ```bash
 python tools/run_cost_model_regression.py --tier full --update-baseline
@@ -99,7 +99,7 @@ python tools/run_native_cost_model_regression.py --tier full
 ```bash
 python tools/run_cost_model_regression.py \
   --suite regression_suite/cases/cost_model_regression_cases.json \
-  --baseline regression_suite/cases/baseline_balanced_exu0_reserve.json \
+  --baseline regression_suite/cases/baseline_queue_level4_rr_reserve_min1_cap7.json \
   --tier smoke
 ```
 
@@ -127,7 +127,7 @@ python tools/run_cost_model_regression.py \
 - `error_to_cce_abs`
 - `error_to_cce_rel`
 
-并在回归时检查：当前版本相对 CCE/camodel 的误差，不能比平衡 EXU0 预留基线变差太多。
+并在回归时检查：当前版本相对 CCE/camodel 的误差，不能比 `queue_level4+rr-reserve(min1 cap7)` 基线变差太多。
 
 默认阈值在 `cases/cost_model_regression_cases.json` 的 `defaults`：
 

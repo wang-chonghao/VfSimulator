@@ -133,7 +133,7 @@ python tools/run_cost_model_regression.py --tier smoke
 `queue_level4+rr-reserve(min1 cap7)` 列比较，对应基线文件：
 
 ```text
-regression_suite/cases/baseline_balanced_exu0_reserve.json
+regression_suite/cases/baseline_queue_level4_rr_reserve_min1_cap7.json
 ```
 
 更新 baseline：

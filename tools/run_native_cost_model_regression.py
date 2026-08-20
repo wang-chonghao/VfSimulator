@@ -258,7 +258,10 @@ def _print_summary(summary: Dict[str, Any]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run native C++ VF cost model regression suite")
     parser.add_argument("--suite", default="regression_suite/cases/cost_model_regression_cases.json")
-    parser.add_argument("--baseline", default="regression_suite/cases/baseline_balanced_exu0_reserve.json")
+    parser.add_argument(
+        "--baseline",
+        default="regression_suite/cases/baseline_queue_level4_rr_reserve_min1_cap7.json",
+    )
     parser.add_argument("--out-dir", default="results/native_regression_suite/latest")
     parser.add_argument("--tier", choices=["smoke", "full"], default="smoke")
     parser.add_argument("--runner", default="build-native/vfsim_native_json_runner")

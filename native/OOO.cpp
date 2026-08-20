@@ -118,6 +118,15 @@ OoOCore::OoOCore(const UarchConfig &uarch, const ParamDB &db, std::string dtype,
   issuePorts_ = static_cast<int>(uarch.issuePorts);
   threePortsMode_ = uarch.threePortsMode;
   storePorts_ = static_cast<int>(uarch.storePorts);
+  ubSlots_ = static_cast<int>(uarch.ubSlots);
+  lsuStorePriorityPregThreshold_ =
+      static_cast<int>(uarch.lsuStorePriorityPregThreshold);
+  if (loadPorts_ <= 0 || storePorts_ <= 0 || ubSlots_ <= 0)
+    throw std::invalid_argument(
+        "load_ports, store_ports, and ub_slots must be positive");
+  if (lsuStorePriorityPregThreshold_ < 0)
+    throw std::invalid_argument(
+        "lsu_store_priority_preg_threshold must be non-negative");
   shqDepth_ = static_cast<int>(uarch.shqDepth);
   lsqDepth_ = static_cast<int>(uarch.ldqWidth ? uarch.ldqWidth : 24);
   pregNum_ = static_cast<int>(uarch.vregNum ? uarch.vregNum : 68);
@@ -859,6 +868,112 @@ void OoOCoreMainline::freeOldPregs(const Uop &u) {
   }
 }
 
+void OoOCore::updateLsqReadyStates(int64_t cycle, bool storesOnly) {
+  for (auto &u : lsq_) {
+    if (u.state == "running" || u.state == "done")
+      continue;
+    if (storesOnly && u.opClass != "STORE")
+      continue;
+    if (u.opClass == "LOAD") {
+      u.readyCycle = computeLoadReadyCycle(u);
+    } else {
+      auto ready = computeStoreReadyCycle(u);
+      u.readyCycle = std::get<0>(ready);
+      u.producerOpForStore = std::get<1>(ready);
+      u.producerFormForStore = std::get<2>(ready);
+      u.producerStartForStore = std::get<3>(ready);
+    }
+    u.state = (cycle >= u.readyCycle) ? "ready" : "blocked";
+  }
+}
+
+void OoOCore::issueReadyLsu(
+    int64_t cycle, int &issuedLoads, int &issuedStores, int &issuedTotal,
+    std::unordered_set<int64_t> &membarBlockedLoggedIds) {
+  if (cycle < vfStartupCost_ || issuedTotal >= ubSlots_)
+    return;
+
+  struct Candidate {
+    int classPriority = 0;
+    int64_t streamSeq = 0;
+    int64_t instId = 0;
+  };
+  const bool pregPressure =
+      static_cast<int>(freelist_.size()) < lsuStorePriorityPregThreshold_;
+  const std::string preferredClass = pregPressure ? "STORE" : "LOAD";
+  std::vector<Candidate> candidates;
+  for (const auto &u : lsq_) {
+    if (u.state != "ready" ||
+        (u.opClass != "LOAD" && u.opClass != "STORE"))
+      continue;
+    const int64_t age = u.streamSeq >= 0 ? u.streamSeq : u.instId;
+    candidates.push_back(
+        Candidate{u.opClass == preferredClass ? 0 : 1, age, u.instId});
+  }
+  std::sort(candidates.begin(), candidates.end(),
+            [](const Candidate &lhs, const Candidate &rhs) {
+              return std::tie(lhs.classPriority, lhs.streamSeq, lhs.instId) <
+                     std::tie(rhs.classPriority, rhs.streamSeq, rhs.instId);
+            });
+
+  for (const auto &candidate : candidates) {
+    if (issuedTotal >= ubSlots_)
+      break;
+    auto it = std::find_if(lsq_.begin(), lsq_.end(), [&](const Uop &u) {
+      return u.instId == candidate.instId;
+    });
+    if (it == lsq_.end() || it->state != "ready")
+      continue;
+    Uop &u = *it;
+    if (u.opClass == "LOAD" && issuedLoads >= loadPorts_)
+      continue;
+    if (u.opClass == "STORE" && issuedStores >= storePorts_)
+      continue;
+    if (blockedByControlUnit(u)) {
+      if (membarBlockedLoggedIds.insert(u.instId).second)
+        logMembarBlocked(u);
+      continue;
+    }
+    if (u.opClass == "STORE" && !u.producerOpForStore.has_value())
+      continue;
+
+    u.startCycle = cycle;
+    u.blockedReason.reset();
+    u.doneCycle = cycle + u.latency;
+    u.state = "running";
+    scheduleSrcReleaseFromStart(u);
+    if (u.opClass == "LOAD") {
+      ++issuedLoads;
+      for (const auto &pd : u.pregDst) {
+        if (pd.empty())
+          continue;
+        pregProducer_[pd] = ProducerInfo{u.op, u.form, *u.startCycle, "LOAD"};
+        pregPending_.erase(pd);
+      }
+    } else {
+      ++issuedStores;
+      if (u.isShqTracked) {
+        scheduleShqRelease(cycle, 1);
+        u.isShqTracked = false;
+      }
+    }
+    ++issuedTotal;
+
+    if (auto *robU = findRobUop(u.instId)) {
+      robU->producerOpForStore = u.producerOpForStore;
+      robU->producerFormForStore = u.producerFormForStore;
+      robU->producerStartForStore = u.producerStartForStore;
+      robU->startCycle = u.startCycle;
+      robU->doneCycle = u.doneCycle;
+      robU->state = u.state;
+      robU->isShqTracked = u.isShqTracked;
+    }
+    log("start", u);
+    logStartSimple(u);
+    lsq_.erase(it);
+  }
+}
+
 void OoOCoreMainline::step() {
   const int64_t c = cycle_;
 
@@ -889,15 +1004,7 @@ void OoOCoreMainline::step() {
 
   tryFreeEligiblePregs(c);
 
-  for (auto &u : lsq_) {
-    if (u.state == "running" || u.state == "done")
-      continue;
-    if (u.opClass == "LOAD")
-      u.readyCycle = computeLoadReadyCycle(u);
-    else
-      u.readyCycle = std::get<0>(computeStoreReadyCycle(u));
-    u.state = (c >= u.readyCycle) ? "ready" : "blocked";
-  }
+  updateLsqReadyStates(c);
   for (auto &u : shq_) {
     if (u.state == "running" || u.state == "done")
       continue;
@@ -918,42 +1025,12 @@ void OoOCoreMainline::step() {
     u.state = (c >= u.readyCycle) ? "ready" : "blocked";
   }
 
-  int ld = 0;
-  for (auto it = lsq_.begin(); it != lsq_.end();) {
-    auto &u = *it;
-    if (u.state != "ready" || u.opClass != "LOAD") {
-      ++it;
-      continue;
-    }
-    if (ld >= loadPorts_)
-      break;
-    if (blockedByControlUnit(u)) {
-      logMembarBlocked(u);
-      ++it;
-      continue;
-    }
-    u.startCycle = c;
-    u.blockedReason.reset();
-    u.doneCycle = c + u.latency;
-    u.state = "running";
-    scheduleSrcReleaseFromStart(u);
-    if (auto *robU = findRobUop(u.instId)) {
-      robU->startCycle = u.startCycle;
-      robU->doneCycle = u.doneCycle;
-      robU->state = u.state;
-    }
-    log("start", u);
-    logStartSimple(u);
-    ++ld;
-    for (const auto &pd : u.pregDst) {
-      if (!pd.empty()) {
-        pregProducer_[pd] =
-            ProducerInfo{u.op, u.form, *u.startCycle, "LOAD"};
-        pregPending_.erase(pd);
-      }
-    }
-    it = lsq_.erase(it);
-  }
+  int issuedLoads = 0;
+  int issuedStores = 0;
+  int issuedLsuTotal = 0;
+  std::unordered_set<int64_t> membarBlockedLoggedIds;
+  issueReadyLsu(c, issuedLoads, issuedStores, issuedLsuTotal,
+                membarBlockedLoggedIds);
 
   for (auto &u : shq_) {
     if (u.state == "running" || u.state == "done")
@@ -1310,54 +1387,9 @@ void OoOCoreMainline::step() {
     }
   }
 
-  int st = 0;
-  for (auto it = lsq_.begin(); it != lsq_.end();) {
-    auto &u = *it;
-    if (u.state != "ready" || u.opClass != "STORE") {
-      ++it;
-      continue;
-    }
-    if (st >= storePorts_)
-      break;
-    auto ready = computeStoreReadyCycle(u);
-    if (c < std::get<0>(ready)) {
-      ++it;
-      continue;
-    }
-    u.producerOpForStore = std::get<1>(ready);
-    u.producerFormForStore = std::get<2>(ready);
-    u.producerStartForStore = std::get<3>(ready);
-    if (!u.producerOpForStore.has_value()) {
-      ++it;
-      continue;
-    }
-    if (blockedByControlUnit(u)) {
-      logMembarBlocked(u);
-      ++it;
-      continue;
-    }
-    u.startCycle = c;
-    u.blockedReason.reset();
-    u.doneCycle = c + u.latency;
-    u.state = "running";
-    scheduleSrcReleaseFromStart(u);
-    if (u.opClass == "COMPUTE" || u.opClass == "STORE") {
-      scheduleShqRelease(c, 1);
-      u.isShqTracked = false;
-    }
-    if (auto *robU = findRobUop(u.instId)) {
-      robU->producerOpForStore = u.producerOpForStore;
-      robU->producerStartForStore = u.producerStartForStore;
-      robU->startCycle = u.startCycle;
-      robU->doneCycle = u.doneCycle;
-      robU->state = u.state;
-      robU->isShqTracked = false;
-    }
-    log("start", u);
-    logStartSimple(u);
-    ++st;
-    it = lsq_.erase(it);
-  }
+  updateLsqReadyStates(c, true);
+  issueReadyLsu(c, issuedLoads, issuedStores, issuedLsuTotal,
+                membarBlockedLoggedIds);
 
   ++cycle_;
 }

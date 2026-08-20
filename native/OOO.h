@@ -153,6 +153,8 @@ protected:
   int issuePorts_ = 2;
   bool threePortsMode_ = false;
   int storePorts_ = 1;
+  int ubSlots_ = 2;
+  int lsuStorePriorityPregThreshold_ = 1;
   int shqDepth_ = 58;
   int lsqDepth_ = 24;
   int pregNum_ = 68;
@@ -266,6 +268,10 @@ protected:
                              const std::vector<int> &candidates);
   void scheduleShqRelease(int64_t cycle, int count = 1);
   void runShqReleaseEvents(int64_t cycle);
+  void updateLsqReadyStates(int64_t cycle, bool storesOnly = false);
+  void issueReadyLsu(int64_t cycle, int &issuedLoads, int &issuedStores,
+                     int &issuedTotal,
+                     std::unordered_set<int64_t> &membarBlockedLoggedIds);
 
   virtual void freeOldPregs(const Uop &u) = 0;
 };
