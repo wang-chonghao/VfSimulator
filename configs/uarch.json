@@ -3,6 +3,8 @@
   "issue_ports": 2,
   "load_ports": 2,
   "store_ports": 1,
+  "ub_slots": 2,
+  "lsu_store_priority_preg_threshold": 1,
   "IDU_window_width": 6,
   "IDU_issue_width": 5,
   "LDQ_width": 2400000,

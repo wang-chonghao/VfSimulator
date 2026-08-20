@@ -253,10 +253,17 @@ ParamDB::ParamDB(std::filesystem::path baseDir)
 
   if (!uarchRoot.empty()) {
     const auto &obj = uarchRoot;
+    if (findKey(obj, "lsu_issue_policy") != nullptr)
+      throw std::runtime_error(
+          "lsu_issue_policy has been removed; configure "
+          "lsu_store_priority_preg_threshold instead");
     bundle_.uarch.issuePorts = readIntField(obj, "issue_ports");
     bundle_.uarch.threePortsMode = readBoolField(obj, "three_ports_mode");
     bundle_.uarch.loadPorts = readIntField(obj, "load_ports");
     bundle_.uarch.storePorts = readIntField(obj, "store_ports");
+    bundle_.uarch.ubSlots = readIntField(obj, "ub_slots", 2);
+    bundle_.uarch.lsuStorePriorityPregThreshold =
+        readIntField(obj, "lsu_store_priority_preg_threshold", 1);
     bundle_.uarch.iduWindowWidth = readIntField(obj, "IDU_window_width");
     bundle_.uarch.iduIssueWidth = readIntField(obj, "IDU_issue_width");
     bundle_.uarch.ldqWidth = readIntField(obj, "LDQ_width");

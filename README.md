@@ -183,6 +183,7 @@ VFtest/              JSON trace 示例和部分回归输入
 regression_suite/
   cases/
     cost_model_regression_cases.json
+    baseline_queue_level4_rr_reserve_min1_cap7.json
     baseline_queue_level4_ooo_transfer_delay.json
     baseline_consumer_done.json
     archive/
@@ -214,7 +215,7 @@ python tools/run_cost_model_regression.py --tier full --update-baseline
 ```
 
 默认输出写到 `results/regression_suite/latest/`。稳定、整理过的报告应放在 `regression_suite/reports/`。
-默认对比 baseline 来自 `regression_suite/reports/precision_compare_3modes.md` 中的 `queue_level4+ooo-transfer-delay` 列。
+默认对比 baseline 来自 `regression_suite/reports/precision_compare_3modes.md` 中的 `queue_level4+rr-reserve(min1 cap7)` 列。旧 `queue_level4+ooo-transfer-delay` baseline 仅用于历史追溯。
 
 ## Ascend Runner
 

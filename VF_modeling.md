@@ -381,6 +381,17 @@ VSTS.fp16
 - `store_ports = 1`
   - 每拍最多启动一条类 store 指令，当前常见指令是 `VSTS`
 
+- `ub_slots = 2`
+  - load/store 共享的 UB 发射槽总数
+  - 每拍同时满足 load、store 各自端口上限和 `load_count + store_count <= ub_slots`
+  - Python 和 C++ 主线使用相同的共享槽约束
+
+- `lsu_store_priority_preg_threshold = 1`
+  - ready LSQ 指令默认优先 load
+  - 当真实空闲物理寄存器数小于 `lsu_store_priority_preg_threshold` 时，切换为 store 优先
+  - 当前阈值为 1，即只有 freelist 已空时才优先启动一条 store
+  - 不再提供 `oldest_ready` 策略切换；同类指令内部仍按动态年龄仲裁
+
 - `IDU_window_width = 6`
   - IDU 前端窗口容量
 
@@ -839,6 +850,7 @@ ISA `dispatch_exu` 取值：
 - 从 IDU 发射后进入 LSQ
 - 就绪后直接启动，不经过 SHQ / EXQ
 - 每拍最多启动 `load_ports` 条
+- load 与 store 共享 `ub_slots` 个 UB 发射槽；默认 `ub_slots=2`
 - 当前常见指令是 `VLDS`
 - 启动后 `done_cycle = start + isa_latency(load_op, form)`
 - load 完成时间只使用该 load 指令自身在 `isa.json` 中的 `latency`
@@ -859,7 +871,9 @@ ISA `dispatch_exu` 取值：
 - 当前常见指令是 `VSTS`
 - 就绪时间通过生产者/消费者 forwarding 表计算
 - 每拍最多启动 `store_ports` 条
-- 启动后执行时长取生产者的 `data_store_cost`
+- 默认在空闲物理寄存器不小于阈值时优先 load，低于阈值时优先 store
+- 同一类别内部再按动态 `(stream_seq, inst_id)` 年龄顺序仲裁，最终共同受 `ub_slots` 总上限约束
+- 启动后 `done_cycle = start + isa_latency(store_op, form)`
 - 开始执行后再触发 SHQ release 计时
 
 ---

@@ -243,6 +243,77 @@ void verifyNativeThreePortsMode(const ParamDB &db) {
           "native three_ports_mode must preserve EXU0_ONLY routing");
 }
 
+void verifyNativeUbSharedSlotsAndPregPressure(const ParamDB &db) {
+  auto runCase = [&](int64_t vregNum, const std::string &suffix) {
+    UarchConfig uarch = db.uarch();
+    uarch.vregNum = vregNum;
+    uarch.loadPorts = 2;
+    uarch.storePorts = 1;
+    uarch.ubSlots = 2;
+    uarch.lsuStorePriorityPregThreshold = 1;
+    OoOCoreMainline core(uarch, db, "fp32");
+
+    DynamicInst producer;
+    producer.type = "inst";
+    producer.instId = 9200;
+    producer.streamSeq = 0;
+    producer.op = "VADD";
+    producer.form = "fp32";
+    producer.dst = {"v0"};
+    core.accept(producer);
+    for (int cycle = 0; cycle < 40; ++cycle)
+      core.step();
+
+    DynamicInst store;
+    store.type = "inst";
+    store.instId = 9201;
+    store.streamSeq = 1;
+    store.op = "VSTS";
+    store.form = "fp32";
+    store.src = {"v0"};
+    store.dst = {"mem0"};
+    DynamicInst firstLoad;
+    firstLoad.type = "inst";
+    firstLoad.instId = 9202;
+    firstLoad.streamSeq = 2;
+    firstLoad.op = "VLDS";
+    firstLoad.form = "fp32";
+    firstLoad.src = {"mem1"};
+    firstLoad.dst = {"v1"};
+    DynamicInst secondLoad = firstLoad;
+    secondLoad.instId = 9203;
+    secondLoad.streamSeq = 3;
+    secondLoad.dst = {"v2"};
+    core.accept(store);
+    core.accept(firstLoad);
+    core.accept(secondLoad);
+    for (int cycle = 0; cycle < 20; ++cycle)
+      core.step();
+
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("vfsim_native_ub_slots_" + suffix);
+    std::filesystem::create_directories(root);
+    core.dumpSimpleLogs((root / "starts.jsonl").string(),
+                        (root / "done.jsonl").string());
+    const std::string starts = readText(root / "starts.jsonl");
+    return std::make_tuple(cycleForInstId(starts, 9201),
+                           cycleForInstId(starts, 9202),
+                           cycleForInstId(starts, 9203));
+  };
+
+  const auto relaxed = runCase(16, "relaxed");
+  require(std::get<1>(relaxed) == std::get<2>(relaxed),
+          "two ready loads must share both UB slots when pregs remain");
+  require(std::get<0>(relaxed) > std::get<1>(relaxed),
+          "ready loads must take priority over an older store when pregs remain");
+
+  const auto pressured = runCase(1, "pressured");
+  require(std::get<0>(pressured) == std::get<1>(pressured),
+          "preg pressure must issue one store and one load through shared UB slots");
+  require(std::get<2>(pressured) > std::get<1>(pressured),
+          "the second load must wait when a store consumes one shared UB slot");
+}
+
 ParamDB makeDurationTestDb() {
   const auto root = std::filesystem::temp_directory_path() / "vfsim_native_duration_cfg";
   writeText(
@@ -796,6 +867,7 @@ int main() {
     verifyNativeVpackVsstbScheduling(db);
     verifyNativeExu0ReserveDispatch(db);
     verifyNativeThreePortsMode(db);
+    verifyNativeUbSharedSlotsAndPregPressure(db);
     verifyUnrollOrder(db);
     verifyMembarDisablesUnroll(db);
     verifyExplicitMembarTiming(db);
