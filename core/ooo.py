@@ -199,6 +199,8 @@ class OoOCore:
         })
 
     def _log_start_simple(self, u: Uop) -> None:
+        profile = u.profile
+        op_class = profile.op_class if profile is not None else None
         self.cyc_start_log.append({
             "cy": self.cycle,
             "inst_id": u.inst_id,
@@ -209,12 +211,24 @@ class OoOCore:
             "dst_value_instances": u.dst_value_instances,
             "op": u.op,
             "form": u.form,
+            "op_class": op_class,
+            "fu_type": (
+                profile.fu_type
+                if profile is not None and op_class == "COMPUTE"
+                else None
+            ),
+            "exu_port": u.exu_port,
+            "ready_cycle": u.ready_cycle,
             "dst": u.dst,
             "src": u.src,
             "memory_ranges": list(u.memory_ranges),
+            "preg_dst": u.preg_dst,
+            "preg_src": u.preg_src,
         })
 
     def _log_done_simple(self, u: Uop) -> None:
+        profile = u.profile
+        op_class = profile.op_class if profile is not None else None
         self.cyc_done_log.append({
             "cy": u.done_cycle if u.done_cycle is not None else self.cycle,
             "inst_id": u.inst_id,
@@ -225,6 +239,12 @@ class OoOCore:
             "dst_value_instances": u.dst_value_instances,
             "op": u.op,
             "form": u.form,
+            "op_class": op_class,
+            "fu_type": (
+                profile.fu_type
+                if profile is not None and op_class == "COMPUTE"
+                else None
+            ),
             "dst": u.dst,
             "src": u.src,
         })
