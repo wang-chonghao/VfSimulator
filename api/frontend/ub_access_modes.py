@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 
+_NORMAL_SPAN_BYTES = 256
+
+
 def span_bytes_for_access_mode(
     access_mode: str | None,
     *,
@@ -15,6 +18,12 @@ def span_bytes_for_access_mode(
         if normalized.endswith("B32"):
             return 4
         return int(element_size_bytes)
+    if normalized == "NORM_B16":
+        return _NORMAL_SPAN_BYTES
+    if normalized == "NORM_B32":
+        return _NORMAL_SPAN_BYTES
+    if normalized == "NORM":
+        return _NORMAL_SPAN_BYTES
     return None
 
 

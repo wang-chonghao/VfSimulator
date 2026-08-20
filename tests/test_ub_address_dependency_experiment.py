@@ -302,7 +302,7 @@ class UbAddressDependencyExperimentTest(unittest.TestCase):
         self.assertFalse(ranges_overlap(store, adjacent))
         self.assertFalse(ranges_overlap(store, other))
 
-    def test_broadcast_span_comes_from_mode_width(self):
+    def test_access_span_comes_from_mode_width(self):
         self.assertEqual(
             span_bytes_for_access_mode("BRC_B32", element_size_bytes=2),
             4,
@@ -311,8 +311,60 @@ class UbAddressDependencyExperimentTest(unittest.TestCase):
             span_bytes_for_access_mode("ONEPT_B16", element_size_bytes=4),
             2,
         )
-        self.assertIsNone(
-            span_bytes_for_access_mode("NORM_B32", element_size_bytes=4)
+        self.assertEqual(
+            span_bytes_for_access_mode("NORM_B32", element_size_bytes=2),
+            256,
+        )
+        self.assertEqual(
+            span_bytes_for_access_mode("NORM_B16", element_size_bytes=4),
+            256,
+        )
+        self.assertEqual(
+            span_bytes_for_access_mode("NORM", element_size_bytes=4),
+            256,
+        )
+        self.assertEqual(
+            span_bytes_for_access_mode("NORM", element_size_bytes=2),
+            256,
+        )
+
+    def test_fp32_norm_offsets_expand_to_adjacent_256_byte_ranges(self):
+        source = """
+        void norm_ranges(__ubuf__ float *scores) {
+          __VEC_SCOPE__ {
+            vector_f32 value;
+            for (uint16_t i = 0; i < 2; ++i) {
+              vlds(value, scores, 64 * i, NORM);
+            }
+          }
+        }
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "norm_ranges.cce"
+            path.write_text(source, encoding="utf-8")
+            canonical, metadata = parse_cce_canonical_with_ub_experiment_metadata(
+                path, "norm_ranges"
+            )
+        payload = ExperimentalCanonicalCoreLowering().lower(canonical, metadata)
+        ifu = IFUUnroll(
+            Flattener({}).flatten(payload["program"]),
+            {},
+            structured_value_identity=True,
+            ub_dependency_mode="range_overlap",
+        )
+        ranges = [
+            ifu.next_inst()["memory_ranges"][0],
+            ifu.next_inst()["memory_ranges"][0],
+        ]
+        self.assertEqual(
+            [(item["byte_start"], item["byte_end"]) for item in ranges],
+            [(0, 256), (256, 512)],
+        )
+        self.assertFalse(
+            ranges_overlap(
+                DynamicMemoryRange("ub.scores", 0, 256, "read"),
+                DynamicMemoryRange("ub.scores", 256, 512, "write"),
+            )
         )
 
     def test_unknown_span_falls_back_to_same_base_global_ordering(self):
@@ -470,6 +522,62 @@ class UbAddressDependencyExperimentTest(unittest.TestCase):
         core.cycle = 11
         core._prune_ub_lsu_history()
         self.assertEqual(core.ub_lsu_history, [running])
+
+    def test_two_lsu_arbitration_phases_log_one_ub_block_per_cycle(self):
+        db = ParamDB(base_dir=str(ROOT))
+        core = OoOCore(
+            {**db.get_uarch(), "ub_dependency_mode": "range_overlap"},
+            db,
+            dtype="fp32",
+        )
+        blocker = Uop(
+            inst_id=0,
+            op="VSTS",
+            form="fp32",
+            src=[],
+            dst=[],
+            preg_src=[],
+            preg_dst=[],
+            preg_old=[],
+            profile=db.resolve_inst("VSTS", "fp32", "fp32"),
+            stream_seq=0,
+            memory_ranges=[
+                {
+                    "base_object_id": "tmp",
+                    "byte_start": 0,
+                    "byte_end": 4,
+                    "access_kind": "write",
+                }
+            ],
+        )
+        load = Uop(
+            inst_id=1,
+            op="VLDS",
+            form="fp32",
+            src=[],
+            dst=[],
+            preg_src=[],
+            preg_dst=[],
+            preg_old=[],
+            profile=db.resolve_inst("VLDS", "fp32", "fp32"),
+            stream_seq=1,
+            memory_ranges=[
+                {
+                    "base_object_id": "tmp",
+                    "byte_start": 0,
+                    "byte_end": 4,
+                    "access_kind": "read",
+                }
+            ],
+        )
+        core.ub_lsu_history[:] = [blocker, load]
+        logged_ids: set[int] = set()
+
+        self.assertTrue(core._blocked_by_ub_dependency(load, logged_ids))
+        self.assertTrue(core._blocked_by_ub_dependency(load, logged_ids))
+
+        self.assertEqual(core._ub_dependency_blocked_cycles, 1)
+        self.assertEqual(logged_ids, {1})
 
     def test_same_base_non_overlapping_ranges_do_not_create_dependency(self):
         canonical, metadata = ValueVersioningPass().run_with_ub_experiment_metadata(

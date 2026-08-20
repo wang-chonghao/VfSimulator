@@ -714,6 +714,7 @@ class OoOCoreMainline(OoOCore):
         issued_stores: int,
         issued_total: int,
         membar_blocked_logged_ids: Optional[Set[int]] = None,
+        ub_dependency_blocked_logged_ids: Optional[Set[int]] = None,
     ) -> Tuple[int, int, int]:
         """Issue pressure-ranked ready LSU operations within shared UB limits."""
         if cycle < self.vf_startup_cost or issued_total >= self.ub_slots:
@@ -748,7 +749,10 @@ class OoOCoreMainline(OoOCore):
                     if membar_blocked_logged_ids is not None:
                         membar_blocked_logged_ids.add(u.inst_id)
                 continue
-            if self._blocked_by_ub_dependency(u):
+            if self._blocked_by_ub_dependency(
+                u,
+                ub_dependency_blocked_logged_ids,
+            ):
                 continue
             if op_class == "STORE" and u.producer_op_for_store is None:
                 continue
@@ -865,12 +869,14 @@ class OoOCoreMainline(OoOCore):
         issued_stores = 0
         issued_lsu_total = 0
         membar_blocked_logged_ids: Set[int] = set()
+        ub_dependency_blocked_logged_ids: Set[int] = set()
         issued_loads, issued_stores, issued_lsu_total = self._issue_ready_lsu(
             c,
             issued_loads,
             issued_stores,
             issued_lsu_total,
             membar_blocked_logged_ids,
+            ub_dependency_blocked_logged_ids,
         )
 
         for u in self.SHQ:
@@ -930,6 +936,7 @@ class OoOCoreMainline(OoOCore):
             issued_stores,
             issued_lsu_total,
             membar_blocked_logged_ids,
+            ub_dependency_blocked_logged_ids,
         )
 
         self.cycle += 1

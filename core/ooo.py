@@ -548,16 +548,23 @@ class OoOCore:
             if prior.done_cycle is None or self.cycle <= prior.done_cycle
         ]
 
-    def _blocked_by_ub_dependency(self, u: Uop) -> bool:
+    def _blocked_by_ub_dependency(
+        self,
+        u: Uop,
+        blocked_logged_ids: Optional[Set[int]] = None,
+    ) -> bool:
         blockers = self._ub_dependency_blockers(u)
         u.blocked_by_inst_ids = blockers
         if not blockers:
             return False
-        self._ub_dependency_blocked_cycles += 1
-        old_reason = u.blocked_reason
-        u.blocked_reason = "ub_address_dependency"
-        self._log("blocked", u)
-        u.blocked_reason = old_reason
+        if blocked_logged_ids is None or u.inst_id not in blocked_logged_ids:
+            self._ub_dependency_blocked_cycles += 1
+            old_reason = u.blocked_reason
+            u.blocked_reason = "ub_address_dependency"
+            self._log("blocked", u)
+            u.blocked_reason = old_reason
+            if blocked_logged_ids is not None:
+                blocked_logged_ids.add(u.inst_id)
         return True
 
     def _record_ub_lsu(self, u: Uop) -> None:

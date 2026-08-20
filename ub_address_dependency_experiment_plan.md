@@ -25,10 +25,14 @@
 
 - 初始计划基线：`master@5972f25`。
 - 实际开发基线：合入最新 RR/Canonical 前端后的 `ded85be`。
+- 当前复测基线：`cdb7109`，已合入主线共享 `ub_slots=2`和
+  `lsu_store_priority_preg_threshold=1` 仲裁。
 - 实验分支：`ub-address-dependency-experiment`。
 - 本次开发只实现 Python 前端与 Python Core，用于实验性验证语义和性能收益。
 - 第一阶段可以增加默认关闭的实验字段，但不改变默认行为和已有回归结果。
-- 本分支不修改 C++ Native；是否同步 C++ 必须在实验完成后另立分支和开发任务。
+- UB 地址依赖实验能力仍只在 Python 侧实现。当前分支中的 C++
+  变更只是同步主线共享 UB 槽和阈值仲裁，不实现
+  `range_overlap` 地址依赖。
 - 现有 `mem-bar-local-dep-mvp` 分支不作为实现基础；可以参考其实验结论，但不直接
   合入，避免带回旧 Core 和旧前端假设。
 
@@ -115,7 +119,8 @@ Canonical schema，并同步 Python serialization、C++ validator/lowering 和�
 1. IFU 没有把 affine offset 按当前 `iteration_path` 和参数求成动态具体地址。
 2. Uop 没有稳定携带动态 `memory_range`。
 3. OoO/LSQ 不维护前序动态 load/store 的地址依赖关系。
-4. 普通 `NORM_B16/NORM_B32` 等访问模式的 span 还没有完整、可审计的定义。
+4. `NORM/NORM_B16/NORM_B32` 已按完整 256-byte 向量访问实现；B16 对应 128 个
+   元素，B32 对应 64 个元素。`PK_*` 等其他模式的 span 仍需补充可审计定义。
 5. CCE adapter 当前没有区分普通 offset 与 `POST_UPDATE` delta，也没有保留独立的
    UB pointer state。
 6. 当前 Membar ControlUnit 仍是全局方向性 gate，这是基线模式需要保留的行为。
@@ -167,8 +172,9 @@ span 的优先级：
 3. 无法确定时标记为 unresolved。
 
 不能把 `BRC_B32` 建成 64 个元素的读取；它读取一个 scalar 后广播，UB span 为一个
-B32 元素。`ONEPT_*` 同样按单点访问处理。`NORM_*`、`PK_*` 和其它模式在没有明确
-ISA 依据前不得猜测。
+B32 元素。`ONEPT_*` 同样按单点访问处理。已确认 `NORM/NORM_B16/NORM_B32` 每次
+访问完整 256 bytes，因此 B16 搬运 128 个元素，B32 搬运 64 个元素；当前不根据
+mask 缩小范围。`PK_*` 和其它模式在没有明确 ISA 依据前不得猜测。
 
 临时访问模式映射应放在独立配置或独立兼容模块中，不散落为 opcode 特判。
 
@@ -659,6 +665,8 @@ legacy payload 不能直接启用 `range_overlap`。这保证本轮 diff 不包�
 | 精确访问比例 | 12/12，100% |
 | 精确依赖边 | 4 |
 | fallback 依赖边 | 0 |
+| Membar blocked 记录 | 50 |
+| UB dependency blocked 记录 | 44 |
 
 日志逐项验证 `load[i].start == store[i].done + 1`，且第一个 post-barrier load
 不需要等待最后一个 store 完成。
@@ -679,23 +687,54 @@ legacy payload 不能直接启用 `range_overlap`。这保证本轮 diff 不包�
 
 | 指标 | 结果 |
 |---|---:|
-| 全局 Membar | 1867 cycle |
-| 局部地址依赖 | 1850 cycle |
-| 节省 | 17 cycle |
-| 加速比 | 1.0092x |
+| 全局 Membar | 1869 cycle |
+| 局部地址依赖 | 1809 cycle |
+| 节省 | 60 cycle |
+| 加速比 | 1.0332x |
 | 动态非 Membar 指令 | 4224，两侧一致 |
-| 精确访问比例 | 0/1536，0% |
+| 精确访问比例 | 1536/1536，100% |
 | 精确依赖边 | 0 |
-| fallback 依赖边 | 230 |
-| fallback warning 实例 | 30（same-base 30，global 0） |
-| Membar blocked cycles | 1212 |
-| UB dependency blocked cycles | 694 |
+| fallback 依赖边 | 0 |
+| fallback warning 实例 | 0 |
+| Membar blocked records | 1212 |
+| UB dependency blocked records | 0 |
 
-该 case 使用的 `NORM/NORM_B32` span 尚无经确认的范围定义。因此这 17 cycle 收益只
-能解释为：不同原始 UB buffer 之间不再被全局 barrier 互相等待，而同一 base 内仍
-采用保守 fallback；不能把它解释为精确 range overlap 的完整收益。
+该 case 的 `NORM/NORM_B32` 已展开为精确 256-byte 区间。运行时阻塞边为 0，表示
+后续 load 到达 LSU 时，与其区间重叠的前序 store 已经完成；收益来自不再等待同一
+全局 Membar 覆盖的其他地址或其他 UB object 上尚未完成的 store。
 
-### 14.4 RMSNorm 穿刺状态
+### 14.4 64 轮双循环 CCE 复测
+
+输入：`/tmp/vfsim_ub_two_loops_i64.cce`。前一段每轮执行
+`2 VLDS + VADD + VSTS`，通过 `Membar(VST_VLD)` 后，后一段每轮执行
+`VLDS + VMULS + VSTS`。
+
+| 指标 | 合入共享 UB 槽前 | span 未恢复 | 当前复测 |
+|---|---:|---:|---:|
+| 全局 Membar | 203 cycle | 262 cycle | 262 cycle |
+| 局部地址依赖 | 184 cycle | 262 cycle | 229 cycle |
+| 节省 | 19 cycle | 0 cycle | 33 cycle |
+| 加速比 | 1.1033x | 1.0000x | 1.1441x |
+| CAModel | 246 cycle | 246 cycle | 246 cycle |
+| 动态非 Membar 指令 | 448 | 448 | 448 |
+| 精确访问比例 | - | 0/320 | 320/320，100% |
+| fallback 依赖边 | - | 998 | 0 |
+| Membar blocked 记录 | - | 1005 | 1005 |
+| UB dependency blocked 记录 | - | 1005 | 0 |
+
+共享 `ub_slots=2` 禁止了原模型同拍启动 `2 VLD + 1 VST`，因此两种
+VfSim 模式相对旧调度均发生变化。恢复 `NORM/NORM_B32` 的完整 256-byte 范围后，
+局部模式不再回退成同 base 全局阻塞，最终为 229 cycle，比全局 Membar 节省
+33 cycle；相对 CAModel 246 cycle 偏小 17 cycle，约 6.9%。
+
+已刷新计算指令完成 IPC（窗口 10 cycle）：
+
+- `results/ub_address_dependency_experiment/compute_ipc_i64_window10.csv`
+- `results/ub_address_dependency_experiment/compute_ipc_i64_window10.png`
+- `results/ub_address_dependency_experiment/compute_ipc_i64_window10_camodel_compare.csv`
+- `results/ub_address_dependency_experiment/compute_ipc_i64_window10_camodel_compare.png`
+
+### 14.5 RMSNorm 穿刺状态
 
 `RMSNorm_T4_ref_no_newton.dsl` 当前在既有 Catalog 校验阶段被合法但尚未登记的
 `UNPK_B16`（后续还有 `PART_EVEN` 变体）阻塞，尚未进入本实验 lowering。为了遵守
@@ -703,16 +742,16 @@ legacy payload 不能直接启用 `range_overlap`。这保证本轮 diff 不包�
 CCE parser 中增加实验专用 opcode/config 特判。需要先由独立 Catalog 任务补齐这些
 合法调用变体，再运行 RMSNorm A/B 数据。
 
-### 14.5 默认回归
+### 14.6 默认回归
 
-- `python3 -m unittest discover tests`：`186/186` 通过。
+- `python3 -m unittest discover tests`：`196/196` 通过。
 - 完整 cost-model regression：通过。
 - 默认 `disabled` 结果与开发前基线提交 `ded85be` 逐项一致。
 - 相对仓库基准文件，`gelu_poly_i96_u6/u8` 仍分别为 `+15/+11` cycle；在
   `ded85be` 上复跑结果相同，不是本实验引入。
 - 未修改任何 C++ Native 文件。
 
-### 14.6 A/B 可比性和地址宽度收尾
+### 14.7 A/B 可比性和地址宽度收尾
 
 - 实验侧移除 loop body 内的方向 Membar 时，保留基线因 Membar 产生的有效 `unroll=1`，避免收益混入动态指令重排。
 - A/B 除了比较 op/form 直方图，还必须按 `stream_seq` 比较 `(static_instruction_id, iteration_path, op, form)` 完整动态顺序。
