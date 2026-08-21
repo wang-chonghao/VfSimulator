@@ -269,12 +269,14 @@ def run_simulation(
         os.path.join(results_dir, "start_by_cycle.json"),
         os.path.join(results_dir, "done_by_cycle.json"),
     )
+    vf_end_cycle = int(ooo.vf_end_cycle())
     trace_path = os.path.join(results_dir, "trace.json")
     dump_perfetto_trace(
         trace_path,
         ooo.cyc_start_log,
         ooo.cyc_done_log,
         issue_ports=int(getattr(ooo, "issue_ports", 2)),
+        vf_end_cycle=vf_end_cycle,
     )
     idu.dump_dispatch_log(os.path.join(results_dir, "idu_to_ooo.json"))
     idu.dump_vloop_trace(os.path.join(results_dir, "vloop_trace.json"))
@@ -286,7 +288,7 @@ def run_simulation(
 
     result = {
         "cycles_executed": int(cycle),
-        "vf_end_cycle": int(ooo.vf_end_cycle()),
+        "vf_end_cycle": vf_end_cycle,
         "results_dir": str(results_dir),
         "trace_path": trace_path,
     }

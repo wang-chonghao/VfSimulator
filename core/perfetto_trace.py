@@ -10,6 +10,8 @@ _PROCESS_BY_CLASS = {
     "COMPUTE": (200, "EXU Unit", 20),
     "STORE": (300, "Store Unit", 30),
 }
+_VF_PID = 1
+_VF_TID = 0
 
 
 def _metadata_event(name: str, pid: int, tid: int, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -42,6 +44,7 @@ def build_perfetto_trace(
     done_events: Iterable[Mapping[str, Any]],
     *,
     issue_ports: int,
+    vf_end_cycle: int,
 ) -> Dict[str, Any]:
     """Build a Perfetto-compatible Chrome Trace Event payload.
 
@@ -55,6 +58,17 @@ def build_perfetto_trace(
         if event.get("inst_id") is not None
     }
     trace_events: List[Dict[str, Any]] = []
+
+    trace_events.append(_metadata_event("process_name", _VF_PID, 0, {"name": "VF"}))
+    trace_events.append(
+        _metadata_event("process_sort_index", _VF_PID, 0, {"sort_index": 0})
+    )
+    trace_events.append(
+        _metadata_event("thread_name", _VF_PID, _VF_TID, {"name": "VF Lifetime"})
+    )
+    trace_events.append(
+        _metadata_event("thread_sort_index", _VF_PID, _VF_TID, {"sort_index": 0})
+    )
 
     for op_class, (pid, process_name, sort_index) in _PROCESS_BY_CLASS.items():
         trace_events.append(
@@ -135,6 +149,23 @@ def build_perfetto_trace(
             int(event["args"]["inst_id"]),
         )
     )
+    end_cycle = max(0, int(vf_end_cycle))
+    trace_events.append(
+        {
+            "name": "VF",
+            "cat": "vf",
+            "ph": "X",
+            "ts": 0,
+            "dur": end_cycle,
+            "pid": _VF_PID,
+            "tid": _VF_TID,
+            "args": {
+                "start_cycle": 0,
+                "end_cycle": end_cycle,
+                "cycles": end_cycle,
+            },
+        }
+    )
     trace_events.extend(slices)
     return {
         "traceEvents": trace_events,
@@ -152,11 +183,13 @@ def dump_perfetto_trace(
     done_events: Iterable[Mapping[str, Any]],
     *,
     issue_ports: int,
+    vf_end_cycle: int,
 ) -> None:
     payload = build_perfetto_trace(
         start_events,
         done_events,
         issue_ports=issue_ports,
+        vf_end_cycle=vf_end_cycle,
     )
     with Path(path).open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))

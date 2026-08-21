@@ -729,10 +729,14 @@ VfSim 模式相对旧调度均发生变化。恢复 `NORM/NORM_B32` 的完整 25
 
 已刷新计算指令完成 IPC（窗口 10 cycle）：
 
-- `results/ub_address_dependency_experiment/compute_ipc_i64_window10.csv`
-- `results/ub_address_dependency_experiment/compute_ipc_i64_window10.png`
-- `results/ub_address_dependency_experiment/compute_ipc_i64_window10_camodel_compare.csv`
-- `results/ub_address_dependency_experiment/compute_ipc_i64_window10_camodel_compare.png`
+- `results/ub_address_dependency_experiment/vadd_vmuls_i64/ipc/compute_ipc_vfsim_window10.csv`
+- `results/ub_address_dependency_experiment/vadd_vmuls_i64/ipc/compute_ipc_vfsim_window10.png`
+- `results/ub_address_dependency_experiment/vadd_vmuls_i64/ipc/compute_ipc_camodel_compare_window10.csv`
+- `results/ub_address_dependency_experiment/vadd_vmuls_i64/ipc/compute_ipc_camodel_compare_window10.png`
+
+实验结果从本轮起按 case 归档。每个 case 必须独立保存 CCE/DSL 源码、CAModel
+`instr_log`/`instr_popped_log`/`rvec.EXU.dump`、VfSim 全局与局部模式完整日志，以及
+IPC CSV/图片。目录模板见 `results/ub_address_dependency_experiment/README.md`。
 
 ### 14.5 RMSNorm 穿刺状态
 

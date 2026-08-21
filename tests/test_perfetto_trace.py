@@ -76,6 +76,7 @@ class PerfettoTraceTest(unittest.TestCase):
             self._start_events(),
             self._done_events(),
             issue_ports=2,
+            vf_end_cycle=45,
         )
         events = payload["traceEvents"]
         process_names = {
@@ -88,12 +89,21 @@ class PerfettoTraceTest(unittest.TestCase):
             for event in events
             if event["ph"] == "M" and event["name"] == "thread_name"
         }
-        slices = [event for event in events if event["ph"] == "X"]
+        slices = [
+            event
+            for event in events
+            if event["ph"] == "X" and event["cat"] != "vf"
+        ]
+        vf_slices = [
+            event
+            for event in events
+            if event["ph"] == "X" and event["cat"] == "vf"
+        ]
 
-        self.assertEqual(process_names, {"Load Unit", "EXU Unit", "Store Unit"})
+        self.assertEqual(process_names, {"VF", "Load Unit", "EXU Unit", "Store Unit"})
         self.assertEqual(
             thread_names,
-            {"Load Pipeline", "EXU0", "EXU1", "Store Pipeline"},
+            {"VF Lifetime", "Load Pipeline", "EXU0", "EXU1", "Store Pipeline"},
         )
         self.assertEqual([event["name"] for event in slices], [
             "VLDS.fp32",
@@ -106,6 +116,15 @@ class PerfettoTraceTest(unittest.TestCase):
         self.assertEqual(compute["args"]["start_cycle"], 20)
         self.assertEqual(compute["args"]["done_cycle"], 29)
         self.assertEqual(compute["args"]["preg_src"], ["p0", "p1"])
+        self.assertEqual(len(vf_slices), 1)
+        self.assertEqual(
+            (vf_slices[0]["ts"], vf_slices[0]["dur"]),
+            (0, 45),
+        )
+        self.assertEqual(
+            vf_slices[0]["args"],
+            {"start_cycle": 0, "end_cycle": 45, "cycles": 45},
+        )
         self.assertEqual(payload["displayTimeUnit"], "us")
 
     def test_dumped_trace_is_a_json_object_perfetto_can_import(self):
@@ -116,11 +135,20 @@ class PerfettoTraceTest(unittest.TestCase):
                 self._start_events(),
                 self._done_events(),
                 issue_ports=2,
+                vf_end_cycle=45,
             )
             payload = json.loads(path.read_text(encoding="utf-8"))
 
         self.assertIn("traceEvents", payload)
         self.assertTrue(any(event["ph"] == "X" for event in payload["traceEvents"]))
+        self.assertTrue(
+            any(
+                event["ph"] == "X"
+                and event["cat"] == "vf"
+                and event["dur"] == 45
+                for event in payload["traceEvents"]
+            )
+        )
 
 
 if __name__ == "__main__":
