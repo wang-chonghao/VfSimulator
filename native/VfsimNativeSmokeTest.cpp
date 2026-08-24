@@ -314,6 +314,66 @@ void verifyNativeUbSharedSlotsAndPregPressure(const ParamDB &db) {
           "the second load must wait when a store consumes one shared UB slot");
 }
 
+void verifyNativeVectorAlignGenerations(const ParamDB &db) {
+  OoOCoreMainline core(db.uarch(), db, "fp32");
+
+  DynamicInst reduction;
+  reduction.instId = 9300;
+  reduction.streamSeq = 0;
+  reduction.op = "VCMAX";
+  reduction.form = "fp32";
+  reduction.dst = {"v0"};
+
+  auto makeVstus = [](int64_t id, int64_t seq, const std::string &memory) {
+    DynamicInst inst;
+    inst.instId = id;
+    inst.streamSeq = seq;
+    inst.op = "VSTUS";
+    inst.form = "fp32";
+    inst.src = {"v0"};
+    inst.dst = {memory};
+    inst.alignStateOperation = "append";
+    inst.alignStateId = "u1";
+    return inst;
+  };
+  auto makeVstas = [](int64_t id, int64_t seq, const std::string &memory) {
+    DynamicInst inst;
+    inst.instId = id;
+    inst.streamSeq = seq;
+    inst.op = "VSTAS";
+    inst.form = "fp32";
+    inst.dst = {memory};
+    inst.alignStateOperation = "consume";
+    inst.alignStateId = "u1";
+    return inst;
+  };
+
+  core.accept(reduction);
+  core.accept(makeVstus(9301, 1, "mem0"));
+  core.accept(makeVstas(9302, 2, "mem0"));
+  core.accept(makeVstus(9303, 3, "mem1"));
+  core.accept(makeVstas(9304, 4, "mem1"));
+  for (int cycle = 0; cycle < 100; ++cycle)
+    core.step();
+
+  const auto root = std::filesystem::temp_directory_path() /
+                    "vfsim_native_vector_align";
+  std::filesystem::create_directories(root);
+  core.dumpSimpleLogs((root / "starts.jsonl").string(),
+                      (root / "done.jsonl").string());
+  const std::string starts = readText(root / "starts.jsonl");
+  const int64_t firstProducer = cycleForInstId(starts, 9301);
+  const int64_t firstConsumer = cycleForInstId(starts, 9302);
+  const int64_t secondProducer = cycleForInstId(starts, 9303);
+  const int64_t secondConsumer = cycleForInstId(starts, 9304);
+  require(firstConsumer == firstProducer + 1,
+          "VSTAS must consume only its sealed generation at forwarding + 1");
+  require(firstConsumer < secondProducer,
+          "a later VSTUS must not pollute the preceding sealed generation");
+  require(secondConsumer == secondProducer + 1,
+          "the next VSTAS must wait for its own VSTUS generation");
+}
+
 ParamDB makeDurationTestDb() {
   const auto root = std::filesystem::temp_directory_path() / "vfsim_native_duration_cfg";
   writeText(
@@ -868,6 +928,7 @@ int main() {
     verifyNativeExu0ReserveDispatch(db);
     verifyNativeThreePortsMode(db);
     verifyNativeUbSharedSlotsAndPregPressure(db);
+    verifyNativeVectorAlignGenerations(db);
     verifyUnrollOrder(db);
     verifyMembarDisablesUnroll(db);
     verifyExplicitMembarTiming(db);

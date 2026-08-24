@@ -48,7 +48,7 @@ _LOCAL_SCALAR_DECL_RE = re.compile(
 )
 _LOCAL_UB_POINTER_DECL_RE = re.compile(
     r"^\s*(?:(?:const|volatile|static)\s+)*__ubuf__\s+"
-    r"[A-Za-z_]\w*\s*\*\s*(?P<name>[A-Za-z_]\w*)\s*=\s*"
+    r"(?P<dtype>[A-Za-z_]\w*)\s*\*\s*(?P<name>[A-Za-z_]\w*)\s*=\s*"
     r"(?P<initializer>.+?)\s*;\s*$",
     re.DOTALL,
 )
@@ -68,6 +68,7 @@ class CCEVFScope:
     declaration_source: str
     params: Sequence[str]
     param_storage: Dict[str, str]
+    param_dtypes: Dict[str, str]
     source_path: str
 
 
@@ -107,6 +108,7 @@ def extract_cce_vf_scopes(path: str | Path) -> List[CCEVFScope]:
                 declaration_source=body[: vec_match.start()],
                 params=_parse_param_names(match.group("params")),
                 param_storage=_parse_param_storage(match.group("params")),
+                param_dtypes=_parse_param_dtypes(match.group("params")),
                 source_path=str(source_path),
             )
         )
@@ -160,13 +162,30 @@ class _VFScopeParser:
     def __init__(self, scope: CCEVFScope, loop_params: Dict[str, int]) -> None:
         self.scope = scope
         self.loop_params = loop_params
-        self.register_dtypes = _extract_vector_decls(scope.declaration_source)
+        declared_vectors = _extract_vector_decls(scope.declaration_source)
+        self.align_state_names = {
+            name for name, dtype in declared_vectors.items() if dtype == "align"
+        }
+        self._align_state_serial = 0
+        self.align_state_ids = {
+            name: self._new_align_state_id(name) for name in self.align_state_names
+        }
+        self.register_dtypes = {
+            name: dtype
+            for name, dtype in declared_vectors.items()
+            if dtype != "align"
+        }
         self.register_names = set(self.register_dtypes)
         self.ub_names = {
             name for name, storage in scope.param_storage.items() if storage == "UB"
         }
         self.ub_aliases: Dict[str, tuple[str, str]] = {
             name: (name, "0") for name in self.ub_names
+        }
+        self.ub_dtypes: Dict[str, str] = {
+            name: dtype
+            for name, dtype in scope.param_dtypes.items()
+            if name in self.ub_names
         }
         self.scalar_names = {
             name for name, storage in scope.param_storage.items() if storage == "Scalar"
@@ -175,6 +194,7 @@ class _VFScopeParser:
         self.local_scalar_dtypes: Dict[str, str] = {}
         self.local_scalar_initializers: Dict[str, str] = {}
         self._record_function_scope_scalar_declarations(scope.declaration_source)
+        self._record_function_scope_ub_pointer_declarations(scope.declaration_source)
 
     def parse(self) -> List[VFNode]:
         return self._parse_block(
@@ -191,23 +211,29 @@ class _VFScopeParser:
     ) -> List[VFNode]:
         saved_dtypes = dict(self.register_dtypes)
         saved_names = set(self.register_names)
+        saved_align_state_names = set(self.align_state_names)
+        saved_align_state_ids = dict(self.align_state_ids)
         saved_scalar_names = set(self.scalar_names)
         saved_offset_scalar_names = set(self.offset_scalar_names)
         saved_scalar_dtypes = dict(self.local_scalar_dtypes)
         saved_scalar_initializers = dict(self.local_scalar_initializers)
         saved_ub_names = set(self.ub_names)
         saved_ub_aliases = dict(self.ub_aliases)
+        saved_ub_dtypes = dict(self.ub_dtypes)
         try:
             return self._parse_block_contents(text, induction_variables, base_line)
         finally:
             self.register_dtypes = saved_dtypes
             self.register_names = saved_names
+            self.align_state_names = saved_align_state_names
+            self.align_state_ids = saved_align_state_ids
             self.scalar_names = saved_scalar_names
             self.offset_scalar_names = saved_offset_scalar_names
             self.local_scalar_dtypes = saved_scalar_dtypes
             self.local_scalar_initializers = saved_scalar_initializers
             self.ub_names = saved_ub_names
             self.ub_aliases = saved_ub_aliases
+            self.ub_dtypes = saved_ub_dtypes
 
     def _parse_block_contents(
         self,
@@ -354,9 +380,18 @@ class _VFScopeParser:
             callee, spec, args, induction_variables
         )
         form = _infer_inst_form(op, dst, src)
+        if form is None:
+            form = self._infer_memory_form(spec, args)
         resolved_op, resolved_form = DEFAULT_INSTRUCTION_CATALOG.resolve_and_validate_form(
             op, form
         )
+        attributes: dict[str, str] = {}
+        if spec.align_state_argument_index is not None:
+            state_name = _base_identifier(args[spec.align_state_argument_index])
+            attributes = {
+                "align_state_operation": str(spec.align_state_operation),
+                "align_state_id": self.align_state_ids[state_name],
+            }
         return VFInst(
             name=resolved_op,
             form=resolved_form,
@@ -365,6 +400,7 @@ class _VFScopeParser:
             instruction_class=spec.instruction_class.value,
             memory_accesses=self._memory_accesses_for_call(spec, args),
             source_location=self._source_location(line),
+            attributes=attributes,
             supplemental_inputs=tuple(
                 MemInfo(args[operand.argument_index].strip(), "Scalar")
                 for operand in spec.operands
@@ -440,6 +476,12 @@ class _VFScopeParser:
     ) -> MemInfo | None:
         kind = operand_spec.kind
         name = _base_identifier(arg)
+        if kind == ArgumentKind.ALIGN_STATE:
+            if name not in self.align_state_names:
+                raise ValueError(
+                    f"{callee} argument {index} must be a declared vector_align state: {arg}"
+                )
+            return None
         if kind == ArgumentKind.REGISTER:
             if name not in self.register_names:
                 raise ValueError(
@@ -542,6 +584,27 @@ class _VFScopeParser:
                 f"{callee} argument {index} must be a configuration token: {arg}"
             )
         return None
+
+    def _infer_memory_form(
+        self,
+        spec: InstructionSpec,
+        args: Sequence[str],
+    ) -> str | None:
+        memory_operand = next(
+            (
+                operand
+                for operand in spec.operands
+                if operand.kind == ArgumentKind.UB
+                and operand.argument_index < len(args)
+            ),
+            None,
+        )
+        if memory_operand is None:
+            return None
+        reference = self._parse_ub_reference(args[memory_operand.argument_index])
+        if reference is None:
+            return None
+        return self.ub_dtypes.get(reference[0])
 
     def _resolved_integer_scalar_constants(self) -> Dict[str, int]:
         resolved = dict(self.loop_params)
@@ -746,8 +809,21 @@ class _VFScopeParser:
         for raw_name in _split_args(names_text):
             name = _declared_identifier(raw_name)
             if name:
+                if form == "align":
+                    self.register_names.discard(name)
+                    self.register_dtypes.pop(name, None)
+                    self.align_state_names.add(name)
+                    self.align_state_ids[name] = self._new_align_state_id(name)
+                    continue
+                self.align_state_names.discard(name)
+                self.align_state_ids.pop(name, None)
                 self.register_dtypes[name] = form
                 self.register_names.add(name)
+
+    def _new_align_state_id(self, name: str) -> str:
+        state_id = f"{self.scope.kernel_name}:align:{self._align_state_serial}:{name}"
+        self._align_state_serial += 1
+        return state_id
 
     def _record_function_scope_scalar_declarations(self, source: str) -> None:
         for segment in source.split(";"):
@@ -757,6 +833,15 @@ class _VFScopeParser:
             candidate = f"{stmt};"
             if _LOCAL_SCALAR_DECL_RE.fullmatch(candidate):
                 self._record_local_scalar_decl_statement(candidate)
+
+    def _record_function_scope_ub_pointer_declarations(self, source: str) -> None:
+        for segment in source.split(";"):
+            stmt = segment.strip()
+            if not stmt:
+                continue
+            candidate = f"{stmt};"
+            if _LOCAL_UB_POINTER_DECL_RE.fullmatch(candidate):
+                self._record_local_ub_pointer_decl_statement(candidate)
 
     def _record_local_scalar_decl_statement(
         self,
@@ -788,6 +873,7 @@ class _VFScopeParser:
         if not match:
             raise ValueError(f"Unsupported local UB pointer declaration: {stmt}")
         name = match.group("name")
+        dtype = _cce_scalar_dtype_to_form(match.group("dtype"))
         initializer = match.group("initializer").strip()
         ub_reference = self._parse_ub_reference(initializer)
         if ub_reference is None:
@@ -796,6 +882,7 @@ class _VFScopeParser:
             )
         self.ub_names.add(name)
         self.ub_aliases[name] = ub_reference
+        self.ub_dtypes[name] = dtype
 
     def _loop_count_from_header(self, header: str) -> tuple[int, str, int, int]:
         parts = [part.strip() for part in header.split(";")]
@@ -859,6 +946,31 @@ def _parse_param_storage(params: str) -> Dict[str, str]:
         name = match.group(1)
         storage[name] = "UB" if "__ubuf__" in cleaned else "Scalar"
     return storage
+
+
+def _parse_param_dtypes(params: str) -> Dict[str, str]:
+    dtypes: Dict[str, str] = {}
+    for raw in _split_args(params):
+        cleaned = raw.strip()
+        if "__ubuf__" not in cleaned:
+            continue
+        match = re.search(
+            r"__ubuf__\s+([A-Za-z_]\w*)\s*\*\s*([A-Za-z_]\w*)",
+            cleaned,
+        )
+        if match:
+            dtypes[match.group(2)] = _cce_scalar_dtype_to_form(match.group(1))
+    return dtypes
+
+
+def _cce_scalar_dtype_to_form(dtype: str) -> str:
+    aliases = {
+        "float": "fp32",
+        "half": "fp16",
+        "bfloat16": "bf16",
+        "bfloat16_t": "bf16",
+    }
+    return aliases.get(dtype.lower(), str(normalize_dtype(dtype, default=dtype.lower())))
 
 
 def _infer_call_argument_constants(source: str, scope: CCEVFScope) -> Dict[str, int]:

@@ -83,7 +83,11 @@ int main() {
       !instructionCatalog.lookup("VLDS")->operands[2].allowIntegerExpression ||
       instructionCatalog.lookup("VLDS")->operands[3].allowIntegerExpression ||
       instructionCatalog.lookup("VDUP")->callVariants[1].argumentValues.at(3).count(
-          "POS_LOWEST") != 1)
+          "POS_LOWEST") != 1 ||
+      instructionCatalog.lookup("VSTUS")->alignStateOperation != "append" ||
+      instructionCatalog.lookup("VSTAS")->alignStateOperation != "consume" ||
+      instructionCatalog.lookup("VSTAS")->operands.front().kind !=
+          CatalogArgumentKind::AlignState)
     throw std::runtime_error("native generated instruction catalog mismatch");
 
   const auto sharedFixtureJson = json::parseFile(
@@ -93,6 +97,23 @@ int main() {
       decodeCanonicalVfInfoFixture(sharedFixtureJson);
   if (!validateCanonicalVfInfo(canonicalContract).ok())
     throw std::runtime_error("shared valid CanonicalVfInfo fixture was rejected");
+  CanonicalVfInfo missingAlignContract = canonicalContract;
+  CanonicalLoop missingAlignLoop =
+      *std::get<std::shared_ptr<const CanonicalLoop>>(
+          missingAlignContract.context.front().payload);
+  CanonicalInstruction missingAlignStore =
+      std::get<CanonicalInstruction>(missingAlignLoop.body.back().payload);
+  missingAlignStore.opcode = "VSTAS";
+  missingAlignStore.inputs.clear();
+  missingAlignStore.attributes.clear();
+  missingAlignLoop.body.back() =
+      CanonicalNode::makeInstruction(std::move(missingAlignStore));
+  missingAlignContract.context.front() =
+      CanonicalNode::makeLoop(std::move(missingAlignLoop));
+  if (!hasDiagnostic(validateCanonicalVfInfo(missingAlignContract),
+                     "catalog_align_state_mismatch"))
+    throw std::runtime_error(
+        "native validator accepted VSTAS without align-state attributes");
   const auto sharedCarriedJson = json::parseFile(
       std::filesystem::path(VFSIM_SOURCE_ROOT) /
       "tests/fixtures/canonical_vf_info/v1_valid_loop_carried.json");

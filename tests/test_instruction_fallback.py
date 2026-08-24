@@ -682,20 +682,46 @@ class InstructionFallbackTest(unittest.TestCase):
             )
         )
 
-    def test_timing_optional_store_uses_store_fallback(self):
+    def test_vector_align_stores_have_explicit_timing(self):
         db = ParamDB(base_dir=str(ROOT))
 
-        params = db.get_inst_form("VSTUS", form="fp32", dtype="fp32")
-
-        self.assertEqual(params["op_class"], "STORE")
-        self.assertEqual(params["latency"], 9)
-        self.assertTrue(
-            any(
-                warning["kind"] == "unsupported_isa_op"
-                and warning.get("op") == "VSTUS"
-                for warning in db.get_warnings()
-            )
+        for op in ("VSTUS", "VSTAS"):
+            params = db.get_inst_form(op, form="fp32", dtype="fp32")
+            self.assertEqual(params["op_class"], "STORE")
+            self.assertEqual(params["latency"], 8)
+        self.assertFalse(
+            any(warning.get("op") in {"VSTUS", "VSTAS"} for warning in db.get_warnings())
         )
+
+    def test_vector_align_generations_are_sealed_at_vstas_accept(self):
+        starts, _ = self._run_payload_logs(
+            [
+                {"type": "inst", "op": "VLDS", "form": "fp32", "src": ["memA"], "dst": ["v0"]},
+                {"type": "inst", "op": "VCMAX", "form": "fp32", "src": ["v0"], "dst": ["v1"]},
+                {
+                    "type": "inst", "op": "VSTUS", "form": "fp32", "src": ["v1"], "dst": ["memB"],
+                    "attributes": {"align_state_operation": "append", "align_state_id": "u1"},
+                },
+                {
+                    "type": "inst", "op": "VSTAS", "form": "fp32", "src": [], "dst": ["memB"],
+                    "attributes": {"align_state_operation": "consume", "align_state_id": "u1"},
+                },
+                {
+                    "type": "inst", "op": "VSTUS", "form": "fp32", "src": ["v1"], "dst": ["memC"],
+                    "attributes": {"align_state_operation": "append", "align_state_id": "u1"},
+                },
+                {
+                    "type": "inst", "op": "VSTAS", "form": "fp32", "src": [], "dst": ["memC"],
+                    "attributes": {"align_state_operation": "consume", "align_state_id": "u1"},
+                },
+            ]
+        )
+        vstus_starts = [item["cy"] for item in starts if item["op"] == "VSTUS"]
+        vstas_starts = [item["cy"] for item in starts if item["op"] == "VSTAS"]
+        self.assertEqual(len(vstus_starts), 2)
+        self.assertEqual(len(vstas_starts), 2)
+        self.assertEqual(vstas_starts[0], vstus_starts[0] + 1)
+        self.assertGreaterEqual(vstas_starts[1], vstus_starts[1] + 1)
 
     def test_loop_carried_vreg_alias_updates_following_store_source(self):
         values = {

@@ -1341,3 +1341,15 @@ Python API 路径也必须写出同样的 `model_warnings.json`，不能只在 C
 
 同一 lowered payload 的 Native Release 完整日志中位耗时由约 67.4 ms 降至
 约 64.5 ms；Native 原本已完成加载期 merge，因此收益小于 Python。
+
+## `VSTUS` / `VSTAS` 显式建模
+
+本轮将两条指令从 timing fallback 升级为显式 STORE 模型：latency 均为 8，并通过
+Catalog 声明 `vector_align` 状态参数。状态采用按动态指令序分组的 generation：
+`VSTUS` 追加 producer，`VSTAS` 在进入 OoO 时封存 producer 快照并打开下一组。
+`VSTAS` 不伪造 preg producer，而是在本组所有 producer start 后按配置的
+`VSTUS -> VSTAS = 1` forwarding 就绪。
+
+CCE Adapter、Canonical attributes、Python OoO 和 Native OoO 使用同一语义。
+稳定 producer record 的生命周期覆盖 ROB/LSQ 副本和 producer 退休，禁止保存队列
+元素裸指针。不同状态和不同 generation 分别维护，后续组不能加入已封存的前一组。

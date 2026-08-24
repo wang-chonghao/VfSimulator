@@ -415,6 +415,7 @@ class RenameController:
             src_value_instances=src_value_instances,
             dst_value_instances=dst_value_instances,
         )
+        self.core.bind_align_state(u, inst.get("attributes"))
         setattr(u, "preg_src_gen", preg_src_gen)
 
         for pd in preg_dst:
@@ -742,13 +743,19 @@ class OoOCoreMainline(OoOCore):
                     if membar_blocked_logged_ids is not None:
                         membar_blocked_logged_ids.add(u.inst_id)
                 continue
-            if op_class == "STORE" and u.producer_op_for_store is None:
+            if (
+                op_class == "STORE"
+                and not u.store_dependencies_resolved
+                and u.producer_op_for_store is None
+            ):
                 continue
 
             u.start_cycle = cycle
             u.blocked_reason = None
             u.done_cycle = cycle + self._latency(u.op, u.form, u.profile)
             u.state = "running"
+            if u.align_producer_record is not None:
+                u.align_producer_record.start_cycle = cycle
             self._schedule_src_release_from_start(u)
 
             if op_class == "LOAD":
@@ -806,6 +813,8 @@ class OoOCoreMainline(OoOCore):
                     self.exq_inflight[u.exu_port] = max(0, self.exq_inflight[u.exu_port] - 1)
                     u.exu_port = None
                 if u.profile and u.profile.op_class == "STORE":
+                    if u.align_producer_record is not None:
+                        u.align_producer_record.done_cycle = u.done_cycle
                     iter_key = self._top_iter_key_from_stack(u.top_block_id, list(u.iter_stack))
                     iter_remain = self.iter_outstanding_stores.get(iter_key, 0) - 1
                     self.iter_outstanding_stores[iter_key] = max(0, iter_remain)

@@ -30,6 +30,8 @@ struct DynamicInst {
   int64_t streamSeq = -1;
   std::vector<std::string> src;
   std::vector<std::string> dst;
+  std::string alignStateOperation;
+  std::string alignStateId;
   std::vector<bool> srcValueRelease;
   std::vector<bool> dstValueKeep;
   std::string staticInstructionId;

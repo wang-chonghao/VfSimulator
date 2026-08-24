@@ -876,6 +876,28 @@ ISA `dispatch_exu` 取值：
 - 启动后 `done_cycle = start + isa_latency(store_op, form)`
 - 开始执行后再触发 SHQ release 计时
 
+### 12.4 `VSTUS` / `VSTAS` 对齐状态
+
+`vector_align` 建模为独立的收集状态，不是普通向量寄存器，不进入 SSA/RAT，
+不分配物理寄存器，也不增加 preg 压力。
+
+- `VSTUS(state, count, src, memory, POST_UPDATE)` 从普通向量寄存器读取数据，
+  向 `state` 当前 generation 追加一个 producer，并执行 UB store；它不读取旧状态。
+- `VSTAS(state, memory, offset, POST_UPDATE)` 消费并封存当前 generation，随后为
+  同一状态打开下一 generation；它没有普通向量寄存器输入。
+- generation 在 `VSTAS` 进入 OoO/LSQ 时封存，而不是等到发射时封存，因此后续已
+  入队的 `VSTUS` 不会污染前一组。
+- `VSTAS` 等待本组所有 `VSTUS` 已经 start，不等待它们 done。就绪时间取各
+  `VSTUS -> VSTAS` forwarding 的最大值，当前配置为 1 cycle。
+- 两条指令仍属于 STORE，进入 LSQ，消耗 store port、`ub_slots` 和共享 SHQ 信用；
+  `mem_bar(VST_VLD)` 会等待它们完成。
+- `VSTUS`、`VSTAS` 当前显式 latency 均为 8；reduction 到 `VSTUS` 的 forwarding
+  复用相同 reduction 到 `VSTS` 的实测参数。
+
+Python 和 Native 使用相同的 generation 封存与 ready 语义。Canonical 指令通过
+`align_state_operation` 和 `align_state_id` attributes 传递状态信息；Catalog 已知的
+`VSTUS`/`VSTAS` 缺少这些属性时由 validator 拒绝，避免进入 Core 后永久阻塞。
+
 ---
 
 ## 13. 理论上界模式

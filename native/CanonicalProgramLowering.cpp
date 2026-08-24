@@ -196,6 +196,23 @@ private:
     dynamic.op = instruction.opcode;
     dynamic.form = instruction.form;
     dynamic.staticInstructionId = instruction.instructionId;
+    const auto alignOperation = instruction.attributes.find("align_state_operation");
+    if (alignOperation != instruction.attributes.end()) {
+      const auto *value = std::get_if<std::string>(&alignOperation->second);
+      if (value == nullptr)
+        throw std::runtime_error(
+            "align_state_operation must be a string: " +
+            instruction.instructionId);
+      dynamic.alignStateOperation = *value;
+    }
+    const auto alignState = instruction.attributes.find("align_state_id");
+    if (alignState != instruction.attributes.end()) {
+      const auto *value = std::get_if<std::string>(&alignState->second);
+      if (value == nullptr)
+        throw std::runtime_error("align_state_id must be a string: " +
+                                 instruction.instructionId);
+      dynamic.alignStateId = *value;
+    }
     fillDynamicMetadata(dynamic);
     for (const auto &operand : instruction.inputs)
       dynamic.src.push_back(resolve(operand.valueId));

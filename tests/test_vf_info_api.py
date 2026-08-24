@@ -595,14 +595,14 @@ class VfInfoApiTest(unittest.TestCase):
             ["VLDS", "VSTS", "VDUP", "VDUP"],
         )
 
-    def test_cce_timing_optional_store_forms_are_semantically_accepted(self):
+    def test_cce_vector_align_stores_use_state_attributes(self):
         source = """
             void valid(__ubuf__ float *a) {
               __VEC_SCOPE__ {
                 vector_f32 value;
-                vector_bool mask = pset_b32(PAT_ALL);
-                vstus(value, a, 0, NORM_B32, mask);
-                vstas(value, a, 64, NORM_B32, mask, POST_UPDATE);
+                vector_align u1;
+                vstus(u1, 1, value, a, POST_UPDATE);
+                vstas(u1, a, 0, POST_UPDATE);
               }
             }
         """
@@ -614,6 +614,15 @@ class VfInfoApiTest(unittest.TestCase):
             [(node.name, node.form) for node in vf_info.context],
             [("VSTUS", "fp32"), ("VSTAS", "fp32")],
         )
+        vstus, vstas = vf_info.context
+        self.assertEqual(vstus.src, ["value"])
+        self.assertEqual(vstas.src, [])
+        self.assertEqual(
+            vstus.attributes["align_state_id"],
+            vstas.attributes["align_state_id"],
+        )
+        self.assertEqual(vstus.attributes["align_state_operation"], "append")
+        self.assertEqual(vstas.attributes["align_state_operation"], "consume")
 
     def test_cce_rejects_invalid_vdup_call_variant_combinations(self):
         sources = (
