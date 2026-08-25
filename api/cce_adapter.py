@@ -70,6 +70,7 @@ class CCEVFScope:
     params: Sequence[str]
     param_storage: Dict[str, str]
     param_element_sizes: Dict[str, int]
+    param_dtypes: Dict[str, str]
     source_path: str
 
 
@@ -112,6 +113,7 @@ def extract_cce_vf_scopes(path: str | Path) -> List[CCEVFScope]:
                 param_element_sizes=_parse_ub_param_element_sizes(
                     match.group("params")
                 ),
+                param_dtypes=_parse_ub_param_dtypes(match.group("params")),
                 source_path=str(source_path),
             )
         )
@@ -198,13 +200,30 @@ class _VFScopeParser:
         self.scope = scope
         self.loop_params = loop_params
         self.ub_address_experiment = bool(ub_address_experiment)
-        self.register_dtypes = _extract_vector_decls(scope.declaration_source)
+        declared_vectors = _extract_vector_decls(scope.declaration_source)
+        self.align_state_names = {
+            name for name, dtype in declared_vectors.items() if dtype == "align"
+        }
+        self._align_state_serial = 0
+        self.align_state_ids = {
+            name: self._new_align_state_id(name) for name in self.align_state_names
+        }
+        self.register_dtypes = {
+            name: dtype
+            for name, dtype in declared_vectors.items()
+            if dtype != "align"
+        }
         self.register_names = set(self.register_dtypes)
         self.ub_names = {
             name for name, storage in scope.param_storage.items() if storage == "UB"
         }
         self.ub_aliases: Dict[str, tuple[str, str]] = {
             name: (name, "0") for name in self.ub_names
+        }
+        self.ub_dtypes: Dict[str, str] = {
+            name: dtype
+            for name, dtype in scope.param_dtypes.items()
+            if name in self.ub_names
         }
         self.ub_pointer_initial_bytes: Dict[str, str] = {
             name: "0" for name in self.ub_names
@@ -232,6 +251,9 @@ class _VFScopeParser:
         self.local_scalar_dtypes: Dict[str, str] = {}
         self.local_scalar_initializers: Dict[str, str] = {}
         self._record_function_scope_scalar_declarations(scope.declaration_source)
+        self._record_function_scope_ub_pointer_declarations(
+            scope.declaration_source
+        )
 
     def parse(self) -> List[VFNode]:
         return self._parse_block(
@@ -248,12 +270,15 @@ class _VFScopeParser:
     ) -> List[VFNode]:
         saved_dtypes = dict(self.register_dtypes)
         saved_names = set(self.register_names)
+        saved_align_state_names = set(self.align_state_names)
+        saved_align_state_ids = dict(self.align_state_ids)
         saved_scalar_names = set(self.scalar_names)
         saved_offset_scalar_names = set(self.offset_scalar_names)
         saved_scalar_dtypes = dict(self.local_scalar_dtypes)
         saved_scalar_initializers = dict(self.local_scalar_initializers)
         saved_ub_names = set(self.ub_names)
         saved_ub_aliases = dict(self.ub_aliases)
+        saved_ub_dtypes = dict(self.ub_dtypes)
         saved_pointer_initial_bytes = dict(self.ub_pointer_initial_bytes)
         saved_pointer_element_sizes = dict(self.ub_pointer_element_sizes)
         saved_pointer_state_ids = dict(self.ub_pointer_state_ids)
@@ -266,12 +291,15 @@ class _VFScopeParser:
         finally:
             self.register_dtypes = saved_dtypes
             self.register_names = saved_names
+            self.align_state_names = saved_align_state_names
+            self.align_state_ids = saved_align_state_ids
             self.scalar_names = saved_scalar_names
             self.offset_scalar_names = saved_offset_scalar_names
             self.local_scalar_dtypes = saved_scalar_dtypes
             self.local_scalar_initializers = saved_scalar_initializers
             self.ub_names = saved_ub_names
             self.ub_aliases = saved_ub_aliases
+            self.ub_dtypes = saved_ub_dtypes
             self.ub_pointer_initial_bytes = saved_pointer_initial_bytes
             self.ub_pointer_element_sizes = saved_pointer_element_sizes
             self.ub_pointer_state_ids = saved_pointer_state_ids
@@ -431,9 +459,18 @@ class _VFScopeParser:
             callee, spec, args, induction_variables
         )
         form = _infer_inst_form(op, dst, src)
+        if form is None:
+            form = self._infer_memory_form(spec, args)
         resolved_op, resolved_form = DEFAULT_INSTRUCTION_CATALOG.resolve_and_validate_form(
             op, form
         )
+        attributes: dict[str, str] = {}
+        if spec.align_state_argument_index is not None:
+            state_name = _base_identifier(args[spec.align_state_argument_index])
+            attributes = {
+                "align_state_operation": str(spec.align_state_operation),
+                "align_state_id": self.align_state_ids[state_name],
+            }
         return VFInst(
             name=resolved_op,
             form=resolved_form,
@@ -442,6 +479,7 @@ class _VFScopeParser:
             instruction_class=spec.instruction_class.value,
             memory_accesses=self._memory_accesses_for_call(spec, args),
             source_location=self._source_location(line),
+            attributes=attributes,
             supplemental_inputs=tuple(
                 MemInfo(args[operand.argument_index].strip(), "Scalar")
                 for operand in spec.operands
@@ -517,6 +555,13 @@ class _VFScopeParser:
     ) -> MemInfo | None:
         kind = operand_spec.kind
         name = _base_identifier(arg)
+        if kind == ArgumentKind.ALIGN_STATE:
+            if name not in self.align_state_names:
+                raise ValueError(
+                    f"{callee} argument {index} must be a declared "
+                    f"vector_align state: {arg}"
+                )
+            return None
         if kind == ArgumentKind.REGISTER:
             if name not in self.register_names:
                 raise ValueError(
@@ -620,6 +665,27 @@ class _VFScopeParser:
             )
         return None
 
+    def _infer_memory_form(
+        self,
+        spec: InstructionSpec,
+        args: Sequence[str],
+    ) -> str | None:
+        memory_operand = next(
+            (
+                operand
+                for operand in spec.operands
+                if operand.kind == ArgumentKind.UB
+                and operand.argument_index < len(args)
+            ),
+            None,
+        )
+        if memory_operand is None:
+            return None
+        reference = self._parse_ub_reference(args[memory_operand.argument_index])
+        if reference is None:
+            return None
+        return self.ub_dtypes.get(reference[0])
+
     def _resolved_integer_scalar_constants(self) -> Dict[str, int]:
         resolved = dict(self.loop_params)
         pending = {
@@ -692,6 +758,10 @@ class _VFScopeParser:
             (operand for operand in spec.operands if operand.name == "offset"),
             None,
         )
+        count_operand = next(
+            (operand for operand in spec.operands if operand.name == "count"),
+            None,
+        )
         mode_operand = next(
             (
                 operand
@@ -727,6 +797,20 @@ class _VFScopeParser:
             raw_offset = args[offset_operand.argument_index].strip()
             if not re.fullmatch(r"vag_b(?:16|32)\s*\(.*\)", raw_offset, re.DOTALL):
                 raw_call_offset = self._expand_offset_expression(raw_offset)
+        append_count = None
+        if (
+            spec.align_state_operation == "append"
+            and count_operand is not None
+            and count_operand.argument_index < len(args)
+        ):
+            raw_count = self._expand_offset_expression(
+                args[count_operand.argument_index].strip()
+            )
+            append_count = _eval_int_expr(
+                raw_count,
+                self._resolved_integer_scalar_constants(),
+            )
+            raw_call_offset = raw_count
         offset: int | str = reference_offset
         if not is_post_update:
             offset = self._combine_offset_expressions(
@@ -739,6 +823,8 @@ class _VFScopeParser:
             mode,
             element_size_bytes=element_size_bytes,
         )
+        if append_count is not None and append_count > 0:
+            mode_span_bytes = append_count * element_size_bytes
         span = 1 if mode_span_bytes is not None else None
         inline_bytes = self._scale_offset_expression(
             inline_offset, element_size_bytes
@@ -907,8 +993,21 @@ class _VFScopeParser:
         for raw_name in _split_args(names_text):
             name = _declared_identifier(raw_name)
             if name:
+                if form == "align":
+                    self.register_names.discard(name)
+                    self.register_dtypes.pop(name, None)
+                    self.align_state_names.add(name)
+                    self.align_state_ids[name] = self._new_align_state_id(name)
+                    continue
+                self.align_state_names.discard(name)
+                self.align_state_ids.pop(name, None)
                 self.register_dtypes[name] = form
                 self.register_names.add(name)
+
+    def _new_align_state_id(self, name: str) -> str:
+        state_id = f"{self.scope.kernel_name}:align:{self._align_state_serial}:{name}"
+        self._align_state_serial += 1
+        return state_id
 
     def _record_function_scope_scalar_declarations(self, source: str) -> None:
         for segment in source.split(";"):
@@ -918,6 +1017,18 @@ class _VFScopeParser:
             candidate = f"{stmt};"
             if _LOCAL_SCALAR_DECL_RE.fullmatch(candidate):
                 self._record_local_scalar_decl_statement(candidate)
+
+    def _record_function_scope_ub_pointer_declarations(self, source: str) -> None:
+        for segment in source.split(";"):
+            stmt = segment.strip()
+            if not stmt:
+                continue
+            candidate = f"{stmt};"
+            if _LOCAL_UB_POINTER_DECL_RE.fullmatch(candidate):
+                self._record_local_ub_pointer_decl_statement(
+                    candidate,
+                    induction_variables=frozenset(),
+                )
 
     def _record_local_scalar_decl_statement(
         self,
@@ -981,6 +1092,7 @@ class _VFScopeParser:
             )
         self.ub_names.add(name)
         self.ub_aliases[name] = (base_name, reference_offset)
+        self.ub_dtypes[name] = _c_scalar_dtype_to_form(dtype)
         self.ub_pointer_initial_bytes[name] = self._combine_offset_expressions(
             source_initial_bytes,
             self._scale_offset_expression(inline_offset, source_element_size),
@@ -1056,6 +1168,37 @@ def _parse_param_storage(params: str) -> Dict[str, str]:
         name = match.group(1)
         storage[name] = "UB" if "__ubuf__" in cleaned else "Scalar"
     return storage
+
+
+def _c_scalar_dtype_to_form(dtype: str) -> str:
+    aliases = {
+        "float": "fp32",
+        "half": "fp16",
+        "bfloat16": "bf16",
+        "bfloat16_t": "bf16",
+    }
+    normalized = str(dtype).strip().lower()
+    return aliases.get(
+        normalized,
+        str(normalize_dtype(normalized, default=normalized)),
+    )
+
+
+def _parse_ub_param_dtypes(params: str) -> Dict[str, str]:
+    dtypes: Dict[str, str] = {}
+    for raw in _split_args(params):
+        if "__ubuf__" not in raw:
+            continue
+        match = re.search(
+            r"__ubuf__\s+(?:const\s+)?(?P<dtype>[A-Za-z_]\w*)"
+            r"\s*[*&]+\s*(?P<name>[A-Za-z_]\w*)",
+            raw,
+        )
+        if match is not None:
+            dtypes[match.group("name")] = _c_scalar_dtype_to_form(
+                match.group("dtype")
+            )
+    return dtypes
 
 
 def _c_type_size_bytes(dtype: str) -> int | None:

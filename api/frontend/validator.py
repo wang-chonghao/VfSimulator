@@ -472,6 +472,21 @@ def validate_canonical_vf_info(vf_info: CanonicalVfInfo) -> ValidationResult:
                                 "Instruction form conflicts with Catalog semantics",
                                 path=node_path,
                             )
+                    if catalog_spec.align_state_operation is not None:
+                        if (
+                            node.attributes.get("align_state_operation")
+                            != catalog_spec.align_state_operation
+                            or not isinstance(
+                                node.attributes.get("align_state_id"), str
+                            )
+                            or not node.attributes.get("align_state_id")
+                        ):
+                            error(
+                                "catalog_align_state_mismatch",
+                                "Instruction must declare its Catalog align-state "
+                                "operation and state ID",
+                                path=node_path,
+                            )
                 validate_scalar_map(node.attributes, f"{node_path}.attributes")
                 for operand_index, operand in enumerate(node.inputs):
                     operand_path = f"{node_path}.inputs[{operand_index}]"

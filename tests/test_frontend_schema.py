@@ -317,6 +317,23 @@ class CanonicalVfInfoValidatorTest(unittest.TestCase):
         self.assertIn("catalog_instruction_class_mismatch", form_codes)
         self.assertIn("catalog_instruction_form_mismatch", form_codes)
 
+    def test_catalog_align_state_instruction_requires_state_attributes(self):
+        vf_info = self._valid_vf_info()
+        loop = vf_info.context[0]
+        invalid = replace(
+            loop.body[1],
+            opcode="VSTAS",
+            inputs=(),
+            attributes={},
+        )
+        result = validate_canonical_vf_info(
+            replace(vf_info, context=(replace(loop, body=(loop.body[0], invalid)),))
+        )
+        self.assertIn(
+            "catalog_align_state_mismatch",
+            {item.code for item in result.errors},
+        )
+
     def test_unknown_opcode_is_allowed_with_explicit_instruction_class(self):
         unknown = CanonicalInstruction(
             "inst.unknown", "VUNKNOWN", InstructionClass.COMPUTE, "fp32",

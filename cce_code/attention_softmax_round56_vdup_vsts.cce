@@ -1,0 +1,153 @@
+#ifdef __CCE_KT_TEST__
+#define __aicore__
+#else
+#define __aicore__ [aicore]
+#endif
+
+// Fixed version of softmax.cce. It retains the original phased schedule:
+// four-way max reduction, two-way exp/sum, and exp spill/reload. Reduction
+// scalars are broadcast and stored per row with VSTS instead of VSTUS/VSTAS.
+__attribute__((always_inline)) inline [aicore] void
+attention_softmax_8row_deferbar1024_simd_ub_fixed(
+    __ubuf__ float *memA,
+    __ubuf__ float *memB) {
+
+    constexpr int rows = 8;
+    constexpr int cols = 1024;
+    __ubuf__ float *memScalar = memB + rows * cols;
+    __ubuf__ float *memMax = memScalar;
+    __ubuf__ float *memSum = memScalar + rows;
+
+    __VEC_SCOPE__ {
+        vector_bool pat_all_b32 = pset_b32(PAT_ALL);
+        vector_bool pat_lane0_b32 = pset_b32(PAT_VL1);
+        vector_f32 vec_x;
+        vector_f32 vec_x_pair;
+        vector_f32 vec_x_2;
+        vector_f32 vec_x_3;
+        vector_f32 vec_blk_max;
+        vector_f32 vec_blk_max_bcast;
+        vector_f32 vec_blk_max_bcast_pair;
+        vector_f32 vec_row_max_a;
+        vector_f32 vec_row_max_b;
+        vector_f32 vec_row_max;
+        vector_f32 vec_shift;
+        vector_f32 vec_shift_pair;
+        vector_f32 vec_exp;
+        vector_f32 vec_exp_pair;
+        vector_f32 vec_blk_sum;
+        vector_f32 vec_row_sum_a;
+        vector_f32 vec_row_sum_b;
+        vector_f32 vec_row_sum;
+        vector_f32 vec_out;
+
+        // Phase 1: collect one maximum scalar for each row.
+        #pragma unroll(1)
+        for (uint16_t i_batch = 0; i_batch < rows; ++i_batch) {
+            vlds(vec_row_max_a, memA, i_batch * cols, NORM);
+            vlds(vec_row_max_b, memA, i_batch * cols + 64, NORM);
+            vlds(vec_x_2, memA, i_batch * cols + 128, NORM);
+            vlds(vec_x_3, memA, i_batch * cols + 192, NORM);
+
+            #pragma unroll(1)
+            for (uint16_t blk = 0; blk < 3; ++blk) {
+                int offset = i_batch * cols + 256 * (blk + 1);
+                vlds(vec_x, memA, offset, NORM);
+                vlds(vec_x_pair, memA, offset + 64, NORM);
+                vlds(vec_blk_max_bcast, memA, offset + 128, NORM);
+                vlds(vec_blk_max_bcast_pair, memA, offset + 192, NORM);
+                vmax(vec_row_max_a, vec_row_max_a, vec_x, pat_all_b32);
+                vmax(vec_row_max_b, vec_row_max_b, vec_x_pair, pat_all_b32);
+                vmax(vec_x_2, vec_x_2, vec_blk_max_bcast, pat_all_b32);
+                vmax(vec_x_3, vec_x_3, vec_blk_max_bcast_pair, pat_all_b32);
+            }
+
+            vmax(vec_row_max_a, vec_row_max_a, vec_row_max_b, pat_all_b32);
+            vmax(vec_x_2, vec_x_2, vec_x_3, pat_all_b32);
+            vmax(vec_row_max_a, vec_row_max_a, vec_x_2, pat_all_b32);
+            vcmax(vec_blk_max, vec_row_max_a, pat_all_b32, MODE_ZEROING);
+            vdup(vec_row_max, vec_blk_max, pat_all_b32, POS_LOWEST, MODE_ZEROING);
+            vsts(vec_row_max, memMax, i_batch, ONEPT_B32, pat_lane0_b32);
+        }
+        mem_bar(VST_VLD);
+
+        // Phase 2: calculate exponentials, seed the sum, and collect reciprocals.
+        #pragma unroll(1)
+        for (uint16_t i_batch = 0; i_batch < rows; ++i_batch) {
+            vlds(vec_row_max, memMax, i_batch, BRC_B32);
+            int first_offset = i_batch * cols + 896;
+            vlds(vec_x, memA, first_offset, NORM);
+            vlds(vec_x_pair, memA, first_offset + 64, NORM);
+            vexpdif(vec_exp, vec_x, vec_row_max, pat_all_b32, PART_EVEN);
+            vexpdif(vec_exp_pair, vec_x_pair, vec_row_max, pat_all_b32, PART_EVEN);
+            vadd(vec_row_sum_a, vec_exp, vec_exp_pair, pat_all_b32);
+            vsts(vec_exp, memB, first_offset, NORM_B32, pat_all_b32);
+            vsts(vec_exp_pair, memB, first_offset + 64, NORM_B32, pat_all_b32);
+
+            #pragma unroll(1)
+            for (uint16_t blk = 0; blk < 7; ++blk) {
+                int offset = i_batch * cols + 128 * blk;
+                vlds(vec_x, memA, offset, NORM);
+                vlds(vec_x_pair, memA, offset + 64, NORM);
+                vexpdif(vec_exp, vec_x, vec_row_max, pat_all_b32, PART_EVEN);
+                vexpdif(vec_exp_pair, vec_x_pair, vec_row_max, pat_all_b32, PART_EVEN);
+                vadd(vec_blk_sum, vec_exp, vec_exp_pair, pat_all_b32);
+                vadd(vec_row_sum_a, vec_row_sum_a, vec_blk_sum, pat_all_b32);
+                vsts(vec_exp, memB, offset, NORM_B32, pat_all_b32);
+                vsts(vec_exp_pair, memB, offset + 64, NORM_B32, pat_all_b32);
+            }
+
+            vcadd(vec_blk_sum, vec_row_sum_a, pat_all_b32, MODE_ZEROING);
+            vdup(vec_out, 1.0f, pat_lane0_b32, MODE_ZEROING);
+            vdiv(vec_out, vec_out, vec_blk_sum, pat_lane0_b32);
+            vdup(vec_row_sum, vec_out, pat_all_b32, POS_LOWEST, MODE_ZEROING);
+            vsts(vec_row_sum, memSum, i_batch, ONEPT_B32, pat_lane0_b32);
+        }
+        mem_bar(VST_VLD);
+
+        // Phase 3: normalize all saved exponentials.
+        #pragma unroll(1)
+        for (uint16_t i_batch = 0; i_batch < rows; ++i_batch) {
+            vlds(vec_out, memSum, i_batch, BRC_B32);
+            #pragma unroll(1)
+            for (uint16_t blk = 0; blk < 16; ++blk) {
+                int offset = i_batch * cols + 64 * blk;
+                vlds(vec_exp, memB, offset, NORM);
+                vmul(vec_exp, vec_exp, vec_out, pat_all_b32);
+                vsts(vec_exp, memB, offset, NORM_B32, pat_all_b32);
+            }
+        }
+    }
+}
+
+extern "C" __global__ __aicore__ void attention_softmax_kernel(
+    __gm__ float* __restrict__ input0,
+    __gm__ float* __restrict__ input1,
+    __gm__ float* __restrict__ output0) {
+    (void)input1;
+    __ubuf__ float *ub_data_x_addr_0 =
+        (__ubuf__ float*)get_imm(0x0);
+    __ubuf__ float *ub_data_y_addr_0 =
+        (__ubuf__ float*)get_imm(0x10000);
+
+    constexpr int rows = 8;
+    constexpr int cols = 1024;
+    constexpr int tile_bytes = rows * cols * sizeof(float);
+
+    copy_gm_to_ubuf_align_v2(
+        (__ubuf__ float*)ub_data_x_addr_0,
+        (__gm__ float*)input0,
+        0, 1, tile_bytes, 0, 0, 0, 0, 0, 0);
+    set_flag(PIPE_MTE2, PIPE_V, (event_t)0);
+    wait_flag(PIPE_MTE2, PIPE_V, (event_t)0);
+
+    attention_softmax_8row_deferbar1024_simd_ub_fixed(
+        ub_data_x_addr_0, ub_data_y_addr_0);
+
+    pipe_barrier(PIPE_ALL);
+    copy_ubuf_to_gm_align_v2(
+        (__gm__ float*)output0,
+        (__ubuf__ float*)ub_data_y_addr_0,
+        0, 1, tile_bytes, 0, 0, 0);
+    pipe_barrier(PIPE_MTE3);
+}

@@ -680,6 +680,76 @@
         }
       }
     },
+    "VSTUS": {
+      "op_class": "STORE",
+      "forms": {
+        "fp32": {
+          "op_class": "STORE",
+          "pipeline_startup_cost": 0,
+          "latency": 8,
+          "throughput": 1,
+          "pipeline_drain_cost": 0,
+          "src_dtypes": ["fp32"],
+          "dst_dtypes": ["ub"],
+          "dtype": "fp32"
+        },
+        "fp16": {
+          "op_class": "STORE",
+          "pipeline_startup_cost": 0,
+          "latency": 8,
+          "throughput": 1,
+          "pipeline_drain_cost": 0,
+          "src_dtypes": ["fp16"],
+          "dst_dtypes": ["ub"],
+          "dtype": "fp16"
+        },
+        "bf16": {
+          "op_class": "STORE",
+          "pipeline_startup_cost": 0,
+          "latency": 8,
+          "throughput": 1,
+          "pipeline_drain_cost": 0,
+          "src_dtypes": ["bf16"],
+          "dst_dtypes": ["ub"],
+          "dtype": "bf16"
+        }
+      }
+    },
+    "VSTAS": {
+      "op_class": "STORE",
+      "forms": {
+        "fp32": {
+          "op_class": "STORE",
+          "pipeline_startup_cost": 0,
+          "latency": 8,
+          "throughput": 1,
+          "pipeline_drain_cost": 0,
+          "src_dtypes": [],
+          "dst_dtypes": ["ub"],
+          "dtype": "fp32"
+        },
+        "fp16": {
+          "op_class": "STORE",
+          "pipeline_startup_cost": 0,
+          "latency": 8,
+          "throughput": 1,
+          "pipeline_drain_cost": 0,
+          "src_dtypes": [],
+          "dst_dtypes": ["ub"],
+          "dtype": "fp16"
+        },
+        "bf16": {
+          "op_class": "STORE",
+          "pipeline_startup_cost": 0,
+          "latency": 8,
+          "throughput": 1,
+          "pipeline_drain_cost": 0,
+          "src_dtypes": [],
+          "dst_dtypes": ["ub"],
+          "dtype": "bf16"
+        }
+      }
+    },
     "VDUP": {
       "op_class": "COMPUTE",
       "forms": {

@@ -29,6 +29,7 @@ class ArgumentKind(str, Enum):
     PREDICATE = "predicate"
     CONFIG = "config"
     REGISTER_OR_SCALAR = "register_or_scalar"
+    ALIGN_STATE = "align_state"
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,8 @@ class InstructionSpec:
     virtual: bool = False
     timing_optional: bool = False
     call_variants: tuple[CallVariant, ...] = ()
+    align_state_operation: str | None = None
+    align_state_argument_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -147,6 +150,13 @@ class InstructionCatalog:
         elif spec.fixed_form is not None:
             raise ValueError(f"Non-fixed instruction {spec.opcode} cannot set fixed_form")
 
+        if spec.align_state_operation not in (None, "append", "consume"):
+            raise ValueError(f"Invalid align state operation in {spec.opcode}")
+        if (spec.align_state_operation is None) != (
+            spec.align_state_argument_index is None
+        ):
+            raise ValueError(f"Incomplete align state declaration in {spec.opcode}")
+
         indexes: set[int] = set()
         for operand in spec.operands:
             if (
@@ -193,6 +203,14 @@ class InstructionCatalog:
                 raise ValueError(f"Ignored operand role mismatch in {spec.opcode}")
         if indexes and indexes != set(range(max(indexes) + 1)):
             raise ValueError(f"Argument indexes must be contiguous in {spec.opcode}")
+        if spec.align_state_argument_index is not None:
+            state_operands = [
+                operand for operand in spec.operands
+                if operand.argument_index == spec.align_state_argument_index
+                and operand.kind == ArgumentKind.ALIGN_STATE
+            ]
+            if len(state_operands) != 1:
+                raise ValueError(f"Invalid align state operand in {spec.opcode}")
 
         required_count = max(
             (
@@ -476,6 +494,15 @@ def instruction_catalog_from_dict(payload: Mapping[str, Any]) -> InstructionCata
             not isinstance(fixed_form, str) or not fixed_form
         ):
             raise ValueError(f"{opcode}.fixed_form must be a non-empty string")
+        align_state_operation = raw.get("align_state_operation")
+        align_state_argument_index = raw.get("align_state_argument_index")
+        if align_state_operation is not None and not isinstance(align_state_operation, str):
+            raise ValueError(f"{opcode}.align_state_operation must be a string")
+        if align_state_argument_index is not None and (
+            isinstance(align_state_argument_index, bool)
+            or not isinstance(align_state_argument_index, int)
+        ):
+            raise ValueError(f"{opcode}.align_state_argument_index must be an integer")
         specs.append(InstructionSpec(
             opcode=opcode,
             instruction_class=_enum(
@@ -498,6 +525,8 @@ def instruction_catalog_from_dict(payload: Mapping[str, Any]) -> InstructionCata
             virtual=virtual,
             timing_optional=timing_optional,
             call_variants=tuple(call_variants),
+            align_state_operation=align_state_operation,
+            align_state_argument_index=align_state_argument_index,
         ))
     return InstructionCatalog(specs)
 

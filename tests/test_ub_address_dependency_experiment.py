@@ -899,6 +899,65 @@ class UbAddressDependencyExperimentTest(unittest.TestCase):
         self.assertEqual(memory_range["byte_start"], 18)
         self.assertEqual(memory_range["byte_end"], 20)
 
+    def test_vstas_exposes_its_generation_range_to_following_load(self):
+        source = """
+        void align_dependency(__ubuf__ float *scores) {
+          __ubuf__ float *write_tail = scores;
+          __ubuf__ float *read_base = scores;
+          __VEC_SCOPE__ {
+            vector_bool mask = pset_b32(PAT_ALL);
+            vector_f32 value, loaded;
+            vector_align u1;
+            vdup(value, 1.0f, mask, MODE_ZEROING);
+            vstus(u1, 1, value, write_tail, POST_UPDATE);
+            vstus(u1, 1, value, write_tail, POST_UPDATE);
+            vstas(u1, write_tail, 0, POST_UPDATE);
+            vlds(loaded, read_base, 0, BRC_B32);
+          }
+        }
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "align_dependency.cce"
+            path.write_text(source, encoding="utf-8")
+            canonical, metadata = parse_cce_canonical_with_ub_experiment_metadata(
+                path, "align_dependency"
+            )
+            payload = ExperimentalCanonicalCoreLowering().lower(
+                canonical, metadata
+            )
+            out_dir = Path(tmpdir) / "results"
+            result = CoreVfCostModel(
+                base_dir=ROOT,
+                out_dir=out_dir,
+            )._run_lowered_payload(payload)
+            starts = self._read_json_lines(out_dir / "start_by_cycle.json")
+            dones = self._read_json_lines(out_dir / "done_by_cycle.json")
+
+        vstas_start = next(item for item in starts if item["op"] == "VSTAS")
+        vstas_done = next(item for item in dones if item["op"] == "VSTAS")
+        load_start = next(item for item in starts if item["op"] == "VLDS")
+        self.assertEqual(vstas_start["memory_ranges"], [
+            {
+                "base_object_id": "ub.scores",
+                "byte_start": 0,
+                "byte_end": 4,
+                "access_kind": "write",
+                "resolved": True,
+                "unresolved_reason": None,
+            },
+            {
+                "base_object_id": "ub.scores",
+                "byte_start": 4,
+                "byte_end": 8,
+                "access_kind": "write",
+                "resolved": True,
+                "unresolved_reason": None,
+            },
+        ])
+        self.assertEqual(load_start["cy"], vstas_done["cy"] + 1)
+        self.assertGreaterEqual(result["memory_ordering_stats"]["precise_dependency_edges"], 1)
+        self.assertEqual(result["memory_ordering_stats"]["fallback_warning_count"], 0)
+
     def test_range_mode_requires_experimental_canonical_lowering(self):
         canonical, _ = ValueVersioningPass().run_with_ub_experiment_metadata(
             self._local_dependency_vf_info()

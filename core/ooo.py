@@ -19,6 +19,23 @@ def is_vreg(name: Any) -> bool:
 
 
 @dataclass
+class AlignProducerRecord:
+    inst_id: int
+    stream_seq: int
+    profile: InstructionProfile
+    start_cycle: Optional[int] = None
+    done_cycle: Optional[int] = None
+
+
+@dataclass
+class AlignGeneration:
+    state_id: str
+    generation_id: int
+    producers: List[AlignProducerRecord] = field(default_factory=list)
+    consumer_inst_id: Optional[int] = None
+
+
+@dataclass
 class Uop:
     inst_id: int
     op: str
@@ -39,6 +56,11 @@ class Uop:
     producer_op_for_store: Optional[str] = None
     producer_form_for_store: Optional[str] = None
     producer_start_for_store: Optional[int] = None
+    store_dependencies_resolved: bool = False
+    align_state_operation: Optional[str] = None
+    align_state_id: Optional[str] = None
+    align_generation: Optional[AlignGeneration] = None
+    align_producer_record: Optional[AlignProducerRecord] = None
     top_block_id: int = 0
     iter_stack: List[Any] = field(default_factory=list)
     is_last_in_top_block: bool = False
@@ -111,6 +133,8 @@ class OoOCore:
         self.preg_producer: Dict[str, Tuple[str, str, int, str]] = {}
         self.preg_producer_uop: Dict[str, Uop] = {}
         self.preg_producer_profile: Dict[str, InstructionProfile] = {}
+        self.align_state_open: Dict[str, AlignGeneration] = {}
+        self.align_state_next_generation: Dict[str, int] = {}
 
         # EXU issue history.
         # By default, II is enforced at EXU level (cross-FU), because each EXU
@@ -194,6 +218,14 @@ class OoOCore:
             "preg_dst": u.preg_dst,
             "preg_old": u.preg_old,
             "producer_op_for_store": u.producer_op_for_store,
+            "store_dependencies_resolved": u.store_dependencies_resolved,
+            "align_state_operation": u.align_state_operation,
+            "align_state_id": u.align_state_id,
+            "align_generation": (
+                u.align_generation.generation_id
+                if u.align_generation is not None
+                else None
+            ),
             "producer_form_for_store": u.producer_form_for_store,
             "producer_start_for_store": u.producer_start_for_store,
         })
@@ -627,6 +659,7 @@ class OoOCore:
         }
 
     def _store_ready_cycle(self, u: Uop) -> Tuple[int, Optional[str], Optional[str], Optional[int]]:
+        u.store_dependencies_resolved = False
         for ps in u.preg_src:
             if ps is None:
                 continue
@@ -659,10 +692,67 @@ class OoOCore:
                 pform = prod_form
                 pst = prod_start
 
-        if best_t < 0:
+        has_dependency = best_t >= 0
+        generation = u.align_generation
+        if u.align_state_operation == "consume" and generation is not None:
+            if any(record.start_cycle is None for record in generation.producers):
+                return 10 ** 9, pop, pform, pst
+            state_ready = int(getattr(u, "lsq_ready_cycle", 0))
+            for record in generation.producers:
+                state_ready = max(
+                    state_ready,
+                    int(record.start_cycle)
+                    + int(
+                        self.db.get_forwarding_for_profiles(
+                            record.profile, u.profile
+                        )
+                    ),
+                )
+            best_t = max(best_t, state_ready)
+            has_dependency = True
+
+        if not has_dependency:
             return 10 ** 9, None, None, None
         best_t = max(best_t, int(getattr(u, "lsq_ready_cycle", 0)))
+        u.store_dependencies_resolved = True
         return best_t, pop, pform, pst
+
+    def bind_align_state(self, u: Uop, attributes: Any) -> None:
+        if not isinstance(attributes, dict):
+            return
+        operation = str(attributes.get("align_state_operation", "")).lower()
+        state_id = str(attributes.get("align_state_id", ""))
+        if operation not in {"append", "consume"} or not state_id:
+            return
+
+        generation = self.align_state_open.get(state_id)
+        if generation is None:
+            generation_id = self.align_state_next_generation.get(state_id, 0)
+            generation = AlignGeneration(state_id, generation_id)
+            self.align_state_open[state_id] = generation
+            self.align_state_next_generation[state_id] = generation_id + 1
+
+        u.align_state_operation = operation
+        u.align_state_id = state_id
+        u.align_generation = generation
+        if operation == "append":
+            record = AlignProducerRecord(
+                inst_id=u.inst_id,
+                stream_seq=u.stream_seq,
+                profile=u.profile,
+            )
+            generation.producers.append(record)
+            u.align_producer_record = record
+            return
+
+        generation.consumer_inst_id = u.inst_id
+        generation_id = self.align_state_next_generation.get(
+            state_id, generation.generation_id + 1
+        )
+        self.align_state_open[state_id] = AlignGeneration(
+            state_id, generation_id
+        )
+        self.align_state_next_generation[state_id] = generation_id + 1
 
     def has_pending_lsu_before(self, stream_seq: int, op_class: str) -> bool:
         target = str(op_class).upper()

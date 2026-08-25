@@ -67,6 +67,7 @@ class UbDynamicAddressGenerator:
             if isinstance(value, int) and not isinstance(value, bool)
         }
         self.pointer_current: dict[str, int] = {}
+        self.align_generation_ranges: dict[str, list[dict[str, Any]]] = {}
 
     @staticmethod
     def _iteration_symbols(iteration_path: Sequence[Mapping[str, Any]]) -> dict[str, int]:
@@ -135,6 +136,21 @@ class UbDynamicAddressGenerator:
             dynamic.append(item.as_dict())
             if current is not None and update is not None:
                 self.pointer_current[state_id] = int(current) + int(update)
+
+        attributes = inst.get("attributes", {})
+        if isinstance(attributes, Mapping):
+            operation = str(attributes.get("align_state_operation", "")).lower()
+            align_state_id = str(attributes.get("align_state_id", ""))
+            if operation == "append" and align_state_id:
+                self.align_generation_ranges.setdefault(
+                    align_state_id, []
+                ).extend(dict(item) for item in dynamic)
+            elif operation == "consume" and align_state_id:
+                generation_ranges = self.align_generation_ranges.pop(
+                    align_state_id, []
+                )
+                if generation_ranges:
+                    dynamic = [dict(item) for item in generation_ranges]
         inst["memory_ranges"] = dynamic
 
 

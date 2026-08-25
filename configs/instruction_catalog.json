@@ -86,6 +86,19 @@
       {"name": "config", "argument_index": 2, "direction": "ignore", "role": "config", "kind": "config", "allowed_values": ["VSSTB_CONFIG"], "allow_integer_expression": true},
       {"name": "predicate", "argument_index": 3, "direction": "ignore", "role": "predicate", "kind": "predicate"},
       {"name": "update", "argument_index": 4, "direction": "ignore", "role": "config", "kind": "config", "allowed_values": ["POST_UPDATE", "NO_UPDATE"]}
+    ],
+    "vstus": [
+      {"name": "align_state", "argument_index": 0, "direction": "ignore", "role": "config", "kind": "align_state"},
+      {"name": "count", "argument_index": 1, "direction": "ignore", "role": "config", "kind": "config", "allow_integer_expression": true},
+      {"name": "src", "argument_index": 2, "direction": "input", "role": "source", "kind": "register"},
+      {"name": "memory", "argument_index": 3, "direction": "output", "role": "memory", "kind": "ub"},
+      {"name": "update", "argument_index": 4, "direction": "ignore", "role": "config", "kind": "config", "allowed_values": ["POST_UPDATE"]}
+    ],
+    "vstas": [
+      {"name": "align_state", "argument_index": 0, "direction": "ignore", "role": "config", "kind": "align_state"},
+      {"name": "memory", "argument_index": 1, "direction": "output", "role": "memory", "kind": "ub"},
+      {"name": "offset", "argument_index": 2, "direction": "ignore", "role": "config", "kind": "config", "allow_integer_expression": true},
+      {"name": "update", "argument_index": 3, "direction": "ignore", "role": "config", "kind": "config", "allowed_values": ["POST_UPDATE"]}
     ]
   },
   "instructions": {
@@ -124,7 +137,7 @@
     "VSSTB": {"class": "store", "signature": "vsstb", "form_rule": "fixed", "fixed_form": "b16", "forms": ["b16"]},
     "VEXPDIF": {"class": "compute", "signature": "expdif", "forms": ["fp32", "b32"]},
     "VMULSCVT": {"class": "compute", "signature": "mulscvt", "form_rule": "conversion", "forms": ["f32_to_f16"]},
-    "VSTUS": {"class": "store", "signature": "store", "forms": ["fp16", "fp32", "bf16", "b16", "b32"], "timing_optional": true, "call_variants": [{"argument_count": 5}, {"argument_count": 6, "argument_values": {"5": ["POST_UPDATE"]}}]},
-    "VSTAS": {"class": "store", "signature": "store", "forms": ["fp16", "fp32", "bf16", "b16", "b32"], "timing_optional": true, "call_variants": [{"argument_count": 5}, {"argument_count": 6, "argument_values": {"5": ["POST_UPDATE"]}}]}
+    "VSTUS": {"class": "store", "signature": "vstus", "forms": ["fp16", "fp32", "bf16", "b16", "b32"], "align_state_operation": "append", "align_state_argument_index": 0, "call_variants": [{"argument_count": 5, "argument_values": {"4": ["POST_UPDATE"]}}]},
+    "VSTAS": {"class": "store", "signature": "vstas", "forms": ["fp16", "fp32", "bf16", "b16", "b32"], "align_state_operation": "consume", "align_state_argument_index": 0, "call_variants": [{"argument_count": 4, "argument_values": {"3": ["POST_UPDATE"]}}]}
   }
 }

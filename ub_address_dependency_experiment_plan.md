@@ -565,8 +565,10 @@ transform 前后都运行 Canonical validator。除 Membar 节点数量和实验
 功能。如果 Canonical lowering 缺少所需字段，应补 Canonical 契约，不在 legacy 层
 旁路解决。
 
-本次开发不修改 `native/`，也不以 Python/Native cycle 一致性作为本实验验收项。
-C++ 同步只能作为实验结论之后的独立开发工作。
+本次开发不修改 Native 执行代码，也不以 Python/Native cycle 一致性作为本实验验收
+项。共享 Catalog 增加 VSTUS/VSTAS 语义时允许机械刷新
+`api/native/generated/InstructionCatalogData.inc`，但 C++ align-state 和地址依赖执行
+逻辑仍留在独立开发任务中。
 
 ## 12. 开发步骤
 
@@ -597,7 +599,8 @@ C++ 同步只能作为实验结论之后的独立开发工作。
 - 默认模式现有回归 0 cycle 漂移。
 - A/B 输入都通过 Canonical validator 和 CoreLoweringPass；实验入口明确拒绝 legacy
   payload。
-- Git diff 不包含 `native/`、`api/native/` 或 C++ generated 文件。
+- Git diff 不包含 Native 执行代码；共享 Catalog 对应的 C++ generated 数据表可以
+  机械刷新，但本分支不实现 C++ 调度语义。
 - 同地址和 range overlap 不会过早发射。
 - 不同地址的 LSU 可以越过全局 Membar 原本造成的等待。
 - 未知地址必定保守回退并有可见 warning。
@@ -630,6 +633,14 @@ CanonicalVfInfo
 - CCE 参数和局部 pointer 保留元素宽度、稳定 `base_object_id`、独立
   `pointer_state_id`、初始 byte offset、普通访问 offset 和 POST_UPDATE delta。
 - POST_UPDATE 按“本次访问使用当前 pointer，之后再更新”的顺序执行。
+- `VSTUS(align, count, src, pointer, POST_UPDATE)` 将 `count` 解释为本次追加的
+  scalar 数量，生成 `count * element_size` 的精确写区间，并按该字节数推进 pointer。
+- 每个 `vector_align` 独立维护 generation。VSTUS 把动态写区间追加到当前
+  generation；VSTAS 在动态展开时封存该 generation 的区间快照并开启下一代。
+  因而后续 VLDS 会等待与 VSTAS generation 区间重叠的写完成，不会等待其它
+  generation 或同 base 上不重叠的标量。
+- VSTUS/VSTAS 的 align state 只参与 generation ready，不进入 RAT 或物理寄存器
+  分配；VSTAS 仍属于 STORE，并采用 latency 8。
 - loop 内动态 pointer 声明，以及对已经动态更新过的 pointer 再做静态 alias
   snapshot，当前会明确拒绝，不静默产生错误地址。
 - `BRC_*`、`ONEPT_*` 的 UB span 按单元素处理；其它未经确认的 mode 保持
@@ -679,6 +690,8 @@ legacy payload 不能直接启用 `range_overlap`。这保证本轮 diff 不包�
 - unknown span 回退 same-base，缺 metadata 回退 global，并写 warning。
 - 普通 offset、独立 POST_UPDATE pointer、pointer cast/alias chain。
 - loop/unroll 动态 induction offset 和每 lane 一次 pointer update。
+- VSTUS 两次追加形成相邻 scalar range，VSTAS 封存聚合 range；使用独立 read/write
+  pointer alias 的后续 VLDS 在 VSTAS done 后下一拍启动，且不产生 fallback。
 - 实验入口拒绝 legacy 输入和缺少实验 metadata 的手工开关。
 
 ### 14.3 GeLU 穿刺
