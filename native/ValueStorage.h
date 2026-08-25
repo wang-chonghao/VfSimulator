@@ -4,7 +4,7 @@
 #ifndef VFSIM_NATIVE_VALUE_STORAGE_H
 #define VFSIM_NATIVE_VALUE_STORAGE_H
 
-#include "api/native/VfInfo.h"
+#include "api/native/RuntimeValue.h"
 
 #include <string>
 #include <unordered_map>

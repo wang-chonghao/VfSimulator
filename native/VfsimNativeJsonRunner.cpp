@@ -6,8 +6,7 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-#include "api/native/JsonVfInfoAdapter.h"
-#include "api/native/LegacyVfInfoAdapter.h"
+#include "api/native/CanonicalJsonVfInfoAdapter.h"
 #include "native/ParamDB.h"
 #include "native/SimulatorRunner.h"
 
@@ -57,10 +56,9 @@ int main(int argc, char **argv) {
     const std::filesystem::path root = std::filesystem::path(VFSIM_SOURCE_ROOT);
     ParamDB db(root);
 
-    const VfInfo vfInfo = loadJsonVfInfo(args.tracePath);
-    const auto result = runCanonicalVfInfo(
-        adaptLegacyVfInfoToCanonical(vfInfo), db, args.outDir.string(),
-        args.maxCycles);
+    const CanonicalVfInfo vfInfo = loadCanonicalJsonVfInfo(args.tracePath);
+    const auto result =
+        runCanonicalVfInfo(vfInfo, db, args.outDir.string(), args.maxCycles);
 
     std::cout << "cyclesExecuted=" << result.cyclesExecuted << "\n";
     std::cout << "vfEndCycle=" << result.vfEndCycle << "\n";

@@ -8,6 +8,8 @@
 
 #include "native/ProgramVregLiveRangeNormalization.h"
 #include "native/IFU.h"
+#include "api/native/LegacyVfInfoAdapter.h"
+#include "native/CanonicalProgramLowering.h"
 #include "native/OOO.h"
 #include "native/ParamDB.h"
 #include "native/ProgramFlatten.h"
@@ -131,20 +133,9 @@ int main() {
   require(accumulatorBody[3].inst.dst[0] != accumulatorBody[2].inst.dst[0],
           "temporary result must not reuse a loop-carried slot");
 
-  ProgramAnalysis accumulatorAnalysis(accumulatorInfo.params,
-                                      accumulatorInfo.values);
-  ProgramFlatten accumulatorFlattener;
-  const auto &accumulatorLinear =
-      accumulatorFlattener.flatten(accumulatorInfo.body);
-  IFU accumulatorIfu(
-      accumulatorLinear,
-      accumulatorInfo.params,
-      nullptr,
-      accumulatorAnalysis.inferTopBlockLoopBounds(accumulatorInfo.body),
-      1,
-      "fp32");
-  const auto dynamicAccumulator = accumulatorIfu.take(16);
   ParamDB db(std::filesystem::path(VFSIM_SOURCE_ROOT));
+  const auto dynamicAccumulator = lowerCanonicalProgram(
+      adaptLegacyVfInfoToCanonical(accumulatorInfo), &db).instructions;
   OoOCoreMainline accumulatorCore(db.uarch(), db, "fp32",
                                   accumulatorInfo.values);
   std::vector<int64_t> accumulatorIds;

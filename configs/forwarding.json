@@ -290,7 +290,8 @@
       "VSUB.fp32": 13,
       "VCMIN.fp32": 13,
       "VDUP.fp32": 13,
-      "VSTS.fp32": 14
+      "VSTS.fp32": 14,
+      "VSTUS.fp32": 14
     },
     "VCMIN.fp32": {
       "VABS.fp32": 13,
@@ -308,7 +309,8 @@
       "VSUB.fp32": 13,
       "VCMIN.fp32": 13,
       "VDUP.fp32": 13,
-      "VSTS.fp32": 14
+      "VSTS.fp32": 14,
+      "VSTUS.fp32": 14
     },
     "VDUP.fp32": {
       "VADDS.fp32": 8,
@@ -346,7 +348,8 @@
       "VDUP.fp32": 2
     },
     "VCADD.fp32": {
-      "VSTS.fp32": 20
+      "VSTS.fp32": 20,
+      "VSTUS.fp32": 20
     },
     "VADDS.fp16": {
       "VADDS.fp16": 3,
@@ -457,7 +460,8 @@
       "VMAX.fp16": 14,
       "VMIN.fp16": 14,
       "VDUP.fp16": 13,
-      "VSTS.fp16": 15
+      "VSTS.fp16": 15,
+      "VSTUS.fp16": 15
     },
     "VCMIN.fp16": {
       "VADDS.fp16": 14,
@@ -476,7 +480,8 @@
       "VMAX.fp16": 14,
       "VMIN.fp16": 14,
       "VDUP.fp16": 13,
-      "VSTS.fp16": 15
+      "VSTS.fp16": 15,
+      "VSTUS.fp16": 15
     },
     "VCADD.fp16": {
       "VADDS.fp16": 21,
@@ -495,7 +500,8 @@
       "VMAX.fp16": 21,
       "VMIN.fp16": 21,
       "VDUP.fp16": 19,
-      "VSTS.fp16": 22
+      "VSTS.fp16": 22,
+      "VSTUS.fp16": 22
     },
     "VDIV.fp16": {
       "VADDS.fp16": 19,
@@ -955,6 +961,15 @@
     },
     "VMULSCVT.f32_to_f16": {
       "VPACK.b32": 5
+    },
+    "VSTUS.fp32": {
+      "VSTAS.fp32": 1
+    },
+    "VSTUS.fp16": {
+      "VSTAS.fp16": 1
+    },
+    "VSTUS.bf16": {
+      "VSTAS.bf16": 1
     }
   }
 }

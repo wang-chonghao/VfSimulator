@@ -347,10 +347,63 @@ OoOCore::computeStoreReadyCycle(const Uop &u) const {
       pst = it->second.startCycle;
     }
   }
-  if (bestT < 0)
+  bool hasDependency = bestT >= 0;
+  if (u.alignStateOperation == "consume" && u.alignGeneration) {
+    int64_t stateReady = u.lsqReadyCycle;
+    for (const auto &record : u.alignGeneration->producers) {
+      if (!record || !record->startCycle.has_value())
+        return {1000000000, pop, pform, pst};
+      const ProducerInfo producer{record->op, record->form,
+                                  *record->startCycle, "ALIGN_STATE"};
+      stateReady = std::max(
+          stateReady, computeReadyTimeForSrc(producer, u.op, u.form));
+    }
+    bestT = std::max(bestT, stateReady);
+    hasDependency = true;
+  }
+  if (!hasDependency)
     return {1000000000, std::nullopt, std::nullopt, std::nullopt};
   bestT = std::max<int64_t>(bestT, u.lsqReadyCycle);
   return {bestT, pop, pform, pst};
+}
+
+void OoOCore::bindAlignState(Uop &u, const DynamicInst &inst) {
+  if ((inst.alignStateOperation != "append" &&
+       inst.alignStateOperation != "consume") ||
+      inst.alignStateId.empty())
+    return;
+
+  auto found = alignStateOpen_.find(inst.alignStateId);
+  std::shared_ptr<AlignGeneration> generation;
+  if (found == alignStateOpen_.end()) {
+    const int64_t generationId = alignStateNextGeneration_[inst.alignStateId]++;
+    generation = std::make_shared<AlignGeneration>();
+    generation->stateId = inst.alignStateId;
+    generation->generationId = generationId;
+    alignStateOpen_[inst.alignStateId] = generation;
+  } else {
+    generation = found->second;
+  }
+
+  u.alignStateOperation = inst.alignStateOperation;
+  u.alignStateId = inst.alignStateId;
+  u.alignGeneration = generation;
+  if (inst.alignStateOperation == "append") {
+    auto record = std::make_shared<AlignProducerRecord>();
+    record->instId = u.instId;
+    record->streamSeq = u.streamSeq;
+    record->op = u.op;
+    record->form = u.form;
+    generation->producers.push_back(record);
+    u.alignProducerRecord = std::move(record);
+    return;
+  }
+
+  generation->consumerInstId = u.instId;
+  auto next = std::make_shared<AlignGeneration>();
+  next->stateId = inst.alignStateId;
+  next->generationId = alignStateNextGeneration_[inst.alignStateId]++;
+  alignStateOpen_[inst.alignStateId] = std::move(next);
 }
 
 std::string OoOCore::getFuType(const std::string &op,
@@ -791,6 +844,7 @@ void OoOCoreMainline::accept(const DynamicInst &inst) {
   u.streamSeq = inst.streamSeq;
   u.staticInstructionId = inst.staticInstructionId;
   u.iterationPath = inst.iterationPath;
+  bindAlignState(u, inst);
 
   for (const auto &preg : u.pregSrc) {
     if (preg) {
@@ -882,6 +936,10 @@ void OoOCore::updateLsqReadyStates(int64_t cycle, bool storesOnly) {
       u.producerOpForStore = std::get<1>(ready);
       u.producerFormForStore = std::get<2>(ready);
       u.producerStartForStore = std::get<3>(ready);
+      u.storeDependenciesResolved =
+          u.readyCycle < 1000000000 &&
+          (u.producerOpForStore.has_value() ||
+           (u.alignStateOperation == "consume" && u.alignGeneration));
     }
     u.state = (cycle >= u.readyCycle) ? "ready" : "blocked";
   }
@@ -934,13 +992,16 @@ void OoOCore::issueReadyLsu(
         logMembarBlocked(u);
       continue;
     }
-    if (u.opClass == "STORE" && !u.producerOpForStore.has_value())
+    if (u.opClass == "STORE" && !u.storeDependenciesResolved &&
+        !u.producerOpForStore.has_value())
       continue;
 
     u.startCycle = cycle;
     u.blockedReason.reset();
     u.doneCycle = cycle + u.latency;
     u.state = "running";
+    if (u.alignProducerRecord)
+      u.alignProducerRecord->startCycle = cycle;
     scheduleSrcReleaseFromStart(u);
     if (u.opClass == "LOAD") {
       ++issuedLoads;
@@ -963,6 +1024,7 @@ void OoOCore::issueReadyLsu(
       robU->producerOpForStore = u.producerOpForStore;
       robU->producerFormForStore = u.producerFormForStore;
       robU->producerStartForStore = u.producerStartForStore;
+      robU->storeDependenciesResolved = u.storeDependenciesResolved;
       robU->startCycle = u.startCycle;
       robU->doneCycle = u.doneCycle;
       robU->state = u.state;
@@ -983,6 +1045,8 @@ void OoOCoreMainline::step() {
   for (auto &u : rob_) {
     if (u.state == "running" && u.doneCycle.has_value() && c >= *u.doneCycle) {
       u.state = "done";
+      if (u.alignProducerRecord)
+        u.alignProducerRecord->doneCycle = u.doneCycle;
       if (u.exuPort >= 0 && u.exuPort < static_cast<int>(exqInflight_.size()))
         exqInflight_[static_cast<size_t>(u.exuPort)] = std::max(0, exqInflight_[static_cast<size_t>(u.exuPort)] - 1);
       log("done", u);

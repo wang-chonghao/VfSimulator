@@ -9,8 +9,8 @@
 
 namespace vfsim {
 
-// Preserve the migration-period VfInfo API while making CanonicalVfInfo the
-// only semantic input consumed by the simulator runner.
+// Offline migration helper. This symbol belongs to vfsim::native_legacy and is
+// not part of the simulator runner API.
 CanonicalVfInfo adaptLegacyVfInfoToCanonical(const VfInfo &vfInfo);
 
 } // namespace vfsim

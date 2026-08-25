@@ -3,13 +3,30 @@
 
 #include "native/CanonicalVfInfoFixtureDecoder.h"
 
+#include <initializer_list>
 #include <stdexcept>
+#include <string_view>
+#include <unordered_set>
 #include <utility>
 
 namespace vfsim {
 namespace {
 
 using Object = json::Value::Object;
+
+void rejectUnknownFields(
+    const Object &object,
+    std::initializer_list<std::string_view> allowedFields,
+    const std::string &context) {
+  std::unordered_set<std::string> allowed;
+  for (const std::string_view field : allowedFields)
+    allowed.emplace(field);
+  for (const auto &[field, value] : object) {
+    (void)value;
+    if (allowed.find(field) == allowed.end())
+      throw std::runtime_error(context + " contains unknown field: " + field);
+  }
+}
 
 const json::Value *find(const Object &object, const std::string &key) {
   auto it = object.find(key);
@@ -82,6 +99,8 @@ std::optional<CanonicalSourceLocation> sourceLocation(const json::Value *value) 
   if (!value || value->isNull())
     return std::nullopt;
   const auto &object = value->asObject();
+  rejectUnknownFields(object, {"source", "line", "column", "path"},
+                      "canonical source_location");
   CanonicalSourceLocation result;
   result.source = optionalString(object, "source");
   result.line = optionalInt(object, "line");
@@ -146,6 +165,8 @@ CanonicalIntegerExpression integerExpression(const json::Value &value) {
 
 CanonicalDependencyRef dependency(const json::Value &value) {
   const auto &object = value.asObject();
+  rejectUnknownFields(object, {"producer_node_id", "kind", "operand_index"},
+                      "canonical dependency");
   CanonicalDependencyRef result;
   result.producerNodeId = required(object, "producer_node_id").asString();
   result.kind = dependencyKind(required(object, "kind").asString());
@@ -164,6 +185,8 @@ std::vector<CanonicalDependencyRef> dependencies(const json::Value *value) {
 
 CanonicalOperand operand(const json::Value &value) {
   const auto &object = value.asObject();
+  rejectUnknownFields(object, {"value_id", "role", "dtype", "memory_access"},
+                      "canonical operand");
   CanonicalOperand result;
   result.valueId = required(object, "value_id").asString();
   result.role = operandRole(required(object, "role").asString());
@@ -171,12 +194,20 @@ CanonicalOperand operand(const json::Value &value) {
   if (const json::Value *memoryValue = find(object, "memory_access")) {
     if (!memoryValue->isNull()) {
       const auto &memoryObject = memoryValue->asObject();
+      rejectUnknownFields(
+          memoryObject,
+          {"base_object_id", "offset", "access_kind", "span", "alias_group"},
+          "canonical memory_access");
       CanonicalMemoryAccess memory;
       memory.baseObjectId = required(memoryObject, "base_object_id").asString();
       const auto &offsetObject = required(memoryObject, "offset").asObject();
+      rejectUnknownFields(offsetObject, {"constant", "terms"},
+                          "canonical affine offset");
       memory.offset.constant = required(offsetObject, "constant").asInt();
       for (const auto &termValue : required(offsetObject, "terms").asArray()) {
         const auto &termObject = termValue.asObject();
+        rejectUnknownFields(termObject, {"variable_id", "coefficient"},
+                            "canonical affine term");
         memory.offset.terms.push_back(CanonicalAffineTerm{
             required(termObject, "variable_id").asString(),
             required(termObject, "coefficient").asInt()});
@@ -209,6 +240,12 @@ CanonicalNode node(const json::Value &value) {
   const auto &object = value.asObject();
   const std::string kind = required(object, "kind").asString();
   if (kind == "instruction") {
+    rejectUnknownFields(
+        object,
+        {"kind", "instruction_id", "opcode", "instruction_class", "form",
+         "inputs", "outputs", "dependencies", "attributes",
+         "source_location"},
+        "canonical instruction");
     CanonicalInstruction result;
     result.instructionId = required(object, "instruction_id").asString();
     result.opcode = required(object, "opcode").asString();
@@ -223,9 +260,16 @@ CanonicalNode node(const json::Value &value) {
     return CanonicalNode::makeInstruction(std::move(result));
   }
   if (kind == "loop") {
+    rejectUnknownFields(
+        object,
+        {"kind", "loop_id", "induction", "count", "unroll",
+         "carried_values", "body", "source_location"},
+        "canonical loop");
     CanonicalLoop result;
     result.loopId = required(object, "loop_id").asString();
     const auto &inductionObject = required(object, "induction").asObject();
+    rejectUnknownFields(inductionObject, {"variable_id", "start", "step"},
+                        "canonical induction");
     result.induction.variableId =
         required(inductionObject, "variable_id").asString();
     result.induction.start = integerExpression(required(inductionObject, "start"));
@@ -235,6 +279,11 @@ CanonicalNode node(const json::Value &value) {
     if (const json::Value *carriedValues = find(object, "carried_values")) {
       for (const auto &item : carriedValues->asArray()) {
         const auto &carried = item.asObject();
+        rejectUnknownFields(
+            carried,
+            {"logical_id", "entry_value_id", "back_edge_value_id",
+             "exit_value_id"},
+            "canonical loop carried value");
         result.carriedValues.push_back(CanonicalLoopCarriedValue{
             required(carried, "logical_id").asString(),
             required(carried, "entry_value_id").asString(),
@@ -248,6 +297,11 @@ CanonicalNode node(const json::Value &value) {
     return CanonicalNode::makeLoop(std::move(result));
   }
   if (kind == "membar") {
+    rejectUnknownFields(
+        object,
+        {"kind", "instruction_id", "barrier", "dependencies",
+         "source_location"},
+        "canonical membar");
     CanonicalMembar result;
     result.instructionId = required(object, "instruction_id").asString();
     result.barrier = required(object, "barrier").asString();
@@ -260,14 +314,24 @@ CanonicalNode node(const json::Value &value) {
 
 } // namespace
 
-CanonicalVfInfo decodeCanonicalVfInfoFixture(const json::Value &rootValue) {
+CanonicalVfInfo decodeCanonicalVfInfoJson(const json::Value &rootValue) {
   const auto &root = rootValue.asObject();
+  rejectUnknownFields(
+      root,
+      {"schema_version", "context", "values", "storage_objects", "params",
+       "uarch", "source"},
+      "CanonicalVfInfo root");
   CanonicalVfInfo result;
   result.schemaVersion = required(root, "schema_version").asInt();
   for (const auto &item : required(root, "context").asArray())
     result.context.push_back(node(item));
   for (const auto &[definitionId, value] : required(root, "values").asObject()) {
     const auto &object = value.asObject();
+    rejectUnknownFields(
+        object,
+        {"definition_id", "logical_id", "storage", "dtype", "shape",
+         "producer_node_id", "storage_object_id", "source_location"},
+        "canonical value");
     CanonicalValue decoded;
     decoded.definitionId = required(object, "definition_id").asString();
     decoded.logicalId = required(object, "logical_id").asString();
@@ -282,6 +346,9 @@ CanonicalVfInfo decodeCanonicalVfInfoFixture(const json::Value &rootValue) {
   if (const json::Value *storageObjects = find(root, "storage_objects")) {
     for (const auto &[objectId, value] : storageObjects->asObject()) {
       const auto &object = value.asObject();
+      rejectUnknownFields(object,
+                          {"object_id", "storage", "shape", "source_location"},
+                          "canonical storage object");
       CanonicalStorageObject decoded;
       decoded.objectId = required(object, "object_id").asString();
       decoded.storage = storageKind(required(object, "storage").asString());

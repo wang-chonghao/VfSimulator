@@ -9,8 +9,9 @@
 
 namespace vfsim {
 
-// Test-only decoder used to enforce Python/C++ conformance on shared fixtures.
-CanonicalVfInfo decodeCanonicalVfInfoFixture(const json::Value &root);
+// Language-neutral CanonicalVfInfo v1 object decoder shared by the product
+// JSON adapter and Python/C++ conformance tests.
+CanonicalVfInfo decodeCanonicalVfInfoJson(const json::Value &root);
 
 } // namespace vfsim
 

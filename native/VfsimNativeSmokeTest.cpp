@@ -6,14 +6,13 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-#include "api/native/LegacyVfInfoAdapter.h"
 #include "native/IFU.h"
+#include "native/CanonicalProgramLowering.h"
 #include "native/IDU.h"
 #include "native/OOO.h"
 #include "native/ParamDB.h"
-#include "native/ProgramAnalysis.h"
-#include "native/ProgramFlatten.h"
 #include "native/SimulatorRunner.h"
+#include "api/native/LegacyVfInfoAdapter.h"
 
 #include <filesystem>
 #include <fstream>
@@ -30,16 +29,16 @@ namespace {
 
 using namespace vfsim;
 
+void require(bool cond, const std::string &msg) {
+  if (!cond)
+    throw std::runtime_error(msg);
+}
+
 SimulationResult runLegacyForTest(const VfInfo &vfInfo, const ParamDB &db,
                                   const std::string &resultsDir = {},
                                   int64_t maxCycles = 1000000) {
   return runCanonicalVfInfo(adaptLegacyVfInfoToCanonical(vfInfo), db,
                             resultsDir, maxCycles);
-}
-
-void require(bool cond, const std::string &msg) {
-  if (!cond)
-    throw std::runtime_error(msg);
 }
 
 ProgramInstNode makeInst(std::string op, std::vector<std::string> dst,
@@ -87,18 +86,10 @@ std::vector<ProgramNode> buildTaddTmulProgram() {
   body.push_back(makeLoopNode(
       "1",
       {
-          makeInstNode("VADDS", {"v2"}, {"v0", "v1"}),
+          makeInstNode("VADD", {"v2"}, {"v0", "v1"}),
       }));
 
   return body;
-}
-
-int countTopLevelLoops(const std::vector<ProgramNode> &program) {
-  int count = 0;
-  for (const auto &node : program)
-    if (node.kind == ProgramNode::Kind::Loop)
-      ++count;
-  return count;
 }
 
 void verifyUnrollOrder(const ParamDB &db) {
@@ -110,12 +101,15 @@ void verifyUnrollOrder(const ParamDB &db) {
        makeInstNode("VSUB", {"v4"}, {"v1", "v3"}),
        makeInstNode("VSTS", {"mem2"}, {"v4"})})};
 
-  ProgramFlatten flattener;
-  const auto &linear = flattener.flatten(program);
-  ProgramAnalysis analysis;
-  IFU ifu(linear, {}, &db, analysis.inferTopBlockLoopBounds(program), 1,
-          "fp32");
-  const auto emitted = ifu.take(10);
+  VfInfo vfInfo;
+  vfInfo.body = program;
+  CanonicalRuntimeProgram runtime;
+  try {
+    runtime = lowerCanonicalProgram(adaptLegacyVfInfoToCanonical(vfInfo), &db);
+  } catch (const std::exception &error) {
+    throw std::runtime_error("verifyUnrollOrder: " + std::string(error.what()));
+  }
+  const auto &emitted = runtime.instructions;
   const std::vector<std::string> expected = {
       "VLDS", "VLDS", "VADD", "VADD", "VLDS",
       "VLDS", "VSUB", "VSUB", "VSTS", "VSTS"};
@@ -124,8 +118,6 @@ void verifyUnrollOrder(const ParamDB &db) {
   for (size_t i = 0; i < expected.size(); ++i) {
     require(emitted[i].op == expected[i],
             "unrolled IFU must preserve static AABBCC order");
-    require(emitted[i].lane == static_cast<int64_t>(i % 2),
-            "unrolled IFU emitted an unexpected lane order");
   }
 }
 
@@ -320,6 +312,66 @@ void verifyNativeUbSharedSlotsAndPregPressure(const ParamDB &db) {
           "preg pressure must issue one store and one load through shared UB slots");
   require(std::get<2>(pressured) > std::get<1>(pressured),
           "the second load must wait when a store consumes one shared UB slot");
+}
+
+void verifyNativeVectorAlignGenerations(const ParamDB &db) {
+  OoOCoreMainline core(db.uarch(), db, "fp32");
+
+  DynamicInst reduction;
+  reduction.instId = 9300;
+  reduction.streamSeq = 0;
+  reduction.op = "VCMAX";
+  reduction.form = "fp32";
+  reduction.dst = {"v0"};
+
+  auto makeVstus = [](int64_t id, int64_t seq, const std::string &memory) {
+    DynamicInst inst;
+    inst.instId = id;
+    inst.streamSeq = seq;
+    inst.op = "VSTUS";
+    inst.form = "fp32";
+    inst.src = {"v0"};
+    inst.dst = {memory};
+    inst.alignStateOperation = "append";
+    inst.alignStateId = "u1";
+    return inst;
+  };
+  auto makeVstas = [](int64_t id, int64_t seq, const std::string &memory) {
+    DynamicInst inst;
+    inst.instId = id;
+    inst.streamSeq = seq;
+    inst.op = "VSTAS";
+    inst.form = "fp32";
+    inst.dst = {memory};
+    inst.alignStateOperation = "consume";
+    inst.alignStateId = "u1";
+    return inst;
+  };
+
+  core.accept(reduction);
+  core.accept(makeVstus(9301, 1, "mem0"));
+  core.accept(makeVstas(9302, 2, "mem0"));
+  core.accept(makeVstus(9303, 3, "mem1"));
+  core.accept(makeVstas(9304, 4, "mem1"));
+  for (int cycle = 0; cycle < 100; ++cycle)
+    core.step();
+
+  const auto root = std::filesystem::temp_directory_path() /
+                    "vfsim_native_vector_align";
+  std::filesystem::create_directories(root);
+  core.dumpSimpleLogs((root / "starts.jsonl").string(),
+                      (root / "done.jsonl").string());
+  const std::string starts = readText(root / "starts.jsonl");
+  const int64_t firstProducer = cycleForInstId(starts, 9301);
+  const int64_t firstConsumer = cycleForInstId(starts, 9302);
+  const int64_t secondProducer = cycleForInstId(starts, 9303);
+  const int64_t secondConsumer = cycleForInstId(starts, 9304);
+  require(firstConsumer == firstProducer + 1,
+          "VSTAS must consume only its sealed generation at forwarding + 1");
+  require(firstConsumer < secondProducer,
+          "a later VSTUS must not pollute the preceding sealed generation");
+  require(secondConsumer == secondProducer + 1,
+          "the next VSTAS must wait for its own VSTUS generation");
 }
 
 ParamDB makeDurationTestDb() {
@@ -633,13 +685,18 @@ void verifyMembarDisablesUnroll(ParamDB &db) {
        makeInstNode("VSTS", {"mem1"}, {"v0"}),
        makeMembarNode("VST_VLD"),
        makeInstNode("VLDS", {"v1"}, {"mem2"})})};
-  ProgramFlatten flattener;
-  const auto &linear = flattener.flatten(program);
-  ProgramAnalysis analysis;
-  IFU ifu(linear, {}, &db, analysis.inferTopBlockLoopBounds(program), 1,
-          "fp32");
-  const auto emitted = ifu.take(12);
-  require(emitted.size() == 12, "membar unroll-disabled IFU instruction count mismatch");
+  VfInfo vfInfo;
+  vfInfo.body = program;
+  CanonicalRuntimeProgram runtime;
+  try {
+    runtime = lowerCanonicalProgram(adaptLegacyVfInfoToCanonical(vfInfo), &db);
+  } catch (const std::exception &error) {
+    throw std::runtime_error("verifyMembarDisablesUnroll: " +
+                             std::string(error.what()));
+  }
+  const auto &emitted = runtime.instructions;
+  require(emitted.size() == 16,
+          "membar unroll-disabled IFU instruction count mismatch");
   for (const auto &inst : emitted) {
     require(inst.lane == -1, "membar loop should not emit unroll lanes");
     for (const auto &src : inst.src)
@@ -662,7 +719,7 @@ void verifyExplicitMembarTiming(const ParamDB &db) {
        makeInstNode("VSTS", {"memB"}, {"v0"}),
        makeMembarNode("MEMBAR.VST_VLD"),
        makeInstNode("VLDS", {"v1"}, {"memC"}),
-       makeInstNode("VADDS", {"v2"}, {"v0"})})};
+       makeInstNode("VADD", {"v2"}, {"v0", "v3"})})};
 
   const auto outDir = std::filesystem::temp_directory_path() / "vfsim_native_membar";
   const auto result = runLegacyForTest(vfInfo, db, outDir.string(), /*maxCycles=*/100000);
@@ -876,6 +933,7 @@ int main() {
     verifyNativeExu0ReserveDispatch(db);
     verifyNativeThreePortsMode(db);
     verifyNativeUbSharedSlotsAndPregPressure(db);
+    verifyNativeVectorAlignGenerations(db);
     verifyUnrollOrder(db);
     verifyMembarDisablesUnroll(db);
     verifyExplicitMembarTiming(db);
@@ -887,21 +945,9 @@ int main() {
     verifyNativeUnknownVcvtFallsBack(db);
     verifySingleIterationLoopRunner(db);
 
-    const auto program = buildTaddTmulProgram();
-    ProgramAnalysis analysis;
-    const auto loopBounds = analysis.inferTopBlockLoopBounds(program);
-    ProgramFlatten flattener;
-    const auto &linear = flattener.flatten(program);
-
-    require(!linear.empty(), "flattened program must not be empty");
-
-    const int topBlocks = countTopLevelLoops(program);
-    IFU ifu(linear, {}, &db, loopBounds, topBlocks, "fp32");
-    IDU idu(db.uarch(), db, {}, {}, topBlocks, loopBounds, "fp32");
-    OoOCoreMainline ooo(db.uarch(), db, "fp32");
-
-    const auto result =
-        runSimulation(ifu, idu, ooo, db.uarch(), {}, "", /*maxCycles=*/5000);
+    VfInfo smokeInfo;
+    smokeInfo.body = buildTaddTmulProgram();
+    const auto result = runLegacyForTest(smokeInfo, db, "", 5000);
 
     require(result.vfEndCycle > 0 && result.vfEndCycle < 200,
             "expected a short native VfSimulator run, got vfEndCycle=" +

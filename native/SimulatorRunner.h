@@ -12,6 +12,7 @@
 #include "native/IDU.h"
 #include "native/OOO.h"
 #include "api/native/CanonicalVfInfo.h"
+#include "api/native/RuntimeTypes.h"
 
 #include <string>
 
@@ -32,7 +33,7 @@ SimulationResult runSimulation(IFU &ifu,
                                IDU &idu,
                                OoOCoreMainline &ooo,
                                const UarchConfig &uarch,
-                               const ProgramAnalysis::ParamMap &params,
+                               const RuntimeParamMap &params,
                                const std::string &resultsDir,
                                int64_t maxCycles = 1000000,
                                const std::unordered_map<std::string, ValueInfo> &values = {});

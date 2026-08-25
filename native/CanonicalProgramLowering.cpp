@@ -54,7 +54,7 @@ std::string stringOverride(const CanonicalScalar &value,
 }
 
 int64_t resolveInteger(const CanonicalIntegerExpression &expression,
-                       const ProgramAnalysis::ParamMap &params,
+                       const RuntimeParamMap &params,
                        const std::string &field) {
   if (const auto *value = std::get_if<int64_t>(&expression))
     return *value;
@@ -105,10 +105,20 @@ public:
         message << "; " << diagnostic.code << " at " << diagnostic.path;
       throw std::runtime_error(message.str());
     }
-    expandNodes(vfInfo_.context, 0);
+    expandTopLevelNodes(vfInfo_.context);
     annotateLifetimes();
     annotateSchedulingBoundaries();
     runtime_.totalTopBlocks = std::max<int64_t>(1, nextTopBlockId_);
+    std::unordered_set<int64_t> nonemptyTopBlocks;
+    for (const auto &instruction : runtime_.instructions) {
+      if (instruction.type == "inst")
+        nonemptyTopBlocks.insert(instruction.topBlockId);
+    }
+    for (int64_t topBlockId = 0; topBlockId < runtime_.totalTopBlocks;
+         ++topBlockId) {
+      if (!nonemptyTopBlocks.count(topBlockId))
+        runtime_.emptyTopBlocks.insert(topBlockId);
+    }
     if (runtime_.topBlockLoopBounds.empty())
       runtime_.topBlockLoopBounds.emplace(0, std::vector<int64_t>{});
     return std::move(runtime_);
@@ -124,6 +134,7 @@ private:
   std::vector<Frame> frames_;
   int64_t nextLoopId_ = 0;
   int64_t nextTopBlockId_ = 0;
+  int64_t activeTopBlockId_ = 0;
 
   void indexLoops(const std::vector<CanonicalNode> &nodes, int depth) {
     for (const auto &node : nodes) {
@@ -165,7 +176,8 @@ private:
   }
 
   void fillDynamicMetadata(DynamicInst &inst) const {
-    inst.topBlockId = frames_.empty() ? 0 : frames_.front().topBlockId;
+    inst.topBlockId =
+        frames_.empty() ? activeTopBlockId_ : frames_.front().topBlockId;
     for (const auto &frame : frames_) {
       inst.loopStack.push_back(frame.numericId);
       inst.iterStack.push_back(frame.scheduledIteration);
@@ -196,6 +208,23 @@ private:
     dynamic.op = instruction.opcode;
     dynamic.form = instruction.form;
     dynamic.staticInstructionId = instruction.instructionId;
+    const auto alignOperation = instruction.attributes.find("align_state_operation");
+    if (alignOperation != instruction.attributes.end()) {
+      const auto *value = std::get_if<std::string>(&alignOperation->second);
+      if (value == nullptr)
+        throw std::runtime_error(
+            "align_state_operation must be a string: " +
+            instruction.instructionId);
+      dynamic.alignStateOperation = *value;
+    }
+    const auto alignState = instruction.attributes.find("align_state_id");
+    if (alignState != instruction.attributes.end()) {
+      const auto *value = std::get_if<std::string>(&alignState->second);
+      if (value == nullptr)
+        throw std::runtime_error("align_state_id must be a string: " +
+                                 instruction.instructionId);
+      dynamic.alignStateId = *value;
+    }
     fillDynamicMetadata(dynamic);
     for (const auto &operand : instruction.inputs)
       dynamic.src.push_back(resolve(operand.valueId));
@@ -359,6 +388,29 @@ private:
           throw std::runtime_error("Canonical loop payload is null");
         expandLoop(*loop, depth);
       }
+    }
+  }
+
+  void expandTopLevelNodes(const std::vector<CanonicalNode> &nodes) {
+    for (const auto &node : nodes) {
+      const auto *loop =
+          std::get_if<std::shared_ptr<const CanonicalLoop>>(&node.payload);
+      if (loop != nullptr) {
+        if (!*loop)
+          throw std::runtime_error("Canonical loop payload is null");
+        activeTopBlockId_ = loopTopBlockIds_.at((*loop)->loopId);
+        expandLoop(**loop, 0);
+        continue;
+      }
+
+      // Top-level straight-line nodes after a loop belong to that loop's
+      // scheduling block until the next top-level loop starts. This keeps a
+      // loop epilogue (for example VSTAS + Membar) ahead of the next VLOOP.
+      if (const auto *instruction =
+              std::get_if<CanonicalInstruction>(&node.payload))
+        expandInstruction(*instruction);
+      else
+        expandMembar(std::get<CanonicalMembar>(node.payload));
     }
   }
 

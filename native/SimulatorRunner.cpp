@@ -183,7 +183,8 @@ SimulationResult runCanonicalVfInfo(const CanonicalVfInfo &vfInfo,
   IFU ifu(std::move(runtime.instructions), runtime.topBlockLoopBounds,
           runtime.totalTopBlocks);
   IDU idu(uarch, db, runtime.params, {}, runtime.totalTopBlocks,
-          runtime.topBlockLoopBounds, runtime.dtype, runtime.values);
+          runtime.topBlockLoopBounds, runtime.dtype, runtime.values,
+          runtime.emptyTopBlocks);
   OoOCoreMainline ooo(uarch, db, runtime.dtype, runtime.values);
   return runSimulation(ifu, idu, ooo, uarch, runtime.params, resultsDir,
                        maxCycles, runtime.values);
@@ -193,7 +194,7 @@ SimulationResult runSimulation(IFU &ifu,
                                IDU &idu,
                                OoOCoreMainline &ooo,
                                const UarchConfig &uarch,
-                               const ProgramAnalysis::ParamMap &params,
+                               const RuntimeParamMap &params,
                                const std::string &resultsDir,
                                int64_t maxCycles,
                                const std::unordered_map<std::string, ValueInfo> &values) {

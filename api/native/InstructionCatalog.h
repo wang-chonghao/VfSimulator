@@ -19,7 +19,8 @@ enum class CatalogArgumentKind {
   Scalar,
   Predicate,
   Config,
-  RegisterOrScalar
+  RegisterOrScalar,
+  AlignState
 };
 
 struct NativeOperandSpec {
@@ -45,6 +46,8 @@ struct NativeInstructionSpec {
   std::string formRule;
   std::string fixedForm;
   bool virtualOpcode = false;
+  std::string alignStateOperation;
+  int alignStateArgumentIndex = -1;
   std::unordered_set<std::string> forms;
   std::unordered_map<std::string, std::string> specializations;
   std::vector<NativeOperandSpec> operands;

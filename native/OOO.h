@@ -14,6 +14,7 @@
 
 #include <deque>
 #include <optional>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -22,6 +23,22 @@
 namespace vfsim {
 
 class ControlUnit;
+
+struct AlignProducerRecord {
+  int64_t instId = 0;
+  int64_t streamSeq = -1;
+  std::string op;
+  std::string form;
+  std::optional<int64_t> startCycle;
+  std::optional<int64_t> doneCycle;
+};
+
+struct AlignGeneration {
+  std::string stateId;
+  int64_t generationId = 0;
+  std::vector<std::shared_ptr<AlignProducerRecord>> producers;
+  std::optional<int64_t> consumerInstId;
+};
 
 struct Uop {
   int64_t instId = 0;
@@ -50,6 +67,11 @@ struct Uop {
   std::optional<std::string> producerOpForStore;
   std::optional<std::string> producerFormForStore;
   std::optional<int64_t> producerStartForStore;
+  bool storeDependenciesResolved = false;
+  std::string alignStateOperation;
+  std::string alignStateId;
+  std::shared_ptr<AlignGeneration> alignGeneration;
+  std::shared_ptr<AlignProducerRecord> alignProducerRecord;
   int64_t topBlockId = 0;
   std::vector<int64_t> iterStack;
   bool isLastInTopBlock = false;
@@ -218,6 +240,8 @@ protected:
   std::unordered_set<std::string> pregPending_;
   std::unordered_map<std::string, int64_t> pregReleaseEligibleCycle_;
   std::unordered_map<std::string, int64_t> pregGeneration_;
+  std::unordered_map<std::string, std::shared_ptr<AlignGeneration>> alignStateOpen_;
+  std::unordered_map<std::string, int64_t> alignStateNextGeneration_;
   std::unordered_map<int64_t, std::vector<SrcReleaseEvent>> srcReleaseEvents_;
   std::unordered_map<int64_t, int> srcReleaseExpected_;
   std::unordered_map<int64_t, int> srcReleaseSeen_;
@@ -269,6 +293,7 @@ protected:
   void scheduleShqRelease(int64_t cycle, int count = 1);
   void runShqReleaseEvents(int64_t cycle);
   void updateLsqReadyStates(int64_t cycle, bool storesOnly = false);
+  void bindAlignState(Uop &u, const DynamicInst &inst);
   void issueReadyLsu(int64_t cycle, int &issuedLoads, int &issuedStores,
                      int &issuedTotal,
                      std::unordered_set<int64_t> &membarBlockedLoggedIds);

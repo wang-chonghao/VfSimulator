@@ -414,6 +414,24 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
             error("catalog_specialization_required",
                   "Virtual opcode/form must use specialized opcode", nodePath,
                   inst->sourceLocation);
+          if (!catalogSpec->alignStateOperation.empty()) {
+            const auto operation = inst->attributes.find("align_state_operation");
+            const auto state = inst->attributes.find("align_state_id");
+            const auto *operationValue =
+                operation == inst->attributes.end()
+                    ? nullptr
+                    : std::get_if<std::string>(&operation->second);
+            const auto *stateValue =
+                state == inst->attributes.end()
+                    ? nullptr
+                    : std::get_if<std::string>(&state->second);
+            if (operationValue == nullptr ||
+                *operationValue != catalogSpec->alignStateOperation ||
+                stateValue == nullptr || stateValue->empty())
+              error("catalog_align_state_mismatch",
+                    "Instruction must declare its Catalog align-state operation and state ID",
+                    nodePath, inst->sourceLocation);
+          }
         }
         validateScalarMap(inst->attributes, nodePath + ".attributes");
 

@@ -162,27 +162,6 @@ void canonicalizeNodes(std::vector<ProgramNode> &nodes, VfInfo &vfInfo) {
 
 } // namespace
 
-ValueStorageKind inferValueStorage(const std::string &valueId) {
-  const std::string normalized = lower(valueId);
-  if (normalized.rfind("mem", 0) == 0)
-    return ValueStorageKind::UB;
-  if (normalized.rfind("v", 0) == 0)
-    return ValueStorageKind::Register;
-  return ValueStorageKind::Scalar;
-}
-
-std::string valueStorageName(ValueStorageKind storage) {
-  switch (storage) {
-  case ValueStorageKind::Register:
-    return "Register";
-  case ValueStorageKind::UB:
-    return "UB";
-  case ValueStorageKind::Scalar:
-    return "Scalar";
-  }
-  return "Scalar";
-}
-
 void canonicalizeVfInfo(VfInfo &vfInfo) {
   if (vfInfo.defaultDtype.empty())
     vfInfo.defaultDtype = "fp32";

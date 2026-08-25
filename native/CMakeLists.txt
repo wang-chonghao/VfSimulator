@@ -18,28 +18,28 @@ endif()
 
 option(VFSIM_BUILD_TESTS "Build native VfSimulator tests" ${VFSIM_BUILD_TESTS_DEFAULT})
 option(VFSIM_ENABLE_MLIR_PLANNER "Build MLIR IR planner entry point" OFF)
+option(VFSIM_BUILD_LEGACY_MIGRATION
+  "Build the standalone legacy VfInfo/JSON migration library"
+  ${VFSIM_BUILD_TESTS_DEFAULT}
+)
 
 set(VFSIM_NATIVE_CORE_SOURCES
   ../api/native/CanonicalVfInfo.cpp
-  ../api/native/LegacyVfInfoAdapter.cpp
+  ../api/native/CanonicalJsonVfInfoAdapter.cpp
   ../api/native/InstructionCatalog.cpp
   ../api/native/UarchOverrideSchema.cpp
-  ../api/native/VfInfo.cpp
-  ../api/native/JsonVfInfoAdapter.cpp
+  ../api/native/RuntimeValue.cpp
   Json.cpp
   ControlUnit.cpp
   ParamCompat.cpp
   ParamDB.cpp
   ISATraits.cpp
-  ProgramAnalysis.cpp
-  ProgramCanonicalization.cpp
-  ProgramVregLiveRangeNormalization.cpp
   CanonicalProgramLowering.cpp
-  ProgramFlatten.cpp
   IFU.cpp
   IDU.cpp
   OOO.cpp
   SimulatorRunner.cpp
+  CanonicalVfInfoFixtureDecoder.cpp
 )
 
 add_library(vfsim_native_core STATIC
@@ -47,6 +47,27 @@ add_library(vfsim_native_core STATIC
 )
 
 add_library(vfsim::native_core ALIAS vfsim_native_core)
+
+if(VFSIM_BUILD_LEGACY_MIGRATION)
+  add_library(vfsim_native_legacy STATIC
+    ../api/native/VfInfo.cpp
+    ../api/native/LegacyVfInfoAdapter.cpp
+    ../api/native/JsonVfInfoAdapter.cpp
+    ProgramAnalysis.cpp
+    ProgramFlatten.cpp
+    ProgramCanonicalization.cpp
+    ProgramVregLiveRangeNormalization.cpp
+  )
+
+  add_library(vfsim::native_legacy ALIAS vfsim_native_legacy)
+
+  target_link_libraries(vfsim_native_legacy PUBLIC vfsim::native_core)
+  target_include_directories(vfsim_native_legacy PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+  )
+  target_compile_features(vfsim_native_legacy PUBLIC cxx_std_17)
+endif()
 
 target_include_directories(vfsim_native_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
@@ -89,12 +110,17 @@ if(PROJECT_IS_TOP_LEVEL AND NOT BUILD_TESTING)
   return()
 endif()
 
+if(NOT VFSIM_BUILD_LEGACY_MIGRATION)
+  message(FATAL_ERROR "VFSIM_BUILD_TESTS requires VFSIM_BUILD_LEGACY_MIGRATION")
+endif()
+
 add_executable(vfsim_native_smoke_test
   VfsimNativeSmokeTest.cpp
 )
 
 target_link_libraries(vfsim_native_smoke_test PRIVATE
   vfsim::native_core
+  vfsim::native_legacy
 )
 
 set_target_properties(vfsim_native_smoke_test PROPERTIES
@@ -111,6 +137,7 @@ add_executable(vfsim_tadd_tmul_trace
 
 target_link_libraries(vfsim_tadd_tmul_trace PRIVATE
   vfsim::native_core
+  vfsim::native_legacy
 )
 
 set_target_properties(vfsim_tadd_tmul_trace PROPERTIES
@@ -127,6 +154,7 @@ add_executable(vfsim_program_canonicalization_test
 
 target_link_libraries(vfsim_program_canonicalization_test PRIVATE
   vfsim::native_core
+  vfsim::native_legacy
 )
 
 add_test(NAME vfsim_program_canonicalization_test
@@ -139,6 +167,7 @@ add_executable(vfsim_program_vreg_live_range_normalization_test
 
 target_link_libraries(vfsim_program_vreg_live_range_normalization_test PRIVATE
   vfsim::native_core
+  vfsim::native_legacy
 )
 
 add_test(NAME vfsim_program_vreg_live_range_normalization_test
@@ -146,12 +175,12 @@ add_test(NAME vfsim_program_vreg_live_range_normalization_test
 )
 
 add_executable(vfsim_vf_info_api_test
-  CanonicalVfInfoFixtureDecoder.cpp
   VfsimVfInfoApiTest.cpp
 )
 
 target_link_libraries(vfsim_vf_info_api_test PRIVATE
   vfsim::native_core
+  vfsim::native_legacy
 )
 
 add_test(NAME vfsim_vf_info_api_test

@@ -6,12 +6,9 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-#include "native/IFU.h"
-#include "native/IDU.h"
-#include "native/OOO.h"
+#include "api/native/LegacyVfInfoAdapter.h"
+#include "api/native/VfInfo.h"
 #include "native/ParamDB.h"
-#include "native/ProgramAnalysis.h"
-#include "native/ProgramFlatten.h"
 #include "native/SimulatorRunner.h"
 
 #include <filesystem>
@@ -62,14 +59,6 @@ std::vector<ProgramNode> buildTaddTmulProgram() {
   };
 }
 
-int countTopLevelLoops(const std::vector<ProgramNode> &program) {
-  int count = 0;
-  for (const auto &node : program)
-    if (node.kind == ProgramNode::Kind::Loop)
-      ++count;
-  return count;
-}
-
 } // namespace
 
 int main() {
@@ -77,20 +66,12 @@ int main() {
     const std::filesystem::path root = std::filesystem::path(VFSIM_SOURCE_ROOT);
     ParamDB db(root);
 
-    const auto program = buildTaddTmulProgram();
-    ProgramAnalysis analysis;
-    const auto loopBounds = analysis.inferTopBlockLoopBounds(program);
-    ProgramFlatten flattener;
-    const auto &linear = flattener.flatten(program);
-
-    const int topBlocks = countTopLevelLoops(program);
-    IFU ifu(linear, {}, &db, loopBounds, topBlocks, "fp32");
-    IDU idu(db.uarch(), db, {}, {}, topBlocks, loopBounds, "fp32");
-    OoOCoreMainline ooo(db.uarch(), db, "fp32");
+    VfInfo vfInfo;
+    vfInfo.body = buildTaddTmulProgram();
 
     const std::filesystem::path outDir = "/tmp/vfsim_tadd_tmul_native_debug";
-    const auto result = runSimulation(
-        ifu, idu, ooo, db.uarch(), {}, outDir.string(), /*maxCycles=*/5000);
+    const auto result = runCanonicalVfInfo(
+        adaptLegacyVfInfoToCanonical(vfInfo), db, outDir.string(), 5000);
 
     std::cout << "vfEndCycle=" << result.vfEndCycle << "\n";
     std::cout << "resultsDir=" << result.resultsDir << "\n";

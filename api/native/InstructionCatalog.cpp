@@ -17,6 +17,8 @@ struct GeneratedInstruction {
   const char *formRule;
   const char *fixedForm;
   bool virtualOpcode;
+  const char *alignStateOperation;
+  int alignStateArgumentIndex;
 };
 struct GeneratedOperand {
   const char *opcode;
@@ -101,6 +103,8 @@ CatalogArgumentKind parseArgumentKind(const std::string &value) {
     return CatalogArgumentKind::Config;
   if (value == "register_or_scalar")
     return CatalogArgumentKind::RegisterOrScalar;
+  if (value == "align_state")
+    return CatalogArgumentKind::AlignState;
   throw std::runtime_error("Invalid generated argument kind: " + value);
 }
 
@@ -115,6 +119,8 @@ InstructionCatalog::InstructionCatalog() {
     spec.formRule = entry.formRule;
     spec.fixedForm = entry.fixedForm;
     spec.virtualOpcode = entry.virtualOpcode;
+    spec.alignStateOperation = entry.alignStateOperation;
+    spec.alignStateArgumentIndex = entry.alignStateArgumentIndex;
     if (!specs_.emplace(spec.opcode, std::move(spec)).second)
       throw std::runtime_error("Duplicate generated opcode: " +
                                std::string(entry.opcode));
