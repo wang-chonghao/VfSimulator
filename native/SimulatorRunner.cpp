@@ -8,7 +8,6 @@
 
 #include "native/SimulatorRunner.h"
 
-#include "api/native/LegacyVfInfoAdapter.h"
 #include "native/ControlUnit.h"
 #include "native/CanonicalProgramLowering.h"
 #include "native/ISATraits.h"
@@ -175,21 +174,6 @@ void dumpModelWarnings(const ParamDB &db, const std::string &path) {
 
 } // namespace
 
-SimulationResult runLegacyVfInfo(const VfInfo &input,
-                                 const ParamDB &db,
-                                 const std::string &resultsDir,
-                                 int64_t maxCycles) {
-  return runCanonicalVfInfo(adaptLegacyVfInfoToCanonical(input), db,
-                            resultsDir, maxCycles);
-}
-
-SimulationResult runVfInfo(const VfInfo &input,
-                           const ParamDB &db,
-                           const std::string &resultsDir,
-                           int64_t maxCycles) {
-  return runLegacyVfInfo(input, db, resultsDir, maxCycles);
-}
-
 SimulationResult runCanonicalVfInfo(const CanonicalVfInfo &vfInfo,
                                     const ParamDB &db,
                                     const std::string &resultsDir,
@@ -199,7 +183,8 @@ SimulationResult runCanonicalVfInfo(const CanonicalVfInfo &vfInfo,
   IFU ifu(std::move(runtime.instructions), runtime.topBlockLoopBounds,
           runtime.totalTopBlocks);
   IDU idu(uarch, db, runtime.params, {}, runtime.totalTopBlocks,
-          runtime.topBlockLoopBounds, runtime.dtype, runtime.values);
+          runtime.topBlockLoopBounds, runtime.dtype, runtime.values,
+          runtime.emptyTopBlocks);
   OoOCoreMainline ooo(uarch, db, runtime.dtype, runtime.values);
   return runSimulation(ifu, idu, ooo, uarch, runtime.params, resultsDir,
                        maxCycles, runtime.values);
@@ -209,7 +194,7 @@ SimulationResult runSimulation(IFU &ifu,
                                IDU &idu,
                                OoOCoreMainline &ooo,
                                const UarchConfig &uarch,
-                               const ProgramAnalysis::ParamMap &params,
+                               const RuntimeParamMap &params,
                                const std::string &resultsDir,
                                int64_t maxCycles,
                                const std::unordered_map<std::string, ValueInfo> &values) {

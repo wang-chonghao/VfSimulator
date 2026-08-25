@@ -32,14 +32,14 @@ VfSimulator/
 ├─ README.md                           # 项目入口说明
 ├─ api.md                              # 公共 API 总览
 ├─ VF_modeling.md                      # 当前文档
-├─ api/                                # JSON/CCE 输入适配和公共 VFInfo API
-│  ├─ vf_info.py                       # VFInfo、VFLoop、VFInst、ValueInfo、Membar
-│  ├─ input_api.py                     # main.py 使用的统一输入加载入口
-│  ├─ json_adapter.py                  # JSON trace 到 VFInfo 的适配
-│  ├─ cce_adapter.py                   # CCE/DSL __VEC_SCOPE__ 解析
-│  ├─ vf_lowering.py                   # VFInfo -> simulator trace payload
+├─ api/                                # Canonical JSON/CCE 输入与预测 API
+│  ├─ frontend/schema.py               # Python CanonicalVfInfo v1
+│  ├─ frontend/adapter_ir.py           # CCE 私有 parser IR，不对外导出
+│  ├─ frontend/core_lowering.py        # CanonicalVfInfo -> Core payload
+│  ├─ input_api.py                     # canonical JSON/CCE/builder 入口
+│  ├─ cce_adapter.py                   # CCE/DSL -> CanonicalVfInfo
 │  ├─ simulator_costmodel.py           # 程序化 cost model wrapper
-│  ├─ vf_costmodel.py                  # 兼容 re-export 和抽象接口
+│  ├─ vf_costmodel.py                  # canonical cost model 抽象接口
 │  └─ native/                          # API 侧 native 相关辅助目录
 ├─ configs/
 │  ├─ isa.json                         # 指令级参数：延迟/启动/排空/EXU 类型等
@@ -220,6 +220,7 @@ IFU 的职责是把线性 IR 变成**动态指令流**。它不是简单顺序�
 - 嵌套循环的 body-open 判定
 - block/iter 级发射节拍控制
 - 顶层 block 结束后的后继 block 激活
+- `count=0` 的空顶层 block 跳过
 
 ### 5.1 top_block_id
 
@@ -235,6 +236,11 @@ IFU 的职责是把线性 IR 变成**动态指令流**。它不是简单顺序�
 - VLOOP 启动时间
 - body 打开时间
 - 嵌套 block 的动态触发
+
+Canonical 动态流构建时还会生成 `empty_top_blocks` 元数据。`count=0` 的顶层 loop
+不会产生普通动态指令，因此也不存在可用于触发后继块的
+`is_last_in_top_block`。IDU 初始化及块切换时会显式跳过这些空块，直接开启下一个
+包含普通动态指令的 top block；Python 与 Native 使用相同规则。
 
 ### 5.2 is_last_in_top_block
 
@@ -465,7 +471,7 @@ IDU 负责做的事情不是重命名，而是：
 
 IDU 初始化时把：
 
-- `top_block 0` 的 VLOOP 启动时间固定在第 `19` 拍
+- 第一个非空 top block 的 VLOOP 启动时间固定在第 `19` 拍
 
 这和项目里一直沿用的 VF 开始语义一致。
 
@@ -915,7 +921,7 @@ Python 和 Native 使用相同的 generation 封存与 ready 语义。Canonical 
 保留顶层 VLOOP 启动和顶层 body-open 时序，同时放宽前端窗口、发射宽度、OoO/LSQ/SHQ/EXQ 容量、IDU 到 OoO 延迟、OoO 到 SHQ/LSQ 延迟、EXQ 接收延迟、SHQ 释放延迟和在途数量上限。当前实现中，该模式还会跳过嵌套 body-open gate 和 innermost iter gate。
 
 ```bash
-python main.py --trace VFtest/GeLU_poly.json   --theoretical-limit-vloop-only   --out_dir results/theory_vloop_only
+python main.py --trace VFtest/canonical/GeLU_poly.json   --theoretical-limit-vloop-only   --out_dir results/theory_vloop_only
 ```
 
 ### 13.2 `--theoretical-limit-vloop-only-legacy-forwarding-direct-issue`
@@ -928,7 +934,7 @@ python main.py --trace VFtest/GeLU_poly.json   --theoretical-limit-vloop-only   
 - 关闭 ISU 队列模型、SHQ 信用模型和延迟信用可见性
 
 ```bash
-python main.py --trace VFtest/GeLU_poly.json   --theoretical-limit-vloop-only-legacy-forwarding-direct-issue   --out_dir results/theory_direct_issue
+python main.py --trace VFtest/canonical/GeLU_poly.json   --theoretical-limit-vloop-only-legacy-forwarding-direct-issue   --out_dir results/theory_direct_issue
 ```
 
 旧的通用 `--theoretical-limit`、`--theoretical-limit-single-queue`、`--theoretical-limit-vloop-only-legacy-forwarding` 参数已不再是当前公开入口。
@@ -949,7 +955,7 @@ python main.py --trace VFtest/GeLU_poly.json   --theoretical-limit-vloop-only-le
 因此，普通命令：
 
 ```bash
-python main.py --trace VFtest/GeLU_poly.json --out_dir results/gelu_poly
+python main.py --trace VFtest/canonical/GeLU_poly.json --out_dir results/gelu_poly
 ```
 
 使用的配置与当前 canonical 主线回归基线一致。历史报告中的 `queue_level4+vregpass` 只代表旧流程，不能作为当前执行链路名称。
@@ -963,7 +969,7 @@ python main.py --trace VFtest/GeLU_poly.json --out_dir results/gelu_poly
 ### 15.1 默认 JSON trace 模拟
 
 ```bash
-python main.py --trace VFtest/GeLU_poly.json --out_dir results/gelu_poly_default
+python main.py --trace VFtest/canonical/GeLU_poly.json --out_dir results/gelu_poly_default
 ```
 
 默认行为：
@@ -989,17 +995,17 @@ python main.py --cce path/to/file.dsl --cce-kernel kernel_name --out_dir results
 ### 15.3 理论上界
 
 ```bash
-python main.py --trace VFtest/GeLU_poly.json   --theoretical-limit-vloop-only   --out_dir results/theory_vloop_only
+python main.py --trace VFtest/canonical/GeLU_poly.json   --theoretical-limit-vloop-only   --out_dir results/theory_vloop_only
 ```
 
 ```bash
-python main.py --trace VFtest/GeLU_poly.json   --theoretical-limit-vloop-only-legacy-forwarding-direct-issue   --out_dir results/theory_direct_issue
+python main.py --trace VFtest/canonical/GeLU_poly.json   --theoretical-limit-vloop-only-legacy-forwarding-direct-issue   --out_dir results/theory_direct_issue
 ```
 
 ### 15.4 实验三端口模式
 
 ```bash
-python main.py --trace VFtest/GeLU_poly.json --three-ports --out_dir results/three_ports
+python main.py --trace VFtest/canonical/GeLU_poly.json --three-ports --out_dir results/three_ports
 ```
 
 三端口模式把计算/load 发射容量扩展到 3 个端口。store 发射仍然单发射，`EXU0_ONLY` 指令仍只在 EXU0 执行。

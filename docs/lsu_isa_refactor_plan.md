@@ -43,7 +43,7 @@ JSON / CCE
 
 - `main.py`：CLI 入口和模型选择。
 - `api/cce_adapter.py`：解析 CCE `__VEC_SCOPE__`。
-- `api/vf_lowering.py`：把公共 VF API lower 成 simulator program payload。
+- `api/frontend/core_lowering.py`：把公共 canonical VF API lower 成 simulator program payload。
 - `core/flatten.py`：静态 program 到线性 IR。
 - `core/ifu.py`：动态 loop 和 unroll 展开。
 - `core/idu.py`：IDU window、VLOOP gate、credit gate。

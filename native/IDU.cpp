@@ -32,15 +32,18 @@ std::string joinInts(const std::vector<int64_t> &values) {
 
 IDU::IDU(const UarchConfig &uarch,
          const ParamDB &db,
-         ProgramAnalysis::ParamMap params,
+         RuntimeParamMap params,
          std::vector<int64_t> loopBounds,
          int64_t totalTopBlocks,
          std::unordered_map<int, std::vector<int64_t>> topBlockLoopBounds,
          std::string dtype,
-         std::unordered_map<std::string, ValueInfo> values)
-    : db_(db), dtype_(std::move(dtype)), analysis_(std::move(params), std::move(values)),
+         std::unordered_map<std::string, ValueInfo> values,
+         std::unordered_set<int64_t> emptyTopBlocks)
+    : db_(db), dtype_(std::move(dtype)), valueStorage_(values),
       loopBounds_(std::move(loopBounds)), totalTopBlocks_(totalTopBlocks),
-      topBlockLoopBounds_(std::move(topBlockLoopBounds)) {
+      topBlockLoopBounds_(std::move(topBlockLoopBounds)),
+      emptyTopBlocks_(std::move(emptyTopBlocks)) {
+  (void)params;
   windowWidth_ = uarch.iduWindowWidth;
   issueWidth_ = uarch.iduIssueWidth;
   theoreticalLimitMode_ = false;
@@ -103,8 +106,20 @@ void IDU::initTopBlockNestedStarts(int64_t topBlockId, int64_t topVloopStart) {
 void IDU::initVloopStarts() {
   if (totalTopBlocks_ <= 0)
     return;
-  setTopBlockVloop(0, initialTopBlockVloopStartCycle_);
-  initTopBlockNestedStarts(0, initialTopBlockVloopStartCycle_);
+  const auto firstTop = nextNonemptyTopBlock(0);
+  if (!firstTop)
+    return;
+  setTopBlockVloop(*firstTop, initialTopBlockVloopStartCycle_);
+  initTopBlockNestedStarts(*firstTop, initialTopBlockVloopStartCycle_);
+}
+
+std::optional<int64_t> IDU::nextNonemptyTopBlock(int64_t start) const {
+  for (int64_t topBlockId = std::max<int64_t>(0, start);
+       topBlockId < totalTopBlocks_; ++topBlockId) {
+    if (!emptyTopBlocks_.count(topBlockId))
+      return topBlockId;
+  }
+  return std::nullopt;
 }
 
 std::string IDU::makeKey(int64_t topBlockId, const std::string &loopId,
@@ -178,10 +193,10 @@ void IDU::triggerNextVloops(const DynamicInst &inst, int64_t cycle) {
   const int64_t depth = static_cast<int64_t>(bounds.size());
 
   if (inst.isLastInTopBlock) {
-    const int64_t nextTop = topBlockId + 1;
-    if (nextTop < totalTopBlocks_ && !topBlockVloopStart_.count(nextTop)) {
-      setTopBlockVloop(nextTop, cycle);
-      initTopBlockNestedStarts(nextTop, cycle);
+    const auto nextTop = nextNonemptyTopBlock(topBlockId + 1);
+    if (nextTop && !topBlockVloopStart_.count(*nextTop)) {
+      setTopBlockVloop(*nextTop, cycle);
+      initTopBlockNestedStarts(*nextTop, cycle);
     }
   }
 
@@ -322,7 +337,7 @@ std::vector<DynamicInst> IDU::dispatch(int64_t cycle, const IDUDispatchBudget &b
 
     int64_t dstCount = 0;
     for (const auto &d : inst.dst) {
-      if (analysis_.isVregName(d))
+      if (valueStorage_.isRegister(d))
         ++dstCount;
     }
     if (credits < dstCount)

@@ -4,6 +4,15 @@ from typing import Iterable, Mapping
 
 from api.vf_info import VFInfo, VFInst, VFLoop, VFNode, ValueInfo, canonicalize_vf_info
 
+from .adapter_ir import (
+    AdapterAlias,
+    AdapterInstruction,
+    AdapterLoop,
+    AdapterMemoryAccess,
+    AdapterMembar,
+    AdapterProgram,
+    AdapterValue,
+)
 from .instruction_catalog import (
     DEFAULT_INSTRUCTION_CATALOG,
     ArgumentKind,
@@ -30,7 +39,70 @@ class LegacyVfInfoAdapter:
         normalized.uarch.setdefault("canonical_dynamic_instruction_limit", 0)
         resolved_source = {"adapter": "legacy_vf_info"}
         resolved_source.update(source or {})
-        return ValueVersioningPass().run(normalized, source=resolved_source)
+        return ValueVersioningPass().run(
+            self._to_adapter_program(normalized), source=resolved_source
+        )
+
+    @staticmethod
+    def _to_adapter_program(vf_info: VFInfo) -> AdapterProgram:
+        from api.vf_info import Membar, VFAlias
+
+        def convert_node(node):
+            if isinstance(node, VFInst):
+                return AdapterInstruction(
+                    name=node.name,
+                    src=list(node.src),
+                    dst=list(node.dst),
+                    form=node.form,
+                    instruction_class=node.instruction_class,
+                    memory_accesses=tuple(
+                        AdapterMemoryAccess(
+                            item.value_id,
+                            item.access_kind,
+                            item.offset,
+                            item.span,
+                            item.mode,
+                        )
+                        for item in node.memory_accesses
+                    ),
+                    source_location=node.source_location,
+                    attributes=dict(node.attributes),
+                    supplemental_inputs=tuple(node.supplemental_inputs),
+                )
+            if isinstance(node, VFLoop):
+                return AdapterLoop(
+                    count=node.count,
+                    unroll=node.unroll,
+                    body=[convert_node(item) for item in node.body],
+                    loop_id=node.loop_id,
+                    induction_variable=node.induction_variable,
+                    induction_start=node.induction_start,
+                    induction_step=node.induction_step,
+                    source_location=node.source_location,
+                )
+            if isinstance(node, VFAlias):
+                return AdapterAlias(
+                    node.destination, node.source, node.source_location
+                )
+            if isinstance(node, Membar):
+                return AdapterMembar(node.type, node.source_location)
+            raise TypeError(f"Unsupported legacy VFInfo node: {type(node).__name__}")
+
+        return AdapterProgram(
+            context=[convert_node(node) for node in vf_info.context],
+            values={
+                value_id: AdapterValue(
+                    value.value_id,
+                    value.storage,
+                    value.dtype,
+                    value.shape,
+                )
+                for value_id, value in vf_info.values.items()
+            },
+            params=dict(vf_info.params),
+            default_dtype=vf_info.default_dtype,
+            uarch=dict(vf_info.uarch),
+        )
 
     @staticmethod
     def _complete_omitted_scalars(vf_info: VFInfo) -> None:

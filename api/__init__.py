@@ -12,35 +12,16 @@ from api.input_symbols import (
     normalize_opcode,
     normalize_storage,
 )
-from api.json_adapter import JsonVfInfoAdapter
-from api.vf_info import (
-    Membar,
-    MemInfo,
-    ValueInfo,
-    ValueStorageKind,
-    VFInfo,
-    VFAlias,
-    VFInst,
-    VFLoop,
-    canonicalize_vf_info,
-)
+from api.frontend import CanonicalVfInfo, VfInfoBuilder
 
 __all__ = [
     "InputAPI",
-    "JsonVfInfoAdapter",
+    "CanonicalVfInfo",
+    "VfInfoBuilder",
     "DType",
     "MembarType",
     "OpCode",
     "StorageKind",
-    "Membar",
-    "MemInfo",
-    "ValueInfo",
-    "ValueStorageKind",
-    "VFInfo",
-    "VFAlias",
-    "VFInst",
-    "VFLoop",
-    "canonicalize_vf_info",
     "normalize_dtype",
     "normalize_form",
     "normalize_membar_type",

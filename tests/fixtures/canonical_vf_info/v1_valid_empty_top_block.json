@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "context": [
+    {
+      "kind": "loop",
+      "loop_id": "loop.empty",
+      "induction": {"variable_id": "i", "start": 0, "step": 1},
+      "count": 0,
+      "unroll": 1,
+      "body": [
+        {
+          "kind": "instruction",
+          "instruction_id": "inst.never",
+          "opcode": "VUNKNOWN",
+          "form": "fp32",
+          "instruction_class": "compute",
+          "inputs": [],
+          "outputs": []
+        }
+      ]
+    },
+    {
+      "kind": "loop",
+      "loop_id": "loop.live",
+      "induction": {"variable_id": "j", "start": 0, "step": 1},
+      "count": 1,
+      "unroll": 1,
+      "body": [
+        {
+          "kind": "instruction",
+          "instruction_id": "inst.live",
+          "opcode": "VUNKNOWN",
+          "form": "fp32",
+          "instruction_class": "compute",
+          "inputs": [],
+          "outputs": []
+        }
+      ]
+    }
+  ],
+  "values": {},
+  "storage_objects": {},
+  "params": {},
+  "uarch": {},
+  "source": {"fixture": "zero_iteration_top_level_loop"}
+}

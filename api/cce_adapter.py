@@ -19,19 +19,19 @@ from api.frontend.instruction_catalog import (
     InstructionSpec,
     OperandDirection,
 )
-from api.frontend.schema import SourceLocation
-from api.frontend.value_versioning import ValueVersioningPass
-from api.vf_info import (
-    Membar,
-    MemInfo,
-    VFInfo,
-    VFAlias,
-    VFInst,
-    VFLoop,
-    VFMemoryAccess,
-    VFNode,
-    canonicalize_vf_info,
+from api.frontend.schema import CanonicalVfInfo, SourceLocation
+from api.frontend.adapter_ir import (
+    AdapterAlias,
+    AdapterInstruction,
+    AdapterLoop,
+    AdapterMemoryAccess,
+    AdapterMembar,
+    AdapterNode,
+    AdapterProgram,
+    AdapterValue,
+    normalize_adapter_program,
 )
+from api.frontend.value_versioning import ValueVersioningPass
 
 
 _FUNC_RE = re.compile(
@@ -116,13 +116,13 @@ def extract_cce_vf_scopes(path: str | Path) -> List[CCEVFScope]:
     return scopes
 
 
-def parse_cce_vf_info(
+def _parse_cce_adapter_program(
     path: str | Path,
     kernel_name: str | None = None,
     loop_params: Optional[Dict[str, int]] = None,
-) -> VFInfo:
+) -> AdapterProgram:
     """
-    Parse one CCE ``__VEC_SCOPE__`` kernel into ``VFInfo``.
+    Parse one CCE ``__VEC_SCOPE__`` kernel into private adapter IR.
 
     ``loop_params`` can provide concrete values for symbolic loop bounds such as
     ``repeat_times``. If omitted, the adapter tries a small whole-file inference
@@ -135,8 +135,11 @@ def parse_cce_vf_info(
     resolved_loop_params = dict(loop_params or {})
     resolved_loop_params.update(_infer_call_argument_constants(source, scope))
     parser = _VFScopeParser(scope, resolved_loop_params)
-    return canonicalize_vf_info(
-        VFInfo(context=parser.parse(), params=resolved_loop_params)
+    return normalize_adapter_program(
+        AdapterProgram(
+            context=parser.parse(),
+            params=resolved_loop_params,
+        )
     )
 
 
@@ -144,16 +147,16 @@ def parse_cce_canonical_vf_info(
     path: str | Path,
     kernel_name: str | None = None,
     loop_params: Optional[Dict[str, int]] = None,
-):
+) -> CanonicalVfInfo:
     """Parse CCE into versioned canonical definitions without timing lookup."""
 
-    vf_info = parse_cce_vf_info(
+    program = _parse_cce_adapter_program(
         path,
         kernel_name=kernel_name,
         loop_params=loop_params,
     )
     return ValueVersioningPass().run(
-        vf_info,
+        program,
         source={"adapter": "cce", "path": str(Path(path))},
     )
 
@@ -196,7 +199,7 @@ class _VFScopeParser:
         self._record_function_scope_scalar_declarations(scope.declaration_source)
         self._record_function_scope_ub_pointer_declarations(scope.declaration_source)
 
-    def parse(self) -> List[VFNode]:
+    def parse(self) -> List[AdapterNode]:
         return self._parse_block(
             self.scope.source,
             frozenset(),
@@ -208,7 +211,7 @@ class _VFScopeParser:
         text: str,
         induction_variables: frozenset[str],
         base_line: int,
-    ) -> List[VFNode]:
+    ) -> List[AdapterNode]:
         saved_dtypes = dict(self.register_dtypes)
         saved_names = set(self.register_names)
         saved_align_state_names = set(self.align_state_names)
@@ -240,8 +243,8 @@ class _VFScopeParser:
         text: str,
         induction_variables: frozenset[str],
         base_line: int,
-    ) -> List[VFNode]:
-        nodes: List[VFNode] = []
+    ) -> List[AdapterNode]:
+        nodes: List[AdapterNode] = []
         pos = 0
         pending_unroll = 1
 
@@ -274,7 +277,7 @@ class _VFScopeParser:
                     base_line + text[: body_open + 1].count("\n"),
                 )
                 nodes.append(
-                    VFLoop(
+                    AdapterLoop(
                         count=count,
                         unroll=pending_unroll,
                         body=body,
@@ -314,7 +317,7 @@ class _VFScopeParser:
         stmt: str,
         induction_variables: frozenset[str],
         line: int,
-    ) -> VFNode | None:
+    ) -> AdapterNode | None:
         if not stmt:
             return None
         if stmt.startswith("vector_"):
@@ -336,14 +339,14 @@ class _VFScopeParser:
                 raise ValueError(
                     f"Register alias assignment requires declared vector values: {stmt}"
                 )
-            return VFAlias(
-                destination=MemInfo(dst, "Register", self.register_dtypes.get(dst)),
-                source=MemInfo(src, "Register", self.register_dtypes.get(src)),
+            return AdapterAlias(
+                destination=AdapterValue(dst, "Register", self.register_dtypes.get(dst)),
+                source=AdapterValue(src, "Register", self.register_dtypes.get(src)),
                 source_location=self._source_location(line),
             )
         smem_bar = re.match(r"SMEM_BAR\s*\.\s*([A-Za-z_]\w*)\s*;", stmt, re.IGNORECASE)
         if smem_bar:
-            return Membar(
+            return AdapterMembar(
                 normalize_membar_type(smem_bar.group(1)),
                 self._source_location(line),
             )
@@ -361,7 +364,7 @@ class _VFScopeParser:
             return None
         if low in {"mem_bar", "membar"} or "barrier" in low:
             barrier = args[0] if args else None
-            return Membar(
+            return AdapterMembar(
                 normalize_membar_type(barrier),
                 self._source_location(line),
             )
@@ -392,7 +395,7 @@ class _VFScopeParser:
                 "align_state_operation": str(spec.align_state_operation),
                 "align_state_id": self.align_state_ids[state_name],
             }
-        return VFInst(
+        return AdapterInstruction(
             name=resolved_op,
             form=resolved_form,
             src=src,
@@ -402,7 +405,7 @@ class _VFScopeParser:
             source_location=self._source_location(line),
             attributes=attributes,
             supplemental_inputs=tuple(
-                MemInfo(args[operand.argument_index].strip(), "Scalar")
+                AdapterValue(args[operand.argument_index].strip(), "Scalar")
                 for operand in spec.operands
                 if operand.direction == OperandDirection.INPUT
                 and operand.kind
@@ -418,9 +421,9 @@ class _VFScopeParser:
         spec: InstructionSpec,
         args: Sequence[str],
         induction_variables: frozenset[str],
-    ) -> tuple[List[MemInfo], List[MemInfo]]:
-        src: List[MemInfo] = []
-        dst: List[MemInfo] = []
+    ) -> tuple[List[AdapterValue], List[AdapterValue]]:
+        src: List[AdapterValue] = []
+        dst: List[AdapterValue] = []
         expected_count = max(
             (operand.argument_index for operand in spec.operands), default=-1
         ) + 1
@@ -473,7 +476,7 @@ class _VFScopeParser:
         operand_spec,
         index: int,
         induction_variables: frozenset[str],
-    ) -> MemInfo | None:
+    ) -> AdapterValue | None:
         kind = operand_spec.kind
         name = _base_identifier(arg)
         if kind == ArgumentKind.ALIGN_STATE:
@@ -487,7 +490,7 @@ class _VFScopeParser:
                 raise ValueError(
                     f"{callee} argument {index} must be a declared vector register: {arg}"
                 )
-            return MemInfo(
+            return AdapterValue(
                 name,
                 "Register",
                 self.register_dtypes.get(name),
@@ -498,14 +501,14 @@ class _VFScopeParser:
                 raise ValueError(
                     f"{callee} argument {index} must be a declared UB object: {arg}"
                 )
-            return MemInfo(ub_reference[0], "UB")
+            return AdapterValue(ub_reference[0], "UB")
         if kind in {ArgumentKind.SCALAR, ArgumentKind.REGISTER_OR_SCALAR}:
             if name in self.register_names:
                 if kind == ArgumentKind.SCALAR:
                     raise ValueError(
                         f"{callee} argument {index} must be scalar: {arg}"
                     )
-                return MemInfo(
+                return AdapterValue(
                     name,
                     "Register",
                     self.register_dtypes.get(name),
@@ -515,7 +518,7 @@ class _VFScopeParser:
                     f"{callee} argument {index} cannot use a UB object as scalar: {arg}"
                 )
             if name in self.scalar_names:
-                return MemInfo(name, "Scalar")
+                return AdapterValue(name, "Scalar")
             if _is_numeric_scalar_literal(arg):
                 return None
             raise ValueError(
@@ -632,7 +635,7 @@ class _VFScopeParser:
         op: str,
         args: Sequence[str],
         source_location: SourceLocation,
-    ) -> VFInst:
+    ) -> AdapterInstruction:
         if not args:
             raise ValueError(f"{callee} expects at least one destination operand")
         dst = [self._register_operand(args[0])]
@@ -642,7 +645,7 @@ class _VFScopeParser:
             if (operand := self._operand_for_arg(arg))
         ]
         form = _infer_inst_form(op, dst, src)
-        return VFInst(
+        return AdapterInstruction(
             name=op,
             form=form,
             src=src,
@@ -662,7 +665,7 @@ class _VFScopeParser:
         self,
         spec: InstructionSpec,
         args: Sequence[str],
-    ) -> tuple[VFMemoryAccess, ...]:
+    ) -> tuple[AdapterMemoryAccess, ...]:
         memory_operand = next(
             (
                 operand
@@ -705,7 +708,7 @@ class _VFScopeParser:
             mode = args[mode_operand.argument_index].strip()
         span = 1 if mode and (mode.startswith("BRC_") or mode.startswith("ONEPT_")) else None
         return (
-            VFMemoryAccess(
+            AdapterMemoryAccess(
                 value_id=base_name,
                 access_kind=(
                     "read"
@@ -774,29 +777,29 @@ class _VFScopeParser:
         ast.fix_missing_locations(expanded)
         return ast.unparse(expanded.body)
 
-    def _register_operand(self, arg: str) -> MemInfo:
+    def _register_operand(self, arg: str) -> AdapterValue:
         name = _base_identifier(arg)
         if name not in self.register_names:
             raise ValueError(f"Expected declared vector register: {arg}")
-        return MemInfo(
+        return AdapterValue(
             name,
             "Register",
             self.register_dtypes.get(name),
         )
 
-    def _operand_for_arg(self, arg: str) -> MemInfo | None:
+    def _operand_for_arg(self, arg: str) -> AdapterValue | None:
         name = _base_identifier(arg)
         if name in self.register_names:
-            return MemInfo(
+            return AdapterValue(
                 name,
                 "Register",
                 self.register_dtypes.get(name),
             )
         ub_reference = self._parse_ub_reference(arg)
         if ub_reference is not None:
-            return MemInfo(ub_reference[0], "UB")
+            return AdapterValue(ub_reference[0], "UB")
         if name in self.scalar_names:
-            return MemInfo(name, "Scalar")
+            return AdapterValue(name, "Scalar")
         return None
 
     def _record_vector_decl_statement(self, stmt: str) -> None:
@@ -1190,7 +1193,11 @@ def _extract_vector_decls(source: str) -> Dict[str, str]:
     return register_dtypes
 
 
-def _infer_inst_form(op: str, dst: Sequence[MemInfo], src: Sequence[MemInfo]) -> str | None:
+def _infer_inst_form(
+    op: str,
+    dst: Sequence[AdapterValue],
+    src: Sequence[AdapterValue],
+) -> str | None:
     op = normalize_opcode(op)
     src_dtype = next((operand.dtype for operand in src if operand.dtype), None)
     dst_dtype = next((operand.dtype for operand in dst if operand.dtype), None)

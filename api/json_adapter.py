@@ -17,7 +17,7 @@ from api.vf_info import (
 
 
 class JsonVfInfoAdapter:
-    """Translate legacy or typed JSON payloads into canonical VfInfo."""
+    """Offline decoder for the retired JSON/VFInfo contract."""
 
     @staticmethod
     def load(path: str | Path) -> VFInfo:

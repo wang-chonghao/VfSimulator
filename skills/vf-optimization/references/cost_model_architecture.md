@@ -1,10 +1,10 @@
-# VF Cost Model Architecture
+# VF Cost Model 架构
 
-This document describes the current mainline VF simulator architecture. It intentionally describes the cleaned-up model path rather than old historical variants.
+本文描述当前 VF 模拟器主线架构，不包含已经退出正式入口的历史路径。
 
-## 1. Inputs
+## 1. 输入
 
-The simulator accepts two input styles.
+模拟器接受两种来源，但两者都先生成 `CanonicalVfInfo`。
 
 JSON trace:
 
@@ -24,23 +24,16 @@ If a CCE file contains multiple `__VEC_SCOPE__` kernels, select one explicitly:
 python main.py --cce <kernel.dsl> --cce-kernel <kernel_name> --out_dir <out_dir>
 ```
 
-The CCE path is converted into the API object model first:
+CCE 路径先转换为 canonical API 对象：
 
 ```text
-CCE __VEC_SCOPE__ -> VFInfo -> internal JSON-like payload -> core simulator
+CCE __VEC_SCOPE__ -> private AdapterProgram -> CanonicalVfInfo -> Core
 ```
 
-The key API classes are in `api/vf_costmodel.py`:
+正式输入类型定义在 `api/frontend/schema.py`，预测抽象接口位于
+`api/vf_costmodel.py`。旧 `VFInfo` 只供离线迁移工具使用。
 
-- `VFInfo`: complete VF program.
-- `VFLoop`: loop count, unroll factor, and nested body.
-- `VFInst`: VF instruction with source and destination operands.
-- `MemInfo`: operand name and location.
-- `Membar`: explicit memory barrier node.
-
-`MemInfo.location` is currently `Register` or `UB`. The lowering layer still maps these to the internal historical naming convention (`V*` and `mem*`), but future code should prefer the explicit location field over name prefixes.
-
-## 2. Main Simulation Pipeline
+## 2. 主模拟流水线
 
 The current simulator pipeline is:
 
@@ -59,8 +52,8 @@ Major modules:
 
 - `main.py`: thin CLI entry point and high-level orchestration.
 - `api/input_api.py`: JSON and CCE input loading.
-- `api/cce_adapter.py`: extracts CCE `__VEC_SCOPE__` kernels and parses them into `VFInfo`.
-- `api/vf_lowering.py`: lowers `VFInfo` into the simulator payload format.
+- `api/cce_adapter.py`：提取 CCE `__VEC_SCOPE__` 并生成 canonical 输入。
+- `api/frontend/core_lowering.py`：把 canonical 输入 lower 到 Core payload。
 - `core/flatten.py`: expands nested loop structure into the linear stream consumed by IFU.
 - `core/ifu.py`: produces dynamic unrolled instruction flow.
 - `core/idu.py`: dispatches instructions into the OOO side while respecting IDU and queue entry rules.

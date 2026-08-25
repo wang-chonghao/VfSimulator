@@ -25,7 +25,7 @@ The current mainline simulator defaults to:
 Run model from a JSON trace:
 
 ```bash
-python main.py --trace VFtest/GeLU_poly.json --out_dir results/tmp_model/gelu_poly
+python main.py --trace VFtest/canonical/GeLU_poly.json --out_dir results/tmp_model/gelu_poly
 ```
 
 Run model from a CCE/DSL file:
@@ -43,14 +43,14 @@ python main.py --cce cce_code/example.dsl --cce-kernel my_vf_kernel --out_dir re
 Run the two currently kept theoretical-limit candidates:
 
 ```bash
-python main.py --trace VFtest/GeLU_poly.json --out_dir results/tmp_model/theory_vloop --theoretical-limit-vloop-only
-python main.py --trace VFtest/GeLU_poly.json --out_dir results/tmp_model/theory_direct --theoretical-limit-vloop-only-legacy-forwarding-direct-issue
+python main.py --trace VFtest/canonical/GeLU_poly.json --out_dir results/tmp_model/theory_vloop --theoretical-limit-vloop-only
+python main.py --trace VFtest/canonical/GeLU_poly.json --out_dir results/tmp_model/theory_direct --theoretical-limit-vloop-only-legacy-forwarding-direct-issue
 ```
 
 Run the experimental 3-port mode:
 
 ```bash
-python main.py --trace VFtest/GeLU_poly.json --out_dir results/tmp_model/gelu_poly_3ports --three-ports
+python main.py --trace VFtest/canonical/GeLU_poly.json --out_dir results/tmp_model/gelu_poly_3ports --three-ports
 ```
 
 ## API Path
@@ -58,15 +58,15 @@ python main.py --trace VFtest/GeLU_poly.json --out_dir results/tmp_model/gelu_po
 The preferred programmatic path is:
 
 1. CCE file or direct Python construction.
-2. `api.cce_adapter.parse_cce_vf_info(...)` or manual `VFInfo`.
+2. `InputAPI.load_cce(...)` 或用 `InputAPI.new_builder()` 构造 canonical 输入。
 3. `api.simulator_costmodel.CoreVfCostModel.predict_vf_cycles(...)`.
 4. Core simulator logs under the selected output directory.
 
 Relevant API files:
 
-- `api/vf_costmodel.py`: public data classes such as `VFInfo`, `VFLoop`, `VFInst`, `MemInfo`, and `Membar`.
+- `api/frontend/schema.py`：`CanonicalVfInfo v1` 数据模型。
 - `api/cce_adapter.py`: CCE `__VEC_SCOPE__` parser.
-- `api/vf_lowering.py`: lowers API `VFInfo` into the internal trace payload.
+- `api/frontend/core_lowering.py`：canonical 到内部 Core payload 的 lowering。
 - `api/simulator_costmodel.py`: API wrapper around the current core simulator.
 
 ## References

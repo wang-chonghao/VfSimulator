@@ -14,9 +14,18 @@ from api.frontend.schema import (
 from api.frontend.validator import validate_canonical_vf_info
 from api.frontend.legacy_vf_info_adapter import LegacyVfInfoAdapter
 from api.frontend.value_versioning import ValueVersioningPass
+from api.json_adapter import LegacyCanonicalJsonAdapter
 from api.input_api import InputAPI
 from api.simulator_costmodel import CoreVfCostModel
-from api.vf_info import Membar, VFAlias, ValueInfo, VFInfo, VFInst, VFLoop
+from api.vf_info import (
+    Membar,
+    VFAlias,
+    ValueInfo,
+    VFInfo,
+    VFInst,
+    VFLoop,
+    canonicalize_vf_info,
+)
 from core.flatten import Flattener
 from core.ifu import IFUUnroll
 from core.ooo_mainline import OoOCoreMainline
@@ -24,6 +33,12 @@ from core.param_db import ParamDB
 
 
 class ValueVersioningPassTest(unittest.TestCase):
+    def _version(self, vf_info: VFInfo):
+        normalized = canonicalize_vf_info(vf_info)
+        return ValueVersioningPass().run(
+            LegacyVfInfoAdapter._to_adapter_program(normalized)
+        )
+
     def test_only_legacy_adapter_repairs_omitted_scalar_operand(self):
         vf_info = VFInfo(
             values={
@@ -34,7 +49,7 @@ class ValueVersioningPassTest(unittest.TestCase):
         )
 
         with self.assertRaises(VfInfoValidationError) as captured:
-            InputAPI.to_canonical(vf_info)
+            self._version(vf_info)
         self.assertTrue(
             any(
                 diagnostic.code == "catalog_operand_count_mismatch"
@@ -90,7 +105,7 @@ class ValueVersioningPassTest(unittest.TestCase):
             ],
         )
 
-        canonical = ValueVersioningPass().run(vf_info)
+        canonical = self._version(vf_info)
         first, second = canonical.context
 
         self.assertIsInstance(first, CanonicalInstruction)
@@ -110,13 +125,13 @@ class ValueVersioningPassTest(unittest.TestCase):
                 for _ in range(80)
             ],
         )
-        canonical = ValueVersioningPass().run(vf_info)
+        canonical = self._version(vf_info)
         self.assertTrue(
             all(value_id.startswith("acc.def") for value_id in canonical.values if value_id.startswith("acc."))
         )
 
         with tempfile.TemporaryDirectory() as out_dir:
-            result = CoreVfCostModel(out_dir=out_dir).run_canonical_vf_info(canonical)
+            result = CoreVfCostModel(out_dir=out_dir).run_vf_info(canonical)
 
         self.assertGreater(result["vf_end_cycle"], 0)
         self.assertLess(result["vf_end_cycle"], 1_000_000)
@@ -139,10 +154,10 @@ class ValueVersioningPassTest(unittest.TestCase):
                 VFInst("VEXP", ["acc"], ["final"], "fp32"),
             ],
         )
-        canonical = ValueVersioningPass().run(vf_info)
+        canonical = self._version(vf_info)
 
         with tempfile.TemporaryDirectory() as out_dir:
-            result = CoreVfCostModel(out_dir=out_dir).run_canonical_vf_info(canonical)
+            result = CoreVfCostModel(out_dir=out_dir).run_vf_info(canonical)
 
         self.assertGreater(result["vf_end_cycle"], 0)
         self.assertLess(result["vf_end_cycle"], 1_000_000)
@@ -160,7 +175,7 @@ class ValueVersioningPassTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "scalar_vdup.cce"
             path.write_text(source, encoding="utf-8")
-            canonical = InputAPI.load_cce_canonical(path, "scalar_vdup")
+            canonical = InputAPI.load_cce(path, "scalar_vdup")
 
         operand = canonical.context[0].inputs[0]
         self.assertEqual(operand.role, OperandRole.SOURCE)
@@ -182,7 +197,7 @@ class ValueVersioningPassTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "ub_alias.cce"
             path.write_text(source, encoding="utf-8")
-            canonical = InputAPI.load_cce_canonical(path, "ub_alias")
+            canonical = InputAPI.load_cce(path, "ub_alias")
 
         loop = canonical.context[0]
         self.assertIsInstance(loop, CanonicalLoop)
@@ -215,11 +230,9 @@ class ValueVersioningPassTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "register_alias.cce"
             path.write_text(source, encoding="utf-8")
-            vf_info = InputAPI.load_cce_vf_info(path, "alias_case")
-            canonical = InputAPI.load_cce_canonical(path, "alias_case")
-            result = CoreVfCostModel(out_dir=tmpdir).run_legacy_vf_info(vf_info)
+            canonical = InputAPI.load_cce(path, "alias_case")
+            result = CoreVfCostModel(out_dir=tmpdir).run_vf_info(canonical)
 
-        self.assertIsInstance(vf_info.context[1], VFAlias)
         first_dup, second_dup, add = canonical.context
         self.assertEqual(add.inputs[0].value_id, first_dup.outputs[0].value_id)
         self.assertEqual(add.inputs[1].value_id, second_dup.outputs[0].value_id)
@@ -246,7 +259,7 @@ class ValueVersioningPassTest(unittest.TestCase):
             ],
         )
 
-        canonical = ValueVersioningPass().run(vf_info)
+        canonical = self._version(vf_info)
         loop = canonical.context[0]
         carried = {item.logical_id: item for item in loop.carried_values}
         add = loop.body[0]
@@ -302,7 +315,7 @@ class ValueVersioningPassTest(unittest.TestCase):
                         ],
                     )
 
-                    canonical = ValueVersioningPass().run(vf_info)
+                    canonical = self._version(vf_info)
                     self.assertTrue(
                         validate_canonical_vf_info(canonical).ok,
                         validate_canonical_vf_info(canonical).diagnostics,
@@ -361,7 +374,7 @@ class ValueVersioningPassTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "cast_alias.cce"
             path.write_text(source, encoding="utf-8")
-            canonical = InputAPI.load_cce_canonical(path, "cast_alias")
+            canonical = InputAPI.load_cce(path, "cast_alias")
 
         memory = canonical.context[0].inputs[0].memory_access
         self.assertEqual(memory.offset.constant, 96)
@@ -388,7 +401,7 @@ class ValueVersioningPassTest(unittest.TestCase):
                 with self.assertRaisesRegex(
                     ValueError, "Unsupported local UB pointer initializer"
                 ):
-                    InputAPI.load_cce_canonical(path, "invalid_alias")
+                    InputAPI.load_cce(path, "invalid_alias")
 
     def test_versioning_preserves_structured_validation_diagnostics(self):
         location = SourceLocation(path="invalid.cce", line=12, column=3)
@@ -411,7 +424,7 @@ class ValueVersioningPassTest(unittest.TestCase):
         )
 
         with self.assertRaises(VfInfoValidationError) as captured:
-            ValueVersioningPass().run(vf_info)
+            self._version(vf_info)
 
         self.assertTrue(captured.exception.diagnostics)
         self.assertTrue(
@@ -429,7 +442,7 @@ class ValueVersioningPassTest(unittest.TestCase):
         )
 
     def test_structured_expansion_has_configurable_hard_limit(self):
-        canonical = ValueVersioningPass().run(
+        canonical = self._version(
             self._accumulator_vf_info(count=4, unroll=1)
         )
         lowered = CoreLoweringPass().lower(canonical)
@@ -446,7 +459,7 @@ class ValueVersioningPassTest(unittest.TestCase):
             ifu.next_inst()
 
     def test_versions_loop_entry_back_edge_and_exit(self):
-        canonical = ValueVersioningPass().run(self._accumulator_vf_info())
+        canonical = self._version(self._accumulator_vf_info())
         loop = canonical.context[0]
         after = canonical.context[2]
 
@@ -460,11 +473,11 @@ class ValueVersioningPassTest(unittest.TestCase):
         self.assertTrue(validate_canonical_vf_info(canonical).ok)
 
         with tempfile.TemporaryDirectory() as out_dir:
-            result = CoreVfCostModel(out_dir=out_dir).run_canonical_vf_info(canonical)
+            result = CoreVfCostModel(out_dir=out_dir).run_vf_info(canonical)
         self.assertGreater(result["vf_end_cycle"], 0)
 
     def test_zero_iteration_loop_exit_resolves_to_entry(self):
-        canonical = ValueVersioningPass().run(
+        canonical = self._version(
             self._accumulator_vf_info(count=0)
         )
         lowered = CoreLoweringPass().lower(canonical)
@@ -476,7 +489,7 @@ class ValueVersioningPassTest(unittest.TestCase):
 
         self.assertEqual(after["src"], [carried["acc"]["exit_value_id"]])
         with tempfile.TemporaryDirectory() as out_dir:
-            result = CoreVfCostModel(out_dir=out_dir).run_canonical_vf_info(canonical)
+            result = CoreVfCostModel(out_dir=out_dir).run_vf_info(canonical)
         self.assertGreater(result["vf_end_cycle"], 0)
 
     def test_nested_loop_exit_is_outer_back_edge(self):
@@ -509,7 +522,7 @@ class ValueVersioningPassTest(unittest.TestCase):
             ],
         )
 
-        canonical = ValueVersioningPass().run(vf_info)
+        canonical = self._version(vf_info)
         outer = canonical.context[0]
         inner = outer.body[0]
         outer_acc = next(
@@ -523,7 +536,7 @@ class ValueVersioningPassTest(unittest.TestCase):
         self.assertEqual(inner_acc.entry_value_id, outer_acc.entry_value_id)
         self.assertTrue(validate_canonical_vf_info(canonical).ok)
         with tempfile.TemporaryDirectory() as out_dir:
-            result = CoreVfCostModel(out_dir=out_dir).run_canonical_vf_info(canonical)
+            result = CoreVfCostModel(out_dir=out_dir).run_vf_info(canonical)
         self.assertGreater(result["vf_end_cycle"], 0)
 
     def test_cce_canonical_preserves_affine_memory_and_source(self):
@@ -546,8 +559,7 @@ class ValueVersioningPassTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "canonical.cce"
             path.write_text(source, encoding="utf-8")
-            legacy = InputAPI.load_cce_vf_info(path, "canonical_vf")
-            canonical = InputAPI.load_cce_canonical(path, "canonical_vf")
+            canonical = InputAPI.load_cce(path, "canonical_vf")
 
         loop = canonical.context[0]
         load = loop.body[0]
@@ -577,11 +589,8 @@ class ValueVersioningPassTest(unittest.TestCase):
         self.assertTrue(validate_canonical_vf_info(canonical).ok)
 
         with tempfile.TemporaryDirectory() as out_dir:
-            result = CoreVfCostModel(out_dir=out_dir).run_canonical_vf_info(canonical)
-        with tempfile.TemporaryDirectory() as out_dir:
-            legacy_cycles = CoreVfCostModel(out_dir=out_dir).predict_legacy_vf_cycles(legacy)
+            result = CoreVfCostModel(out_dir=out_dir).run_vf_info(canonical)
         self.assertGreater(result["vf_end_cycle"], 0)
-        self.assertEqual(result["vf_end_cycle"], legacy_cycles)
 
     def test_legacy_json_has_explicit_canonical_migration_entry(self):
         payload = {
@@ -603,13 +612,13 @@ class ValueVersioningPassTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "legacy.json"
             path.write_text(json.dumps(payload), encoding="utf-8")
-            canonical = InputAPI.load_legacy_json_canonical(path)
+            canonical = LegacyCanonicalJsonAdapter.load(path)
 
         self.assertEqual(canonical.source["adapter"], "legacy_json")
         self.assertEqual(canonical.context[0].opcode, "VUNKNOWN")
         self.assertTrue(validate_canonical_vf_info(canonical).ok)
         with tempfile.TemporaryDirectory() as out_dir:
-            result = CoreVfCostModel(out_dir=out_dir).run_canonical_vf_info(canonical)
+            result = CoreVfCostModel(out_dir=out_dir).run_vf_info(canonical)
             warnings = json.loads(
                 (Path(out_dir) / "model_warnings.json").read_text(
                     encoding="utf-8"
@@ -625,7 +634,7 @@ class ValueVersioningPassTest(unittest.TestCase):
         )
 
     def test_canonical_unroll_uses_structured_lane_dependencies(self):
-        canonical = ValueVersioningPass().run(
+        canonical = self._version(
             self._accumulator_vf_info(count=4, unroll=2)
         )
         lowered = CoreLoweringPass().lower(canonical)
@@ -668,16 +677,16 @@ class ValueVersioningPassTest(unittest.TestCase):
             self.assertEqual(current.preg_src[1], previous.preg_dst[0])
 
         with tempfile.TemporaryDirectory() as out_dir:
-            result = CoreVfCostModel(out_dir=out_dir).run_canonical_vf_info(canonical)
+            result = CoreVfCostModel(out_dir=out_dir).run_vf_info(canonical)
         self.assertGreater(result["vf_end_cycle"], 0)
 
     def test_structured_unroll_does_not_leak_rat_mappings(self):
-        canonical = ValueVersioningPass().run(
+        canonical = self._version(
             self._accumulator_vf_info(count=64, unroll=4)
         )
 
         with tempfile.TemporaryDirectory() as out_dir:
-            result = CoreVfCostModel(out_dir=out_dir).run_canonical_vf_info(canonical)
+            result = CoreVfCostModel(out_dir=out_dir).run_vf_info(canonical)
 
         self.assertGreater(result["vf_end_cycle"], 0)
 

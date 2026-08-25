@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict
-import warnings
+from typing import Any, Dict, Mapping
 
 from api.cce_adapter import parse_cce_canonical_vf_info
 from api.frontend import (
@@ -12,9 +11,8 @@ from api.frontend import (
     VfInfoValidationError,
     validate_canonical_vf_info,
 )
-from api.frontend.legacy_vf_info_adapter import LegacyVfInfoAdapter
-from api.json_adapter import LegacyCanonicalJsonAdapter
-from api.vf_costmodel import VFInfo, VfCostModel
+from api.frontend.json_adapter import CanonicalJsonVfInfoAdapter
+from api.vf_costmodel import VfCostModel
 from core.flatten import Flattener
 from core.idu import IDU
 from core.ifu import IFUUnroll
@@ -33,34 +31,14 @@ class CoreVfCostModel(VfCostModel):
     dtype: str = "fp32"
     include_param_cache_stats: bool = False
 
-    def predict_legacy_vf_cycles(self, vf_info: VFInfo) -> int:
-        return int(self.run_legacy_vf_info(vf_info)["vf_end_cycle"])
+    def predict_vf_cycles(self, vf_info: CanonicalVfInfo) -> int:
+        return int(self.run_vf_info(vf_info)["vf_end_cycle"])
 
-    def run_legacy_vf_info(self, vf_info: VFInfo) -> Dict[str, Any]:
-        canonical = LegacyVfInfoAdapter().to_canonical(vf_info)
-        return self.run_canonical_vf_info(canonical)
+    def run_payload(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        """Decode and run a CanonicalVfInfo v1 JSON-shaped payload."""
+        return self.run_vf_info(CanonicalJsonVfInfoAdapter.from_payload(payload))
 
-    def run_vf_info(self, vf_info: VFInfo) -> Dict[str, Any]:
-        """Deprecated compatibility wrapper for migration-period ``VFInfo``."""
-
-        warnings.warn(
-            "run_vf_info(VFInfo) is deprecated; use run_canonical_vf_info() "
-            "or run_legacy_vf_info()",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.run_legacy_vf_info(vf_info)
-
-    def run_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Adapt a legacy JSON-shaped payload to CanonicalVfInfo before running."""
-        return self.run_canonical_vf_info(
-            LegacyCanonicalJsonAdapter.from_payload(payload)
-        )
-
-    def predict_canonical_vf_cycles(self, vf_info: CanonicalVfInfo) -> int:
-        return int(self.run_canonical_vf_info(vf_info)["vf_end_cycle"])
-
-    def run_canonical_vf_info(self, vf_info: CanonicalVfInfo) -> Dict[str, Any]:
+    def run_vf_info(self, vf_info: CanonicalVfInfo) -> Dict[str, Any]:
         validation = validate_canonical_vf_info(vf_info)
         if not validation.ok:
             raise VfInfoValidationError(validation.errors)
@@ -76,7 +54,7 @@ class CoreVfCostModel(VfCostModel):
         if payload.get("canonical_input") is not True:
             raise RuntimeError(
                 "Internal Core payload must come from CoreLoweringPass; "
-                "use run_payload() for legacy JSON-shaped input"
+                "use run_payload() for CanonicalVfInfo JSON input"
             )
         base_dir = Path(self.base_dir)
         dtype = str(payload.get("dtype", self.dtype))
@@ -118,6 +96,7 @@ class CoreVfCostModel(VfCostModel):
             structured_value_identity=True,
             structured_dynamic_instruction_limit=dynamic_instruction_limit,
         )
+        empty_top_blocks = ifu.empty_top_block_ids()
 
         idu = IDU(
             uarch,
@@ -127,6 +106,7 @@ class CoreVfCostModel(VfCostModel):
             total_top_blocks=len(top_block_loop_bounds),
             top_block_loop_bounds=top_block_loop_bounds,
             dtype=dtype,
+            empty_top_blocks=empty_top_blocks,
         )
         ooo = create_ooo_core(uarch, db, dtype=dtype, values=values)
 
@@ -168,4 +148,4 @@ def predict_cce_file_cycles(
         kernel_name=kernel_name,
         loop_params=loop_params,
     )
-    return CoreVfCostModel(out_dir=out_dir).predict_canonical_vf_cycles(vf_info)
+    return CoreVfCostModel(out_dir=out_dir).predict_vf_cycles(vf_info)

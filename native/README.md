@@ -18,22 +18,31 @@
 - `ParamDB`：读取 `isa.json`、`uarch.json`、`forwarding.json` 和
   `InitiationInterval.json`。
 - `ISATraits`：根据 ISA 元数据判断 load、store 和 compute 行为。
-- `ProgramAnalysis`：解析循环边界、unroll 参数和 vreg 容量告警。
-- `ProgramCanonicalization`：在仅剩一个 super-iteration 时展开最内层循环。
-- `ProgramFlatten`：递归展平 loop/inst 程序树。
-- `IFU`：动态展开循环并生成 top-block 元数据。
+- `CanonicalProgramLowering`：验证并展开 canonical loop，生成动态身份、值生命周期和
+  top-block 元数据。
+- `IFU`：只消费 `CanonicalProgramLowering` 生成的动态指令流。
 - `IDU`：执行 dispatch gate、VLOOP 可见性和信用计数。
 - `OOO`：执行 rename、ready、execute 和 retire 主流程。
 - `SimulatorRunner`：驱动主循环并输出日志。
 - `CanonicalProgramLowering`：处理已验证的 canonical definition、loop-carried
   binding、动态身份和值生命周期标记。
-- `LegacyVfInfoAdapter`：把旧 `VfInfo`/legacy JSON 的逻辑值版本化为 canonical
-  definition；旧输入不会形成第二套 Core 执行路径。
+- `CanonicalJsonVfInfoAdapter`：读取并校验语言无关的 canonical JSON v1。
 - 共享配置结构：显式、可移植地描述跨语言配置 schema。
 
 公开运行入口：
 
-- `runCanonicalVfInfo()`：canonical 直接入口，跳过 legacy value lowering、vreg
+- `runCanonicalVfInfo()`：唯一正式预测入口，跳过 legacy value lowering、vreg
   live-range normalization 和 single-super-iteration rewriting。
-- `runLegacyVfInfo()`：显式适配旧 `VfInfo`，随后复用 `runCanonicalVfInfo()`。
-- `runVfInfo()`：仅为弃用的源码兼容包装；新代码不得使用。
+- `loadCanonicalJsonVfInfo()`：Native JSON runner 的唯一输入解析入口。
+
+旧 `VfInfo.cpp`、`ProgramAnalysis`、`ProgramFlatten`、
+`ProgramCanonicalization`、`LegacyVfInfoAdapter` 和 `JsonVfInfoAdapter` 编译到独立的
+`vfsim::native_legacy` 静态库，只供离线迁移工具和历史测试使用。编译器正式接入只
+链接 `vfsim::native_core`；`SimulatorRunner.h` 不再声明 `runLegacyVfInfo()` 或
+`runVfInfo()`。
+
+顶层调度 block 由完整 context 顺序决定：每个顶层 loop 开始一个新 block；该 loop
+之后、下一个顶层 loop 之前的普通指令和 `Membar` 属于当前 block。因此 loop epilogue
+中的 `VSTAS` 会在开启下一个 VLOOP 前完成 IDU dispatch。`count=0` 的顶层 loop 会
+记录为空 block，IDU 初始化和块切换时显式跳过它，直接开启下一个包含普通动态指令的
+block。

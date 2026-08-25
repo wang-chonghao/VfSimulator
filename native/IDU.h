@@ -10,11 +10,15 @@
 #define VFSIM_NATIVE_IDU_H
 
 #include "native/IFU.h"
+#include "native/ParamDB.h"
+#include "native/ValueStorage.h"
+#include "api/native/RuntimeTypes.h"
 
 #include <deque>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace vfsim {
@@ -56,12 +60,13 @@ class IDU {
 public:
   IDU(const UarchConfig &uarch,
       const ParamDB &db,
-      ProgramAnalysis::ParamMap params = {},
+      RuntimeParamMap params = {},
       std::vector<int64_t> loopBounds = {},
       int64_t totalTopBlocks = 1,
       std::unordered_map<int, std::vector<int64_t>> topBlockLoopBounds = {},
       std::string dtype = "fp32",
-      std::unordered_map<std::string, ValueInfo> values = {});
+      std::unordered_map<std::string, ValueInfo> values = {},
+      std::unordered_set<int64_t> emptyTopBlocks = {});
 
   bool empty() const noexcept { return window_.empty(); }
   bool canAccept() const;
@@ -102,10 +107,11 @@ private:
   bool globalShqPregGate_ = false;
 
   std::deque<DynamicInst> window_;
-  ProgramAnalysis analysis_;
+  ValueStorageLookup valueStorage_;
   std::vector<int64_t> loopBounds_;
   int64_t totalTopBlocks_ = 1;
   std::unordered_map<int, std::vector<int64_t>> topBlockLoopBounds_;
+  std::unordered_set<int64_t> emptyTopBlocks_;
 
   std::unordered_map<int64_t, int64_t> topBlockVloopStart_;
   std::unordered_map<int64_t, int64_t> topBlockBodyOpenTime_;
@@ -117,6 +123,7 @@ private:
   std::vector<IDUDispatchRecord> dispatchLog_;
 
   void initVloopStarts();
+  std::optional<int64_t> nextNonemptyTopBlock(int64_t start) const;
   void setTopBlockVloop(int64_t topBlockId, int64_t startCycle);
   void initTopBlockNestedStarts(int64_t topBlockId, int64_t topVloopStart);
 

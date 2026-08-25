@@ -14,7 +14,8 @@ from typing import Any, Dict, List, Tuple
 
 
 ROOT = Path(__file__).resolve().parents[1]
-
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 def _load_json(path: Path) -> Dict[str, Any]:
     with path.open("r", encoding="utf-8-sig") as f:
@@ -27,21 +28,6 @@ def _dump_json(path: Path, obj: Dict[str, Any]) -> None:
         json.dump(obj, f, ensure_ascii=False, indent=2)
 
 
-def _iter_insts(node: Any):
-    if isinstance(node, list):
-        for x in node:
-            yield from _iter_insts(x)
-        return
-    if not isinstance(node, dict):
-        return
-    if node.get("type") == "inst":
-        yield node
-    body = node.get("body")
-    if isinstance(body, list):
-        for x in body:
-            yield from _iter_insts(x)
-
-
 def _apply_case_transform(trace_obj: Dict[str, Any], case: Dict[str, Any]) -> Dict[str, Any]:
     out = copy.deepcopy(trace_obj)
 
@@ -51,15 +37,11 @@ def _apply_case_transform(trace_obj: Dict[str, Any], case: Dict[str, Any]) -> Di
         for k, v in param_overrides.items():
             out["params"][k] = v
 
-    transform = case.get("transform", {}) or {}
-    replace_op = transform.get("replace_op")
-    if isinstance(replace_op, dict):
-        src_op = replace_op.get("from")
-        dst_op = replace_op.get("to")
-        if src_op and dst_op:
-            for inst in _iter_insts(out.get("program", [])):
-                if inst.get("op") == src_op:
-                    inst["op"] = dst_op
+    if case.get("transform"):
+        raise ValueError(
+            "Canonical regression cases must use a dedicated fixture instead "
+            "of a runtime semantic transform"
+        )
     return out
 
 
@@ -86,8 +68,10 @@ def _run_main_on_trace(
     extra_main_args: List[str] | None = None,
 ) -> Dict[str, Any]:
     run_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = run_dir / "trace_input.json"
-    _dump_json(trace_path, trace_obj)
+    trace_path = run_dir / "canonical_input.json"
+    payload = copy.deepcopy(trace_obj)
+    payload.setdefault("uarch", {})["canonical_dynamic_instruction_limit"] = 0
+    _dump_json(trace_path, payload)
 
     cmd = [
         sys.executable,

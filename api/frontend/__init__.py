@@ -23,7 +23,10 @@ from api.frontend.schema import (
     StorageKind,
 )
 from api.frontend.validator import validate_canonical_vf_info
-from api.frontend.serialization import canonical_vf_info_from_dict
+from api.frontend.serialization import (
+    canonical_vf_info_from_dict,
+    canonical_vf_info_to_dict,
+)
 from api.frontend.builder import VfInfoBuilder, VfInfoValidationError
 from api.frontend.json_adapter import CanonicalJsonVfInfoAdapter
 from api.frontend.core_lowering import (
@@ -87,6 +90,7 @@ __all__ = [
     "FormRule",
     "validate_canonical_vf_info",
     "canonical_vf_info_from_dict",
+    "canonical_vf_info_to_dict",
     "instruction_catalog_from_dict",
     "load_instruction_catalog",
 ]

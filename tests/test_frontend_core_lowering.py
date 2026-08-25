@@ -56,11 +56,59 @@ class CanonicalCoreLoweringTest(unittest.TestCase):
     def test_current_core_runs_unroll_one_canonical_program(self):
         vf_info = self._fixture("v1_valid_loop.json")
         with tempfile.TemporaryDirectory() as out_dir:
-            result = CoreVfCostModel(out_dir=out_dir).run_canonical_vf_info(vf_info)
+            result = CoreVfCostModel(out_dir=out_dir).run_vf_info(vf_info)
 
         self.assertGreater(result["vf_end_cycle"], 0)
         self.assertEqual(result["normalization_stats"]["renamed_operands"], 0)
         self.assertEqual(result["canonicalization_stats"]["expanded_loops"], 0)
+
+    def test_top_level_loop_epilogue_membar_loop_uses_two_blocks(self):
+        vf_info = self._fixture("v1_valid_top_blocks.json")
+        payload = CoreLoweringPass().lower(vf_info)
+        flat = Flattener(payload["params"]).flatten(payload["program"])
+        ifu = IFUUnroll(
+            flat,
+            payload["params"],
+            ParamDB(base_dir=str(Path(__file__).parents[1])),
+        )
+        dynamic = []
+        while True:
+            instruction = ifu.next_inst()
+            if instruction is None:
+                break
+            dynamic.append(instruction)
+
+        self.assertEqual([item["top_block_id"] for item in dynamic], [0, 0, 0, 1])
+        self.assertFalse(dynamic[0]["is_last_in_top_block"])
+        self.assertTrue(dynamic[1]["is_last_in_top_block"])
+        self.assertEqual(dynamic[2]["type"], "membar")
+        self.assertTrue(dynamic[3]["is_last_in_top_block"])
+
+        with tempfile.TemporaryDirectory() as out_dir:
+            result = CoreVfCostModel(out_dir=out_dir).run_vf_info(vf_info)
+        self.assertGreater(result["vf_end_cycle"], 0)
+
+    def test_zero_iteration_top_block_is_skipped(self):
+        vf_info = self._fixture("v1_valid_empty_top_block.json")
+        payload = CoreLoweringPass().lower(vf_info)
+        flat = Flattener(payload["params"]).flatten(payload["program"])
+        ifu = IFUUnroll(
+            flat,
+            payload["params"],
+            ParamDB(base_dir=str(Path(__file__).parents[1])),
+            structured_value_identity=True,
+        )
+
+        self.assertEqual(ifu.empty_top_block_ids(), {0})
+        dynamic = ifu.take(2)
+        self.assertEqual(len(dynamic), 1)
+        self.assertEqual(dynamic[0]["static_instruction_id"], "inst.live")
+        self.assertEqual(dynamic[0]["top_block_id"], 1)
+
+        with tempfile.TemporaryDirectory() as out_dir:
+            result = CoreVfCostModel(out_dir=out_dir).run_vf_info(vf_info)
+        self.assertEqual(result["cycles_executed"], 33)
+        self.assertEqual(result["vf_end_cycle"], 45)
 
     def test_canonical_register_chain_and_membar_run_end_to_end(self):
         builder = VfInfoBuilder()
@@ -154,7 +202,7 @@ class CanonicalCoreLoweringTest(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as out_dir:
-            CoreVfCostModel(out_dir=out_dir).run_canonical_vf_info(vf_info)
+            CoreVfCostModel(out_dir=out_dir).run_vf_info(vf_info)
             starts = [
                 json.loads(line)
                 for line in (Path(out_dir) / "start_by_cycle.json").read_text().splitlines()
@@ -307,7 +355,7 @@ class CanonicalCoreLoweringTest(unittest.TestCase):
         self.assertEqual(after.iteration_path, [])
 
         with tempfile.TemporaryDirectory() as out_dir:
-            result = CoreVfCostModel(out_dir=out_dir).run_canonical_vf_info(vf_info)
+            result = CoreVfCostModel(out_dir=out_dir).run_vf_info(vf_info)
             history = json.loads(
                 (Path(out_dir) / "sim_history.json").read_text(encoding="utf-8")
             )
@@ -363,7 +411,7 @@ class CanonicalCoreLoweringTest(unittest.TestCase):
             self.assertEqual(current.preg_src[0], previous.preg_dst[0])
 
         with tempfile.TemporaryDirectory() as out_dir:
-            result = CoreVfCostModel(out_dir=out_dir).run_canonical_vf_info(vf_info)
+            result = CoreVfCostModel(out_dir=out_dir).run_vf_info(vf_info)
         self.assertGreater(result["vf_end_cycle"], 0)
 
     def test_zero_iteration_loop_exit_uses_entry_definition(self):
@@ -607,7 +655,7 @@ class CanonicalCoreLoweringTest(unittest.TestCase):
         invalid = CanonicalVfInfo(context=(object(),), values={})  # type: ignore[arg-type]
 
         with self.assertRaises(VfInfoValidationError):
-            CoreVfCostModel().run_canonical_vf_info(invalid)
+            CoreVfCostModel().run_vf_info(invalid)
 
 
 if __name__ == "__main__":

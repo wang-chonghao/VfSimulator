@@ -181,6 +181,19 @@ class IFUUnroll:
 
         self.total_top_blocks = top_bid
 
+        # A top-level loop starts a scheduling block. Straight-line epilogue
+        # nodes remain in that block until the next top-level loop begins.
+        self.pc_top_block_id: Dict[int, int] = {}
+        top_starts = sorted(self.begin_top_block_id)
+        if top_starts:
+            for index, begin in enumerate(top_starts):
+                block_id = self.begin_top_block_id[begin]
+                end = top_starts[index + 1] if index + 1 < len(top_starts) else len(self.nodes)
+                for pc in range(begin, end):
+                    self.pc_top_block_id[pc] = block_id
+            for pc in range(0, top_starts[0]):
+                self.pc_top_block_id[pc] = 0
+
         # cache innermost bodies
         self.loop_body_cache: Dict[int, List[Dict[str, Any]]] = {}
         for b in begins:
@@ -204,8 +217,9 @@ class IFUUnroll:
 
         # cache last static inst index inside each top-level block
         self.top_block_last_inst_idx: Dict[int, Optional[int]] = {}
-        for b, tbid in self.begin_top_block_id.items():
-            e = self.begin_to_end[b]
+        for index, b in enumerate(top_starts):
+            tbid = self.begin_top_block_id[b]
+            e = top_starts[index + 1] if index + 1 < len(top_starts) else len(self.nodes)
             last_idx = None
             for i in range(b + 1, e):
                 if self.nodes[i].get("type") == "inst":
@@ -224,6 +238,7 @@ class IFUUnroll:
         self._unroll_group = 0
         self._structured_stream: deque[Dict[str, Any]] = deque()
         self._structured_stream_built = False
+        self._empty_top_block_ids: set[int] = set()
 
     def _first_membar_in_loop_body(self, begin_idx: int) -> Optional[Dict[str, Any]]:
         for node in self.loop_body_cache.get(begin_idx, []):
@@ -453,11 +468,11 @@ class IFUUnroll:
     def _current_top_block_id(self) -> int:
         """
         Current instruction belongs to the top-most active loop frame's top_block_id.
-        If no frame, return 0.
+        If no frame, use the current static node's top-level block.
         """
         if self.frames:
             return int(self.frames[0].top_block_id)
-        return 0
+        return int(self.pc_top_block_id.get(self.pc, 0))
 
     def _build_block_key_by_level(self, loop_stack: List[int], iter_stack: List[int]) -> List[Tuple[str, Tuple[int, ...]]]:
         """
@@ -512,13 +527,13 @@ class IFUUnroll:
           - the last static inst in current top-level block
           - and all active frames are at their last iteration
         """
-        if not self.frames:
-            return False
-
         tbid = self._current_top_block_id()
         last_idx = self.top_block_last_inst_idx.get(tbid, None)
         if last_idx is None or self.pc != last_idx:
             return False
+
+        if not self.frames:
+            return True
 
         for fr in self.frames:
             if fr.iter_now != fr.iters_total - 1:
@@ -945,30 +960,48 @@ class IFUUnroll:
         if not self.structured_value_identity:
             return self._next_inst_raw()
 
-        if not self._structured_stream_built:
-            expanded: List[Dict[str, Any]] = []
-            while True:
-                inst = self._next_inst_raw()
-                if inst is None:
-                    break
-                expanded.append(inst)
-                if (
-                    self.structured_dynamic_instruction_limit is not None
-                    and len(expanded) > self.structured_dynamic_instruction_limit
-                ):
-                    raise RuntimeError(
-                        "Canonical dynamic instruction count exceeds "
-                        f"canonical_dynamic_instruction_limit="
-                        f"{self.structured_dynamic_instruction_limit}. "
-                        "Reduce the loop count/unroll or raise the explicit limit."
-                    )
-            self._annotate_structured_value_lifetimes(expanded)
-            self._structured_stream.extend(expanded)
-            self._structured_stream_built = True
+        self.prepare_structured_stream()
 
         if not self._structured_stream:
             return None
         return self._structured_stream.popleft()
+
+    def prepare_structured_stream(self) -> None:
+        """Materialize the canonical dynamic stream and its block metadata."""
+        if not self.structured_value_identity or self._structured_stream_built:
+            return
+
+        expanded: List[Dict[str, Any]] = []
+        while True:
+            inst = self._next_inst_raw()
+            if inst is None:
+                break
+            expanded.append(inst)
+            if (
+                self.structured_dynamic_instruction_limit is not None
+                and len(expanded) > self.structured_dynamic_instruction_limit
+            ):
+                raise RuntimeError(
+                    "Canonical dynamic instruction count exceeds "
+                    f"canonical_dynamic_instruction_limit="
+                    f"{self.structured_dynamic_instruction_limit}. "
+                    "Reduce the loop count/unroll or raise the explicit limit."
+                )
+        self._annotate_structured_value_lifetimes(expanded)
+        self._structured_stream.extend(expanded)
+        nonempty_top_blocks = {
+            int(inst.get("top_block_id", 0))
+            for inst in expanded
+            if inst.get("type") == "inst"
+        }
+        self._empty_top_block_ids = (
+            set(range(self.total_top_blocks)) - nonempty_top_blocks
+        )
+        self._structured_stream_built = True
+
+    def empty_top_block_ids(self) -> set[int]:
+        self.prepare_structured_stream()
+        return set(self._empty_top_block_ids)
 
     def take(self, n: int) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []

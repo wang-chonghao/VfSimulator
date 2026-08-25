@@ -58,6 +58,13 @@ std::string readText(const std::filesystem::path &path) {
   return text.str();
 }
 
+SimulationResult runLegacyForTest(const VfInfo &vfInfo, const ParamDB &db,
+                                  const std::string &resultsDir = {},
+                                  int64_t maxCycles = 1000000) {
+  return runCanonicalVfInfo(adaptLegacyVfInfoToCanonical(vfInfo), db,
+                            resultsDir, maxCycles);
+}
+
 } // namespace
 
 int main() {
@@ -94,9 +101,18 @@ int main() {
       std::filesystem::path(VFSIM_SOURCE_ROOT) /
       "tests/fixtures/canonical_vf_info/v1_valid_loop.json");
   CanonicalVfInfo canonicalContract =
-      decodeCanonicalVfInfoFixture(sharedFixtureJson);
+      decodeCanonicalVfInfoJson(sharedFixtureJson);
   if (!validateCanonicalVfInfo(canonicalContract).ok())
     throw std::runtime_error("shared valid CanonicalVfInfo fixture was rejected");
+  bool rejectedUnknownCanonicalField = false;
+  try {
+    (void)decodeCanonicalVfInfoJson(json::parseString(
+        R"({"schema_version":1,"context":[],"values":{},"unexpected":1})"));
+  } catch (const std::runtime_error &) {
+    rejectedUnknownCanonicalField = true;
+  }
+  if (!rejectedUnknownCanonicalField)
+    throw std::runtime_error("native canonical JSON accepted an unknown field");
   CanonicalVfInfo missingAlignContract = canonicalContract;
   CanonicalLoop missingAlignLoop =
       *std::get<std::shared_ptr<const CanonicalLoop>>(
@@ -118,7 +134,7 @@ int main() {
       std::filesystem::path(VFSIM_SOURCE_ROOT) /
       "tests/fixtures/canonical_vf_info/v1_valid_loop_carried.json");
   CanonicalVfInfo canonicalCarriedContract =
-      decodeCanonicalVfInfoFixture(sharedCarriedJson);
+      decodeCanonicalVfInfoJson(sharedCarriedJson);
   if (!validateCanonicalVfInfo(canonicalCarriedContract).ok())
     throw std::runtime_error("shared valid loop-carried fixture was rejected");
   CanonicalVfInfo aliasBackEdgeContract = canonicalCarriedContract;
@@ -174,6 +190,48 @@ int main() {
         "native canonical loop-carried result differs from Python: cycles=" +
         std::to_string(canonicalCarriedResult.cyclesExecuted) +
         ", end=" + std::to_string(canonicalCarriedResult.vfEndCycle));
+  const auto topBlockJson = json::parseFile(
+      std::filesystem::path(VFSIM_SOURCE_ROOT) /
+      "tests/fixtures/canonical_vf_info/v1_valid_top_blocks.json");
+  const CanonicalVfInfo topBlockContract =
+      decodeCanonicalVfInfoJson(topBlockJson);
+  const CanonicalRuntimeProgram topBlockRuntime =
+      lowerCanonicalProgram(topBlockContract, &db);
+  if (topBlockRuntime.totalTopBlocks != 2 ||
+      topBlockRuntime.instructions.size() != 4 ||
+      topBlockRuntime.instructions[0].topBlockId != 0 ||
+      topBlockRuntime.instructions[1].topBlockId != 0 ||
+      !topBlockRuntime.instructions[1].isLastInTopBlock ||
+      topBlockRuntime.instructions[2].topBlockId != 0 ||
+      topBlockRuntime.instructions[3].topBlockId != 1 ||
+      !topBlockRuntime.instructions[3].isLastInTopBlock)
+    throw std::runtime_error(
+        "native canonical top-level epilogue block assignment is invalid");
+  const SimulationResult topBlockResult =
+      runCanonicalVfInfo(topBlockContract, db, {}, 1000);
+  if (topBlockResult.vfEndCycle <= 0 || topBlockResult.cyclesExecuted >= 1000)
+    throw std::runtime_error(
+        "native canonical loop-epilogue-membar-loop did not complete");
+  const auto emptyTopBlockJson = json::parseFile(
+      std::filesystem::path(VFSIM_SOURCE_ROOT) /
+      "tests/fixtures/canonical_vf_info/v1_valid_empty_top_block.json");
+  const CanonicalVfInfo emptyTopBlockContract =
+      decodeCanonicalVfInfoJson(emptyTopBlockJson);
+  const CanonicalRuntimeProgram emptyTopBlockRuntime =
+      lowerCanonicalProgram(emptyTopBlockContract, &db);
+  if (emptyTopBlockRuntime.totalTopBlocks != 2 ||
+      emptyTopBlockRuntime.emptyTopBlocks.size() != 1 ||
+      !emptyTopBlockRuntime.emptyTopBlocks.count(0) ||
+      emptyTopBlockRuntime.instructions.size() != 1 ||
+      emptyTopBlockRuntime.instructions.front().topBlockId != 1)
+    throw std::runtime_error(
+        "native canonical zero-iteration top-block metadata is invalid");
+  const SimulationResult emptyTopBlockResult =
+      runCanonicalVfInfo(emptyTopBlockContract, db, {}, 1000);
+  if (emptyTopBlockResult.cyclesExecuted != 33 ||
+      emptyTopBlockResult.vfEndCycle != 45)
+    throw std::runtime_error(
+        "native canonical zero-iteration top block differs from Python");
   CanonicalVfInfo canonicalUnrolledContract = canonicalCarriedContract;
   CanonicalLoop unrolledLoop = *std::get<std::shared_ptr<const CanonicalLoop>>(
       canonicalUnrolledContract.context.front().payload);
@@ -362,7 +420,7 @@ int main() {
       std::filesystem::path(VFSIM_SOURCE_ROOT) /
       "tests/fixtures/canonical_vf_info/v1_invalid_loop_scope.json");
   const auto sharedInvalidResult = validateCanonicalVfInfo(
-      decodeCanonicalVfInfoFixture(sharedInvalidJson));
+      decodeCanonicalVfInfoJson(sharedInvalidJson));
   if (sharedInvalidResult.ok() || sharedInvalidResult.diagnostics.size() != 1 ||
       sharedInvalidResult.diagnostics.front().code !=
           "loop_back_edge_out_of_scope")
@@ -466,7 +524,7 @@ int main() {
     throw std::runtime_error(
         "legacy post-loop store does not consume the accumulator exit value");
 
-  const SimulationResult result = runLegacyVfInfo(vfInfo, db);
+  const SimulationResult result = runLegacyForTest(vfInfo, db);
   if (result.cyclesExecuted != 72 || result.vfEndCycle != 84)
     throw std::runtime_error("mixed-dtype VfInfo result changed: cycles=" +
                              std::to_string(result.cyclesExecuted) +

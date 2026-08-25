@@ -18,7 +18,7 @@ queue_level4 + vreg 活跃范围规范化 + start+4 释放
 运行 JSON trace：
 
 ```bash
-python main.py --trace VFtest/GeLU_poly.json --out_dir results/demo_json
+python main.py --trace VFtest/canonical/GeLU_poly.json --out_dir results/demo_json
 ```
 
 运行 CCE/DSL 文件：
@@ -73,7 +73,8 @@ python main.py --cce path/to/file.dsl --cce-kernel kernel_name --out_dir results
 
 ## CCE/DSL 输入
 
-CCE 适配器会解析 `__VEC_SCOPE__` 内的向量代码，把支持的指令转换成 `VFInfo`，再降到模拟器 trace 格式。
+CCE 适配器会解析 `__VEC_SCOPE__` 内的向量代码，生成并校验
+`CanonicalVfInfo`，再由 `CoreLoweringPass` 接入模拟器。
 
 示例：
 
@@ -84,26 +85,26 @@ python main.py --cce cce_code/GeLU_poly.dsl --out_dir results/gelu_poly_cce
 程序化用法：
 
 ```python
-from api.cce_adapter import parse_cce_vf_info
+from api.input_api import InputAPI
 from api.simulator_costmodel import CoreVfCostModel
 
-vf_info = parse_cce_vf_info("cce_code/GeLU_poly.dsl")
+vf_info = InputAPI.load_cce("cce_code/GeLU_poly.dsl")
 cycles = CoreVfCostModel().predict_vf_cycles(vf_info)
 print(cycles)
 ```
 
 相关 API 文件：
 
-- `api/vf_info.py`：`VFInfo`、`VFLoop`、`VFInst`、`ValueInfo`、`MemInfo`、`Membar` 数据类。
-- `api/vf_costmodel.py`：兼容 re-export，并定义抽象接口 `VfCostModel`。
+- `api/frontend/schema.py`：`CanonicalVfInfo v1` 数据模型。
+- `api/vf_costmodel.py`：canonical cost model 抽象接口。
 - `api/cce_adapter.py`：CCE/DSL 解析器。
-- `api/vf_lowering.py`：把 `VFInfo` 降到模拟器 trace。
+- `api/frontend/core_lowering.py`：canonical 到 Core payload 的唯一 lowering。
 - `api/input_api.py`：命令行输入的共享加载器。
 - `api/simulator_costmodel.py`：程序化模拟器封装。
 
 ## 内存和寄存器操作数
 
-类型化 API 通过 `ValueInfo.storage` 表示操作数存储位置。`MemInfo` 是 `ValueInfo` 的兼容别名，构造函数仍接受 `name=` 和 `location=` 这两个历史别名。当前 storage 值包括：
+Canonical value 通过 `storage` 显式表示操作数存储位置。当前取值包括：
 
 - `Register`
 - `UB`

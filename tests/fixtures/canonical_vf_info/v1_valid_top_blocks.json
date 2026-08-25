@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "context": [
+    {
+      "kind": "loop",
+      "loop_id": "loop.first",
+      "induction": {"variable_id": "i", "start": 0, "step": 1},
+      "count": 1,
+      "unroll": 1,
+      "body": [
+        {
+          "kind": "instruction",
+          "instruction_id": "inst.first",
+          "opcode": "VUNKNOWN",
+          "form": "fp32",
+          "instruction_class": "compute",
+          "inputs": [],
+          "outputs": []
+        }
+      ]
+    },
+    {
+      "kind": "instruction",
+      "instruction_id": "inst.epilogue",
+      "opcode": "VUNKNOWN",
+      "form": "fp32",
+      "instruction_class": "compute",
+      "inputs": [],
+      "outputs": []
+    },
+    {
+      "kind": "membar",
+      "instruction_id": "membar.between",
+      "barrier": "VST_VLD"
+    },
+    {
+      "kind": "loop",
+      "loop_id": "loop.second",
+      "induction": {"variable_id": "j", "start": 0, "step": 1},
+      "count": 1,
+      "unroll": 1,
+      "body": [
+        {
+          "kind": "instruction",
+          "instruction_id": "inst.second",
+          "opcode": "VUNKNOWN",
+          "form": "fp32",
+          "instruction_class": "compute",
+          "inputs": [],
+          "outputs": []
+        }
+      ]
+    }
+  ],
+  "values": {},
+  "storage_objects": {},
+  "params": {},
+  "uarch": {},
+  "source": {"fixture": "top_level_loop_epilogue_membar_loop"}
+}

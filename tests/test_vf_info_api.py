@@ -6,7 +6,8 @@ from pathlib import Path
 
 from api.input_api import InputAPI
 from api.frontend.builder import VfInfoValidationError
-from api.cce_adapter import parse_cce_vf_info
+from api.frontend.adapter_ir import AdapterMembar
+from api.cce_adapter import _parse_cce_adapter_program as parse_cce_vf_info
 from api.input_symbols import (
     normalize_dtype,
     normalize_form,
@@ -15,8 +16,10 @@ from api.input_symbols import (
     specialize_opcode,
 )
 from api.simulator_costmodel import CoreVfCostModel
+from api.frontend.legacy_vf_info_adapter import LegacyVfInfoAdapter
+from api.frontend.core_lowering import CoreLoweringPass
+from api.json_adapter import JsonVfInfoAdapter, LegacyCanonicalJsonAdapter
 from api.vf_info import Membar, VFAlias, ValueInfo, VFInfo, VFInst, VFLoop, canonicalize_vf_info
-from api.vf_lowering import VFInfoLowerer
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,7 +37,7 @@ class VfInfoApiTest(unittest.TestCase):
     def test_public_vfinfo_without_alias_rejects_deprecated_uarch(self):
         vf_info = VFInfo(context=[], uarch={"load_done_latency": 123})
         self._assert_uarch_rejected(
-            lambda: VFInfoLowerer().lower(vf_info),
+            lambda: LegacyVfInfoAdapter().to_canonical(vf_info),
             "deprecated_uarch_field",
         )
 
@@ -48,7 +51,7 @@ class VfInfoApiTest(unittest.TestCase):
             uarch={"load_done_latency": 123},
         )
         self._assert_uarch_rejected(
-            lambda: VFInfoLowerer().lower(vf_info),
+            lambda: LegacyVfInfoAdapter().to_canonical(vf_info),
             "deprecated_uarch_field",
         )
 
@@ -60,14 +63,16 @@ class VfInfoApiTest(unittest.TestCase):
             "uarch": {"load_done_latency": 123},
         }
         self._assert_uarch_rejected(
-            lambda: CoreVfCostModel(base_dir=ROOT).run_payload(payload),
+            lambda: CoreVfCostModel(base_dir=ROOT).run_vf_info(
+                LegacyCanonicalJsonAdapter.from_payload(payload)
+            ),
             "deprecated_uarch_field",
         )
 
     def test_public_vfinfo_without_alias_rejects_invalid_uarch_scalar(self):
         vf_info = VFInfo(context=[], uarch={"issue_ports": []})
         self._assert_uarch_rejected(
-            lambda: VFInfoLowerer().lower(vf_info),
+            lambda: LegacyVfInfoAdapter().to_canonical(vf_info),
             "invalid_scalar_attribute",
         )
 
@@ -81,7 +86,7 @@ class VfInfoApiTest(unittest.TestCase):
             uarch={"issue_ports": []},
         )
         self._assert_uarch_rejected(
-            lambda: VFInfoLowerer().lower(vf_info),
+            lambda: LegacyVfInfoAdapter().to_canonical(vf_info),
             "invalid_scalar_attribute",
         )
 
@@ -93,7 +98,9 @@ class VfInfoApiTest(unittest.TestCase):
             "uarch": {"issue_ports": []},
         }
         self._assert_uarch_rejected(
-            lambda: CoreVfCostModel(base_dir=ROOT).run_payload(payload),
+            lambda: CoreVfCostModel(base_dir=ROOT).run_vf_info(
+                LegacyCanonicalJsonAdapter.from_payload(payload)
+            ),
             "invalid_scalar_attribute",
         )
 
@@ -119,9 +126,11 @@ class VfInfoApiTest(unittest.TestCase):
             "uarch": dict(invalid_uarch),
         }
         callbacks = (
-            lambda: VFInfoLowerer().lower(without_alias),
-            lambda: VFInfoLowerer().lower(with_alias),
-            lambda: CoreVfCostModel(base_dir=ROOT).run_payload(legacy_payload),
+            lambda: LegacyVfInfoAdapter().to_canonical(without_alias),
+            lambda: LegacyVfInfoAdapter().to_canonical(with_alias),
+            lambda: CoreVfCostModel(base_dir=ROOT).run_vf_info(
+                LegacyCanonicalJsonAdapter.from_payload(legacy_payload)
+            ),
         )
         for callback in callbacks:
             with self.subTest(callback=callback):
@@ -221,7 +230,7 @@ class VfInfoApiTest(unittest.TestCase):
         result = CoreVfCostModel(
             base_dir=ROOT,
             out_dir="/tmp/vfsim-vfinfo-legacy-fallback",
-        ).run_payload(payload)
+        ).run_vf_info(LegacyCanonicalJsonAdapter.from_payload(payload))
         self.assertGreater(result["vf_end_cycle"], 0)
         self.assertNotIn("param_cache_stats", result)
 
@@ -229,7 +238,7 @@ class VfInfoApiTest(unittest.TestCase):
             base_dir=ROOT,
             out_dir="/tmp/vfsim-vfinfo-cache-stats",
             include_param_cache_stats=True,
-        ).run_payload(payload)
+        ).run_vf_info(LegacyCanonicalJsonAdapter.from_payload(payload))
         self.assertIn("param_cache_stats", benchmark_result)
 
     def test_json_adapter_allows_legacy_symbols_for_core_fallback(self):
@@ -267,14 +276,16 @@ class VfInfoApiTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             out_dir = Path(tmpdir) / "out"
-            CoreVfCostModel(base_dir=ROOT, out_dir=out_dir).run_payload(payload)
+            CoreVfCostModel(base_dir=ROOT, out_dir=out_dir).run_vf_info(
+                LegacyCanonicalJsonAdapter.from_payload(payload)
+            )
             warnings = json.loads((out_dir / "model_warnings.json").read_text(encoding="utf-8"))
         kinds = {item["kind"] for item in warnings["instruction_fallback_warnings"]}
         self.assertIn("unsupported_isa_op", kinds)
 
     def test_json_and_cce_adapters_return_mixed_dtype_vf_info(self):
-        json_info = InputAPI.load_legacy_json_vf_info(ROOT / "VFtest/tadd_tcvt_tadd.json")
-        cce_info = InputAPI.load_cce_vf_info(ROOT / "cce_code/tadd_tcvt_tadd.dsl")
+        json_info = JsonVfInfoAdapter.load(ROOT / "VFtest/tadd_tcvt_tadd.json")
+        cce_info = parse_cce_vf_info(ROOT / "cce_code/tadd_tcvt_tadd.dsl")
 
         for vf_info in (json_info, cce_info):
             forms = [inst.form for inst in vf_info.context[0].body]
@@ -301,7 +312,7 @@ class VfInfoApiTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "softmax.dsl"
             path.write_text(source, encoding="utf-8")
-            vf_info = InputAPI.load_cce_vf_info(path, kernel_name="softmax_vf")
+            vf_info = parse_cce_vf_info(path, kernel_name="softmax_vf")
 
         insts = vf_info.context
         self.assertEqual(insts[0].name, "VPACK")
@@ -351,7 +362,7 @@ class VfInfoApiTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "vmulscvt.dsl"
             path.write_text(source, encoding="utf-8")
-            vf_info = InputAPI.load_cce_vf_info(path, kernel_name="vmulscvt_vf")
+            vf_info = parse_cce_vf_info(path, kernel_name="vmulscvt_vf")
 
         self.assertEqual(vf_info.context[0].name, "VMULSCVT")
         self.assertEqual(vf_info.context[0].form, "f32_to_f16")
@@ -370,7 +381,7 @@ class VfInfoApiTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "binary_mode.dsl"
             path.write_text(source, encoding="utf-8")
-            vf_info = InputAPI.load_cce_vf_info(path, kernel_name="binary_mode_vf")
+            vf_info = parse_cce_vf_info(path, kernel_name="binary_mode_vf")
 
         self.assertEqual(vf_info.context[0].name, "VMAX")
         self.assertEqual(vf_info.context[0].src, ["lhs", "rhs"])
@@ -394,7 +405,7 @@ class VfInfoApiTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "loop_decl.dsl"
             path.write_text(source, encoding="utf-8")
-            vf_info = InputAPI.load_cce_vf_info(path, kernel_name="loop_decl_vf")
+            vf_info = parse_cce_vf_info(path, kernel_name="loop_decl_vf")
 
         loop = vf_info.context[0]
         vmuls = next(inst for inst in loop.body if getattr(inst, "name", None) == "VMULS")
@@ -870,9 +881,11 @@ class VfInfoApiTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "barrier.dsl"
             path.write_text(source, encoding="utf-8")
-            vf_info = InputAPI.load_cce_vf_info(path, kernel_name="barrier_vf")
+            vf_info = parse_cce_vf_info(path, kernel_name="barrier_vf")
 
-        membars = [node for node in vf_info.context if isinstance(node, Membar)]
+        membars = [
+            node for node in vf_info.context if isinstance(node, AdapterMembar)
+        ]
         self.assertEqual(len(membars), 1)
         self.assertEqual(membars[0].type, "VST_VLD")
 
@@ -890,7 +903,7 @@ class VfInfoApiTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "scalar_param.dsl"
             path.write_text(source, encoding="utf-8")
-            vf_info = InputAPI.load_cce_vf_info(path, kernel_name="scalar_param_vf")
+            vf_info = parse_cce_vf_info(path, kernel_name="scalar_param_vf")
 
         self.assertEqual(vf_info.values["a"].storage, "UB")
         self.assertEqual(vf_info.values["epsilon"].storage, "Scalar")
@@ -922,15 +935,15 @@ class VfInfoApiTest(unittest.TestCase):
         result = CoreVfCostModel(
             base_dir=ROOT,
             out_dir="/tmp/vfsim-vfinfo-python-handwritten",
-        ).run_legacy_vf_info(canonical)
+        ).run_vf_info(LegacyVfInfoAdapter().to_canonical(canonical))
         self.assertGreater(result["vf_end_cycle"], 0)
 
     def test_mixed_dtype_python_prediction_matches_reference(self):
-        vf_info = InputAPI.load_legacy_json_vf_info(ROOT / "VFtest/tadd_tcvt_tadd.json")
+        vf_info = JsonVfInfoAdapter.load(ROOT / "VFtest/tadd_tcvt_tadd.json")
         result = CoreVfCostModel(
             base_dir=ROOT,
             out_dir="/tmp/vfsim-vfinfo-python-test",
-        ).run_legacy_vf_info(vf_info)
+        ).run_vf_info(LegacyVfInfoAdapter().to_canonical(vf_info))
         self.assertEqual(result["cycles_executed"], 72)
         self.assertEqual(result["vf_end_cycle"], 84)
 
@@ -962,16 +975,18 @@ class VfInfoApiTest(unittest.TestCase):
         result = CoreVfCostModel(
             base_dir=ROOT,
             out_dir="/tmp/vfsim-vfinfo-explicit-storage-test",
-        ).run_payload(payload)
+        ).run_vf_info(LegacyCanonicalJsonAdapter.from_payload(payload))
         self.assertGreater(result["vf_end_cycle"], 0)
 
     def test_legacy_lowerer_routes_old_json_vfinfo_through_canonical_ids(self):
-        vf_info = InputAPI.load_legacy_json_vf_info(
+        vf_info = JsonVfInfoAdapter.load(
             ROOT
             / "regression_suite/inputs/json/vadd_fusion_singlev1_tests/I128"
             / "VADD_singleV1_fusion_128loops_4vadds.json"
         )
-        lowered = VFInfoLowerer().lower(vf_info)
+        lowered = CoreLoweringPass().lower(
+            LegacyVfInfoAdapter().to_canonical(vf_info)
+        )
         first_store = lowered["program"][0]["body"][-1]
         second_load = lowered["program"][1]["body"][0]
 
@@ -986,14 +1001,18 @@ class VfInfoApiTest(unittest.TestCase):
     def test_legacy_json_vfinfo_and_canonical_entries_share_execution_path(self):
         path = ROOT / "VFtest/tadd_tcvt_tadd.json"
         payload = json.loads(path.read_text(encoding="utf-8"))
-        legacy_vf_info = InputAPI.load_legacy_json_vf_info(path)
-        canonical = InputAPI.load_legacy_json_canonical(path)
+        legacy_vf_info = JsonVfInfoAdapter.load(path)
+        canonical = LegacyCanonicalJsonAdapter.load(path)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             model = CoreVfCostModel(base_dir=ROOT, out_dir=tmpdir)
-            from_payload = model.run_payload(payload)
-            from_vf_info = model.run_legacy_vf_info(legacy_vf_info)
-            from_canonical = model.run_canonical_vf_info(canonical)
+            from_payload = model.run_vf_info(
+                LegacyCanonicalJsonAdapter.from_payload(payload)
+            )
+            from_vf_info = model.run_vf_info(
+                LegacyVfInfoAdapter().to_canonical(legacy_vf_info)
+            )
+            from_canonical = model.run_vf_info(canonical)
 
         self.assertEqual(from_payload["vf_end_cycle"], 84)
         self.assertEqual(

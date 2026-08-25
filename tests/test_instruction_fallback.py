@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 
 from api.simulator_costmodel import CoreVfCostModel
+from api.frontend.serialization import canonical_vf_info_to_dict
+from api.json_adapter import LegacyCanonicalJsonAdapter
 from core.flatten import Flattener
 from core.ifu import IFUUnroll
 from core.ooo import Uop
@@ -390,7 +392,9 @@ class InstructionFallbackTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             out_dir = Path(tmpdir)
-            CoreVfCostModel(base_dir=ROOT, out_dir=out_dir).run_payload(payload)
+            CoreVfCostModel(base_dir=ROOT, out_dir=out_dir).run_vf_info(
+                LegacyCanonicalJsonAdapter.from_payload(payload)
+            )
             starts = [
                 json.loads(line)
                 for line in (out_dir / "start_by_cycle.json").read_text().splitlines()
@@ -591,7 +595,9 @@ class InstructionFallbackTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             out_dir = Path(tmpdir)
-            CoreVfCostModel(base_dir=ROOT, out_dir=out_dir).run_payload(payload)
+            CoreVfCostModel(base_dir=ROOT, out_dir=out_dir).run_vf_info(
+                LegacyCanonicalJsonAdapter.from_payload(payload)
+            )
             warnings = json.loads((out_dir / "model_warnings.json").read_text(encoding="utf-8"))
             starts = [
                 json.loads(line)
@@ -1025,7 +1031,14 @@ class InstructionFallbackTest(unittest.TestCase):
             tmp = Path(tmpdir)
             trace_path = tmp / "unknown_trace.json"
             out_dir = tmp / "out"
-            trace_path.write_text(json.dumps(trace), encoding="utf-8")
+            trace_path.write_text(
+                json.dumps(
+                    canonical_vf_info_to_dict(
+                        LegacyCanonicalJsonAdapter.from_payload(trace)
+                    )
+                ),
+                encoding="utf-8",
+            )
             subprocess.run(
                 [
                     "python3",
@@ -1062,7 +1075,9 @@ class InstructionFallbackTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             out_dir = Path(tmpdir)
-            CoreVfCostModel(base_dir=ROOT, out_dir=out_dir).run_payload(payload)
+            CoreVfCostModel(base_dir=ROOT, out_dir=out_dir).run_vf_info(
+                LegacyCanonicalJsonAdapter.from_payload(payload)
+            )
             starts = [
                 json.loads(line)
                 for line in (out_dir / "start_by_cycle.json").read_text().splitlines()
@@ -1171,7 +1186,9 @@ class InstructionFallbackTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             out_dir = Path(tmpdir)
-            CoreVfCostModel(base_dir=ROOT, out_dir=out_dir).run_payload(payload)
+            CoreVfCostModel(base_dir=ROOT, out_dir=out_dir).run_vf_info(
+                LegacyCanonicalJsonAdapter.from_payload(payload)
+            )
             starts = [
                 json.loads(line)
                 for line in (out_dir / "start_by_cycle.json").read_text().splitlines()
@@ -1216,7 +1233,14 @@ class InstructionFallbackTest(unittest.TestCase):
             tmp = Path(tmpdir)
             trace_path = tmp / "membar_unroll.json"
             out_dir = tmp / "out"
-            trace_path.write_text(json.dumps(trace), encoding="utf-8")
+            trace_path.write_text(
+                json.dumps(
+                    canonical_vf_info_to_dict(
+                        LegacyCanonicalJsonAdapter.from_payload(trace)
+                    )
+                ),
+                encoding="utf-8",
+            )
             subprocess.run(
                 [
                     "python3",
@@ -1280,7 +1304,14 @@ class InstructionFallbackTest(unittest.TestCase):
             tmp = Path(tmpdir)
             trace_path = tmp / "unsupported_membar.json"
             out_dir = tmp / "out"
-            trace_path.write_text(json.dumps(trace), encoding="utf-8")
+            trace_path.write_text(
+                json.dumps(
+                    canonical_vf_info_to_dict(
+                        LegacyCanonicalJsonAdapter.from_payload(trace)
+                    )
+                ),
+                encoding="utf-8",
+            )
             subprocess.run(
                 [
                     "python3",

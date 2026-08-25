@@ -69,7 +69,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def resolve_trace_path(base_dir: str, trace_arg: str | None) -> str:
-    trace_path = trace_arg or os.path.join(base_dir, "VFtest", "VADD_oneloop.json")
+    trace_path = trace_arg or os.path.join(
+        base_dir,
+        "tests",
+        "fixtures",
+        "canonical_vf_info",
+        "v1_valid_loop.json",
+    )
     if not os.path.isabs(trace_path):
         trace_path = os.path.join(base_dir, trace_path)
     return trace_path
@@ -96,7 +102,7 @@ def load_input_canonical_vf_info(
         if args.cce_kernel:
             print(f"[INFO] CCE kernel = {args.cce_kernel}")
         return (
-            InputAPI.load_cce_canonical(cce_path, kernel_name=args.cce_kernel),
+            InputAPI.load_cce(cce_path, kernel_name=args.cce_kernel),
             cce_path,
         )
 
@@ -104,7 +110,7 @@ def load_input_canonical_vf_info(
     if not os.path.exists(trace_path):
         raise RuntimeError(f"Trace file not found: {trace_path}")
     print(f"[INFO] Loading trace: {trace_path}")
-    return InputAPI.load_legacy_json_canonical(trace_path), trace_path
+    return InputAPI.load_json(trace_path), trace_path
 
 
 def build_uarch(
@@ -236,7 +242,7 @@ def main():
     if program is None:
         raise RuntimeError("trace.json missing key 'program'")
     db = ParamDB(base_dir=base_dir)
-    print("[INFO] canonical input: legacy lowering and vreg normalization = OFF")
+    print("[INFO] input contract = CanonicalVfInfo v1")
     scan_instruction_fallback_warnings(program, db, dtype)
 
     analyzer = ProgramAnalyzer(params, values=values)
@@ -263,6 +269,7 @@ def main():
         structured_value_identity=True,
         structured_dynamic_instruction_limit=dynamic_instruction_limit,
     )
+    empty_top_blocks = ifu.empty_top_block_ids()
 
     idu = IDU(
         uarch,
@@ -272,6 +279,7 @@ def main():
         total_top_blocks=total_top_blocks,
         top_block_loop_bounds=top_block_loop_bounds,
         dtype=dtype,
+        empty_top_blocks=empty_top_blocks,
     )
 
     results_dir = args.out_dir

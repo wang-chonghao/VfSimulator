@@ -4,22 +4,14 @@
 #ifndef VFSIM_API_NATIVE_VF_INFO_H
 #define VFSIM_API_NATIVE_VF_INFO_H
 
-#include <cstdint>
+#include "api/native/RuntimeValue.h"
+
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace vfsim {
-
-enum class ValueStorageKind { Register, UB, Scalar };
-
-struct ValueInfo {
-  std::string valueId;
-  ValueStorageKind storage = ValueStorageKind::Register;
-  std::string dtype;
-  std::vector<int64_t> shape;
-};
 
 struct ProgramInstNode {
   std::string op;
@@ -61,8 +53,6 @@ struct VfInfo {
   std::string defaultDtype = "fp32";
 };
 
-ValueStorageKind inferValueStorage(const std::string &valueId);
-std::string valueStorageName(ValueStorageKind storage);
 void canonicalizeVfInfo(VfInfo &vfInfo);
 void lowerVfInfoValueIds(VfInfo &vfInfo);
 

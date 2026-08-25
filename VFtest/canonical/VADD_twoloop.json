@@ -1,0 +1,298 @@
+{
+  "schema_version": 1,
+  "context": [
+    {
+      "kind": "loop",
+      "loop_id": "loop.0",
+      "induction": {
+        "variable_id": "iter_loop.0",
+        "start": 0,
+        "step": 1
+      },
+      "count": "M",
+      "unroll": 1,
+      "carried_values": [
+        {
+          "logical_id": "V0",
+          "entry_value_id": "V0.def0",
+          "back_edge_value_id": "V0.def7",
+          "exit_value_id": "V0.def9"
+        },
+        {
+          "logical_id": "V1",
+          "entry_value_id": "V1.def1",
+          "back_edge_value_id": "V1.def8",
+          "exit_value_id": "V1.def10"
+        }
+      ],
+      "body": [
+        {
+          "kind": "loop",
+          "loop_id": "loop.1",
+          "induction": {
+            "variable_id": "iter_loop.1",
+            "start": 0,
+            "step": 1
+          },
+          "count": "N",
+          "unroll": "U",
+          "carried_values": [
+            {
+              "logical_id": "V0",
+              "entry_value_id": "V0.def0",
+              "back_edge_value_id": "V0.def3",
+              "exit_value_id": "V0.def7"
+            },
+            {
+              "logical_id": "V1",
+              "entry_value_id": "V1.def1",
+              "back_edge_value_id": "V1.def5",
+              "exit_value_id": "V1.def8"
+            }
+          ],
+          "body": [
+            {
+              "kind": "instruction",
+              "instruction_id": "instruction.0",
+              "opcode": "VLDS",
+              "instruction_class": "load",
+              "form": "fp32",
+              "inputs": [
+                {
+                  "value_id": "memA.def2",
+                  "role": "memory",
+                  "dtype": "fp32",
+                  "memory_access": {
+                    "base_object_id": "ub.memA",
+                    "offset": {
+                      "constant": 0,
+                      "terms": []
+                    },
+                    "access_kind": "read",
+                    "span": null,
+                    "alias_group": null
+                  }
+                }
+              ],
+              "outputs": [
+                {
+                  "value_id": "V0.def3",
+                  "role": "destination",
+                  "dtype": "fp32",
+                  "memory_access": null
+                }
+              ],
+              "dependencies": [],
+              "attributes": {},
+              "source_location": null
+            },
+            {
+              "kind": "instruction",
+              "instruction_id": "instruction.1",
+              "opcode": "VADDS",
+              "instruction_class": "compute",
+              "form": "fp32",
+              "inputs": [
+                {
+                  "value_id": "V0.def3",
+                  "role": "source",
+                  "dtype": "fp32",
+                  "memory_access": null
+                },
+                {
+                  "value_id": "legacy_omitted_scalar_0.def4",
+                  "role": "scalar",
+                  "dtype": "fp32",
+                  "memory_access": null
+                }
+              ],
+              "outputs": [
+                {
+                  "value_id": "V1.def5",
+                  "role": "destination",
+                  "dtype": "fp32",
+                  "memory_access": null
+                }
+              ],
+              "dependencies": [],
+              "attributes": {},
+              "source_location": null
+            },
+            {
+              "kind": "instruction",
+              "instruction_id": "instruction.2",
+              "opcode": "VSTS",
+              "instruction_class": "store",
+              "form": "fp32",
+              "inputs": [
+                {
+                  "value_id": "V1.def5",
+                  "role": "source",
+                  "dtype": "fp32",
+                  "memory_access": null
+                }
+              ],
+              "outputs": [
+                {
+                  "value_id": "memB.def6",
+                  "role": "memory",
+                  "dtype": "fp32",
+                  "memory_access": {
+                    "base_object_id": "ub.memB",
+                    "offset": {
+                      "constant": 0,
+                      "terms": []
+                    },
+                    "access_kind": "write",
+                    "span": null,
+                    "alias_group": null
+                  }
+                }
+              ],
+              "dependencies": [],
+              "attributes": {},
+              "source_location": null
+            }
+          ],
+          "source_location": null
+        }
+      ],
+      "source_location": null
+    }
+  ],
+  "values": {
+    "V0.def0": {
+      "definition_id": "V0.def0",
+      "logical_id": "V0",
+      "storage": "Register",
+      "dtype": "fp32",
+      "shape": [],
+      "producer_node_id": null,
+      "storage_object_id": null,
+      "source_location": null
+    },
+    "V1.def1": {
+      "definition_id": "V1.def1",
+      "logical_id": "V1",
+      "storage": "Register",
+      "dtype": "fp32",
+      "shape": [],
+      "producer_node_id": null,
+      "storage_object_id": null,
+      "source_location": null
+    },
+    "memA.def2": {
+      "definition_id": "memA.def2",
+      "logical_id": "memA",
+      "storage": "UB",
+      "dtype": "fp32",
+      "shape": [],
+      "producer_node_id": null,
+      "storage_object_id": "ub.memA",
+      "source_location": null
+    },
+    "V0.def3": {
+      "definition_id": "V0.def3",
+      "logical_id": "V0",
+      "storage": "Register",
+      "dtype": "fp32",
+      "shape": [],
+      "producer_node_id": "instruction.0",
+      "storage_object_id": null,
+      "source_location": null
+    },
+    "legacy_omitted_scalar_0.def4": {
+      "definition_id": "legacy_omitted_scalar_0.def4",
+      "logical_id": "__legacy_omitted_scalar_0",
+      "storage": "Scalar",
+      "dtype": "fp32",
+      "shape": [],
+      "producer_node_id": null,
+      "storage_object_id": null,
+      "source_location": null
+    },
+    "V1.def5": {
+      "definition_id": "V1.def5",
+      "logical_id": "V1",
+      "storage": "Register",
+      "dtype": "fp32",
+      "shape": [],
+      "producer_node_id": "instruction.1",
+      "storage_object_id": null,
+      "source_location": null
+    },
+    "memB.def6": {
+      "definition_id": "memB.def6",
+      "logical_id": "memB",
+      "storage": "UB",
+      "dtype": "fp32",
+      "shape": [],
+      "producer_node_id": "instruction.2",
+      "storage_object_id": "ub.memB",
+      "source_location": null
+    },
+    "V0.def7": {
+      "definition_id": "V0.def7",
+      "logical_id": "V0",
+      "storage": "Register",
+      "dtype": "fp32",
+      "shape": [],
+      "producer_node_id": "loop.1",
+      "storage_object_id": null,
+      "source_location": null
+    },
+    "V1.def8": {
+      "definition_id": "V1.def8",
+      "logical_id": "V1",
+      "storage": "Register",
+      "dtype": "fp32",
+      "shape": [],
+      "producer_node_id": "loop.1",
+      "storage_object_id": null,
+      "source_location": null
+    },
+    "V0.def9": {
+      "definition_id": "V0.def9",
+      "logical_id": "V0",
+      "storage": "Register",
+      "dtype": "fp32",
+      "shape": [],
+      "producer_node_id": "loop.0",
+      "storage_object_id": null,
+      "source_location": null
+    },
+    "V1.def10": {
+      "definition_id": "V1.def10",
+      "logical_id": "V1",
+      "storage": "Register",
+      "dtype": "fp32",
+      "shape": [],
+      "producer_node_id": "loop.0",
+      "storage_object_id": null,
+      "source_location": null
+    }
+  },
+  "storage_objects": {
+    "ub.memA": {
+      "object_id": "ub.memA",
+      "storage": "UB",
+      "shape": [],
+      "source_location": null
+    },
+    "ub.memB": {
+      "object_id": "ub.memB",
+      "storage": "UB",
+      "shape": [],
+      "source_location": null
+    }
+  },
+  "params": {
+    "M": 4,
+    "N": 8,
+    "U": 1
+  },
+  "uarch": {},
+  "source": {
+    "adapter": "legacy_json"
+  }
+}

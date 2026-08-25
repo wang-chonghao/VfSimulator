@@ -73,7 +73,7 @@ class VfInfoBuilderTest(unittest.TestCase):
         self.assertEqual(builder.build(), vf_info)
 
     def test_context_manager_builds_nested_loop(self):
-        builder = InputAPI.new_vf_info_builder(params={"N": 2})
+        builder = InputAPI.new_builder(params={"N": 2})
         with builder.loop(
             "loop.outer",
             induction=InductionVariable("i"),

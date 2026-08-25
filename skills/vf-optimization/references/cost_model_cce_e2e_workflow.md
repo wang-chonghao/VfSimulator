@@ -46,7 +46,7 @@ vf_info = parse_cce_canonical_vf_info(
 )
 cycles = CoreVfCostModel(
     out_dir="results/api_costmodel/example"
-).predict_canonical_vf_cycles(vf_info)
+).predict_vf_cycles(vf_info)
 ```
 
 也可以直接调用便利函数：
@@ -74,7 +74,7 @@ from api.frontend import (
 from api.input_api import InputAPI
 from api.simulator_costmodel import CoreVfCostModel
 
-builder = InputAPI.new_vf_info_builder()
+builder = InputAPI.new_builder()
 for value_id in ("lhs.entry", "rhs.entry"):
     builder.register_value(
         value_id,
@@ -103,18 +103,14 @@ builder.add_instruction(
     ),
 )
 canonical = builder.build()
-cycles = CoreVfCostModel().predict_canonical_vf_cycles(canonical)
+cycles = CoreVfCostModel().predict_vf_cycles(canonical)
 ```
 
-旧 `VFInfo` 仍可用于已有测试和迁移期调用，但必须使用显式 legacy 入口：
+旧 JSON 必须先离线转换，不能直接进入预测 API：
 
-```python
-from api.simulator_costmodel import CoreVfCostModel
-
-cycles = CoreVfCostModel().predict_legacy_vf_cycles(legacy_vf_info)
+```bash
+python3 tools/convert_legacy_vfinfo.py old.json canonical.json
 ```
-
-`predict_vf_cycles()` 仅为弃用的源码兼容包装，新代码不应继续调用。
 
 ## 3. 运行 CCE/Camodel
 

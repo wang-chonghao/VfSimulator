@@ -6,7 +6,17 @@ from dataclasses import dataclass
 from typing import Iterable, Mapping
 
 from api.input_symbols import normalize_dtype
-from api.vf_info import Membar, VFAlias, VFInfo, VFInst, VFLoop, VFMemoryAccess, VFNode
+
+from .adapter_ir import (
+    AdapterAlias,
+    AdapterInstruction,
+    AdapterLoop,
+    AdapterMemoryAccess,
+    AdapterMembar,
+    AdapterNode,
+    AdapterProgram,
+    normalize_adapter_program,
+)
 
 from .instruction_catalog import DEFAULT_INSTRUCTION_CATALOG, OperandDirection
 from .schema import (
@@ -115,7 +125,7 @@ class _Counters:
 
 
 class ValueVersioningPass:
-    """Convert logical migration-period ``VFInfo`` into canonical definitions."""
+    """Convert private adapter IR into canonical value definitions."""
 
     def __init__(self) -> None:
         self._counters = _Counters()
@@ -125,10 +135,13 @@ class ValueVersioningPass:
         self._params: dict[str, int] = {}
         self._node_ids: set[str] = set()
 
-    def run(self, vf_info: VFInfo, *, source: Mapping[str, object] | None = None) -> CanonicalVfInfo:
-        from api.vf_info import canonicalize_vf_info
-
-        normalized = canonicalize_vf_info(vf_info)
+    def run(
+        self,
+        program: AdapterProgram,
+        *,
+        source: Mapping[str, object] | None = None,
+    ) -> CanonicalVfInfo:
+        normalized = normalize_adapter_program(program)
         self._counters = _Counters()
         self._values = {}
         self._storage_objects = {}
@@ -212,43 +225,43 @@ class ValueVersioningPass:
             environment[logical_id] = definition_id
         return definition_id
 
-    def _written_registers(self, nodes: Iterable[VFNode]) -> set[str]:
+    def _written_registers(self, nodes: Iterable[AdapterNode]) -> set[str]:
         written: set[str] = set()
         for node in nodes:
-            if isinstance(node, VFInst):
+            if isinstance(node, AdapterInstruction):
                 written.update(
                     str(value_id)
                     for value_id in node.dst
                     if self._logical_values[str(value_id)].storage == "Register"
                 )
-            elif isinstance(node, VFAlias):
+            elif isinstance(node, AdapterAlias):
                 destination_id = str(node.destination)
                 if self._logical_values[destination_id].storage == "Register":
                     written.add(destination_id)
-            elif isinstance(node, VFLoop):
+            elif isinstance(node, AdapterLoop):
                 written.update(self._written_registers(node.body))
         return written
 
     def _version_nodes(
         self,
-        nodes: Iterable[VFNode],
+        nodes: Iterable[AdapterNode],
         environment: dict[str, str],
         induction_variables: frozenset[str],
     ) -> tuple[list[CanonicalNode], dict[str, str]]:
         output: list[CanonicalNode] = []
         current = dict(environment)
         for node in nodes:
-            if isinstance(node, VFInst):
+            if isinstance(node, AdapterInstruction):
                 canonical, current = self._version_instruction(
                     node, current, induction_variables
                 )
                 output.append(canonical)
-            elif isinstance(node, VFLoop):
+            elif isinstance(node, AdapterLoop):
                 canonical, current = self._version_loop(
                     node, current, induction_variables
                 )
                 output.append(canonical)
-            elif isinstance(node, VFAlias):
+            elif isinstance(node, AdapterAlias):
                 source_id = str(node.source)
                 destination_id = str(node.destination)
                 source = self._logical_values[source_id]
@@ -260,7 +273,7 @@ class ValueVersioningPass:
                         "VFAlias source and destination must have matching dtype and shape"
                     )
                 current[destination_id] = self._ensure_entry(source_id, current)
-            elif isinstance(node, Membar):
+            elif isinstance(node, AdapterMembar):
                 output.append(
                     CanonicalMembar(
                         instruction_id=self._next_node_id("membar"),
@@ -269,12 +282,12 @@ class ValueVersioningPass:
                     )
                 )
             else:
-                raise TypeError(f"Unsupported VFInfo node: {type(node).__name__}")
+                raise TypeError(f"Unsupported adapter node: {type(node).__name__}")
         return output, current
 
     def _version_instruction(
         self,
-        node: VFInst,
+        node: AdapterInstruction,
         environment: dict[str, str],
         induction_variables: frozenset[str],
     ) -> tuple[CanonicalInstruction, dict[str, str]]:
@@ -371,7 +384,7 @@ class ValueVersioningPass:
         *,
         is_output: bool,
         catalog_role: OperandRole | None,
-        access: VFMemoryAccess | None,
+        access: AdapterMemoryAccess | None,
         induction_variables: frozenset[str],
     ) -> CanonicalOperand:
         value = self._values[definition_id]
@@ -407,7 +420,7 @@ class ValueVersioningPass:
 
     def _version_loop(
         self,
-        node: VFLoop,
+        node: AdapterLoop,
         environment: dict[str, str],
         parent_induction_variables: frozenset[str],
     ) -> tuple[CanonicalLoop, dict[str, str]]:
