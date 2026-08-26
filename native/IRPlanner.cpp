@@ -48,6 +48,13 @@ constexpr llvm::StringLiteral kAbcabcAttr = "pto.vfsim.abcabc_unroll_factor";
 
 enum class CandidateMode { Baseline, Abcabc, Aabbcc };
 
+struct ReductionCarry {
+  size_t carriedIndex = 0;
+  mlir::Operation *operation = nullptr;
+  unsigned carriedOperandIndex = 0;
+  unsigned laneOperandIndex = 0;
+};
+
 struct TypeInfo {
   CanonicalStorageKind storage = CanonicalStorageKind::Unknown;
   std::string dtype;
@@ -326,6 +333,24 @@ private:
     return id;
   }
 
+  std::string
+  duplicateValue(const std::string &baseId, std::optional<std::string> producer,
+                 std::string &reason,
+                 std::optional<std::string> logicalId = std::nullopt) {
+    auto base = info_.values.find(baseId);
+    if (base == info_.values.end()) {
+      reason = "cannot duplicate unknown canonical value " + baseId;
+      return {};
+    }
+    const std::string id = newValueId();
+    CanonicalValue value = base->second;
+    value.definitionId = id;
+    value.logicalId = logicalId.value_or(id);
+    value.producerNodeId = std::move(producer);
+    info_.values.emplace(id, std::move(value));
+    return id;
+  }
+
   CanonicalOperand registerOperand(const std::string &id,
                                    CanonicalOperandRole role) const {
     CanonicalOperand operand;
@@ -362,6 +387,105 @@ private:
     for (mlir::Value result : operation->getResults())
       values_[result] = source;
     return true;
+  }
+
+  bool isKnownZeroIdentity(mlir::Value value) const {
+    mlir::Operation *splat = value.getDefiningOp();
+    if (splat == nullptr || splat->getName().getStringRef() != "pto.vdup" ||
+        splat->getNumOperands() == 0)
+      return false;
+    mlir::Operation *constant = splat->getOperand(0).getDefiningOp();
+    if (constant == nullptr ||
+        constant->getName().getStringRef() != "arith.constant")
+      return false;
+    mlir::Attribute attribute = constant->getAttr("value");
+    if (auto integer = mlir::dyn_cast_or_null<mlir::IntegerAttr>(attribute))
+      return integer.getValue().isZero();
+    if (auto floating = mlir::dyn_cast_or_null<mlir::FloatAttr>(attribute))
+      return floating.getValue().isZero();
+    return false;
+  }
+
+  std::vector<std::optional<ReductionCarry>>
+  findLaneLocalReductions(mlir::Operation *loop, mlir::Block &body) const {
+    const size_t carriedCount = loop->getNumOperands() - 3;
+    std::vector<std::optional<ReductionCarry>> reductions(carriedCount);
+    mlir::Operation *terminator = body.getTerminator();
+    if (terminator->getName().getStringRef() != "scf.yield" ||
+        terminator->getNumOperands() != carriedCount)
+      return reductions;
+
+    for (size_t index = 0; index < carriedCount; ++index) {
+      mlir::BlockArgument iterArg = body.getArgument(index + 1);
+      mlir::Value yielded = terminator->getOperand(index);
+      mlir::Operation *reduction = yielded.getDefiningOp();
+      if (reduction == nullptr || reduction->getBlock() != &body ||
+          reduction->getName().getStringRef() != "pto.vadd" ||
+          reduction->getNumResults() != 1 ||
+          reduction->getResult(0) != yielded || !iterArg.hasOneUse() ||
+          iterArg.use_begin()->getOwner() != reduction ||
+          !yielded.hasOneUse() ||
+          yielded.use_begin()->getOwner() != terminator ||
+          !isKnownZeroIdentity(loop->getOperand(index + 3)))
+        continue;
+
+      std::optional<unsigned> carriedOperand;
+      std::optional<unsigned> laneOperand;
+      for (auto [operandIndex, operand] :
+           llvm::enumerate(reduction->getOperands())) {
+        if (operand == iterArg) {
+          if (carriedOperand)
+            carriedOperand.reset();
+          else
+            carriedOperand = operandIndex;
+          continue;
+        }
+        if (operand.getType() == iterArg.getType()) {
+          if (laneOperand)
+            laneOperand.reset();
+          else
+            laneOperand = operandIndex;
+        }
+      }
+      if (!carriedOperand || !laneOperand)
+        continue;
+      reductions[index] =
+          ReductionCarry{index, reduction, *carriedOperand, *laneOperand};
+    }
+    return reductions;
+  }
+
+  std::string appendReductionMerge(const std::string &lhs,
+                                   const std::string &rhs,
+                                   std::vector<CanonicalNode> &nodes,
+                                   std::string &reason) {
+    const std::string form = info_.values.at(lhs).dtype;
+    const std::string opcode =
+        defaultInstructionCatalog().specializeOpcode("VADD", form);
+    const NativeInstructionSpec *spec =
+        defaultInstructionCatalog().lookup(opcode);
+    if (spec == nullptr) {
+      reason = "VfSim catalog has no reduction merge opcode " + opcode;
+      return {};
+    }
+
+    CanonicalInstruction instruction;
+    instruction.instructionId = "inst." + std::to_string(nextInstructionId_++);
+    instruction.opcode = opcode;
+    instruction.instructionClass = instructionClass(spec->instructionClass);
+    instruction.form = form;
+    instruction.inputs.push_back(
+        registerOperand(lhs, CanonicalOperandRole::Source));
+    instruction.inputs.push_back(
+        registerOperand(rhs, CanonicalOperandRole::Source));
+    const std::string result =
+        duplicateValue(lhs, instruction.instructionId, reason);
+    if (result.empty())
+      return {};
+    instruction.outputs.push_back(
+        registerOperand(result, CanonicalOperandRole::Destination));
+    nodes.push_back(CanonicalNode::makeInstruction(std::move(instruction)));
+    return result;
   }
 
   bool convertPhysicalInstruction(mlir::Operation *operation,
@@ -496,6 +620,116 @@ private:
     return true;
   }
 
+  bool convertLaneLocalTargetLoop(
+      mlir::Operation *operation, mlir::Block &body, int64_t tripCount,
+      const std::vector<std::optional<ReductionCarry>> &reductions,
+      std::vector<CanonicalNode> &nodes, std::string &reason) {
+    const size_t carriedCount = operation->getNumOperands() - 3;
+    CanonicalLoop loop;
+    loop.loopId = "loop." + std::to_string(nextLoopId_++);
+    loop.induction.variableId = loop.loopId + ".iv";
+    loop.induction.start =
+        constantInteger(operation->getOperand(0)).value_or(0);
+    loop.induction.step =
+        constantInteger(operation->getOperand(2)).value_or(1) * factor_;
+    loop.count = tripCount / factor_;
+    loop.unroll = 1;
+
+    std::vector<std::vector<std::string>> entries(carriedCount);
+    std::vector<std::vector<std::string>> current(carriedCount);
+    for (size_t index = 0; index < carriedCount; ++index) {
+      const std::string base =
+          getOrCreateValue(operation->getOperand(index + 3), reason);
+      if (base.empty())
+        return false;
+      const size_t lanes = reductions[index] ? factor_ : 1;
+      entries[index].push_back(base);
+      for (size_t lane = 1; lane < lanes; ++lane) {
+        const std::string duplicate =
+            duplicateValue(base, std::nullopt, reason);
+        if (duplicate.empty())
+          return false;
+        entries[index].push_back(duplicate);
+      }
+      current[index] = entries[index];
+    }
+
+    std::vector<std::vector<CanonicalNode>> laneBodies(factor_);
+    for (int64_t lane = 0; lane < factor_; ++lane) {
+      for (size_t index = 0; index < carriedCount; ++index) {
+        const size_t stateIndex = reductions[index] ? lane : 0;
+        values_[body.getArgument(index + 1)] = current[index][stateIndex];
+      }
+      for (mlir::Operation &bodyOperation : body.without_terminator()) {
+        if (!convertOperation(&bodyOperation, laneBodies[lane], reason))
+          return false;
+      }
+
+      mlir::Operation *terminator = body.getTerminator();
+      for (size_t index = 0; index < carriedCount; ++index) {
+        const std::string yielded =
+            getOrCreateValue(terminator->getOperand(index), reason);
+        if (yielded.empty())
+          return false;
+        const size_t stateIndex = reductions[index] ? lane : 0;
+        current[index][stateIndex] = yielded;
+      }
+    }
+
+    if (mode_ == CandidateMode::Abcabc) {
+      for (auto &laneBody : laneBodies)
+        for (CanonicalNode &node : laneBody)
+          loop.body.push_back(std::move(node));
+    } else {
+      const size_t width = laneBodies.front().size();
+      if (llvm::any_of(laneBodies, [width](const auto &laneBody) {
+            return laneBody.size() != width;
+          })) {
+        reason = "AABBCC lanes produced inconsistent physical instruction "
+                 "counts";
+        return false;
+      }
+      for (size_t position = 0; position < width; ++position)
+        for (auto &laneBody : laneBodies)
+          loop.body.push_back(std::move(laneBody[position]));
+    }
+
+    std::vector<std::vector<std::string>> exits(carriedCount);
+    for (size_t index = 0; index < carriedCount; ++index) {
+      exits[index].reserve(entries[index].size());
+      for (size_t state = 0; state < entries[index].size(); ++state) {
+        const std::string entryLogicalId =
+            info_.values.at(entries[index][state]).logicalId;
+        const std::string exit = duplicateValue(
+            entries[index][state], loop.loopId, reason, entryLogicalId);
+        if (exit.empty())
+          return false;
+        exits[index].push_back(exit);
+        CanonicalLoopCarriedValue carried;
+        carried.logicalId = info_.values.at(entries[index][state]).logicalId;
+        carried.entryValueId = entries[index][state];
+        carried.backEdgeValueId = current[index][state];
+        carried.exitValueId = exit;
+        loop.carriedValues.push_back(std::move(carried));
+      }
+    }
+
+    nodes.push_back(CanonicalNode::makeLoop(std::move(loop)));
+    for (size_t index = 0; index < carriedCount; ++index) {
+      std::string result = exits[index].front();
+      if (reductions[index]) {
+        for (size_t lane = 1; lane < exits[index].size(); ++lane) {
+          result =
+              appendReductionMerge(result, exits[index][lane], nodes, reason);
+          if (result.empty())
+            return false;
+        }
+      }
+      values_[operation->getResult(index)] = result;
+    }
+    return true;
+  }
+
   bool convertLoop(mlir::Operation *operation,
                    std::vector<CanonicalNode> &nodes, std::string &reason) {
     const auto tripCount = staticTripCount(operation);
@@ -513,6 +747,15 @@ private:
     }
 
     const bool isTarget = operation == targetLoop_;
+    if (isTarget && mode_ != CandidateMode::Baseline) {
+      auto reductions = findLaneLocalReductions(operation, body);
+      if (llvm::any_of(reductions, [](const auto &reduction) {
+            return reduction.has_value();
+          }))
+        return convertLaneLocalTargetLoop(operation, body, *tripCount,
+                                          reductions, nodes, reason);
+    }
+
     const int64_t repeats =
         isTarget && mode_ == CandidateMode::Abcabc ? factor_ : 1;
     CanonicalLoop loop;
