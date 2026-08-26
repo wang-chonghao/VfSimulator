@@ -24,4 +24,16 @@ mlir::LogicalResult planTileFusionIR(mlir::Operation *candidateIR,
   return mlir::success();
 }
 
+mlir::LogicalResult planVmiUnrollIR(mlir::Operation *scope,
+                                    const PlannerOptions &options) {
+  (void)options;
+  if (scope == nullptr)
+    return mlir::failure();
+
+  // The VMI entry point consumes low-level generic MLIR operations. The
+  // adapter and candidate evaluation are added independently from PTOAS so
+  // this library never depends on PTO dialect C++ operation classes.
+  return mlir::success();
+}
+
 } // namespace vfsim

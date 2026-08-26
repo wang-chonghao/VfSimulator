@@ -18,12 +18,15 @@ class Operation;
 namespace vfsim {
 
 struct PlannerOptions {
+  unsigned maxUnrollFactor = 8;
   bool dumpCandidates = false;
-  unsigned maxUnroll = 8;
 };
 
 mlir::LogicalResult planTileFusionIR(mlir::Operation *candidateIR,
                                      const PlannerOptions &options = {});
+
+mlir::LogicalResult planVmiUnrollIR(mlir::Operation *scope,
+                                    const PlannerOptions &options = {});
 
 } // namespace vfsim
 

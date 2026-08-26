@@ -422,7 +422,7 @@ std::vector<int> OoOCore::eligibleExuPorts(const std::string &op,
   std::transform(tag.begin(), tag.end(), tag.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
   if (tag == "EXU0_ONLY")
     return issuePorts_ > 0 ? std::vector<int>{0} : std::vector<int>{};
-  if (tag == "EXU01")
+  if (tag == "EXU01") {
     if (threePortsMode_) {
       std::vector<int> out;
       for (int port = 0; port < std::min(issuePorts_, 3); ++port)
@@ -431,6 +431,7 @@ std::vector<int> OoOCore::eligibleExuPorts(const std::string &op,
     } else {
       return issuePorts_ >= 2 ? std::vector<int>{0, 1} : std::vector<int>{0};
     }
+  }
   if (tag == "EXU012")
     return issuePorts_ >= 3 ? std::vector<int>{0, 1, 2} : std::vector<int>{0, 1};
   std::vector<int> out;
