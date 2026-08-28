@@ -23,6 +23,10 @@ option(VFSIM_BUILD_LEGACY_MIGRATION
   ${VFSIM_BUILD_TESTS_DEFAULT}
 )
 
+if(VFSIM_ENABLE_MLIR_PLANNER)
+  set(VFSIM_BUILD_LEGACY_MIGRATION ON)
+endif()
+
 set(VFSIM_NATIVE_CORE_SOURCES
   ../api/native/CanonicalVfInfo.cpp
   ../api/native/CanonicalJsonVfInfoAdapter.cpp
@@ -87,12 +91,14 @@ if(VFSIM_ENABLE_MLIR_PLANNER)
 
   add_library(vfsim_ir_planner STATIC
     IRPlanner.cpp
+    TileOpTemplates.cpp
   )
 
   add_library(vfsim::ir_planner ALIAS vfsim_ir_planner)
 
   target_link_libraries(vfsim_ir_planner PUBLIC
     vfsim::native_core
+    vfsim::native_legacy
     MLIRIR
     MLIRSupport
   )
