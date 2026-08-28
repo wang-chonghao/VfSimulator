@@ -15,6 +15,7 @@
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/raw_ostream.h"
@@ -157,7 +158,49 @@ std::string parseTileDtype(llvm::StringRef text) {
       text.contains("dtype=f16") || text.contains("dtype = f16") ||
       text.contains("dtype=bf16") || text.contains("dtype = bf16"))
     return "fp16";
-  return "fp32";
+  if (text.contains("xf32") || text.contains("dtype=f32") ||
+      text.contains("dtype = f32"))
+    return "fp32";
+  for (llvm::StringRef dtype : {"ui8", "ui16", "ui32", "i8", "i16", "i32"}) {
+    if (text.contains(("x" + dtype).str()) ||
+        text.contains(("dtype=" + dtype).str()) ||
+        text.contains(("dtype = " + dtype).str()))
+      return dtype.str();
+  }
+  return "unknown";
+}
+
+std::optional<std::pair<int64_t, int64_t>>
+parseNamedShape(llvm::StringRef text, llvm::StringRef name, bool &present) {
+  const std::size_t namePos = text.find(name);
+  present = namePos != llvm::StringRef::npos;
+  if (!present)
+    return std::nullopt;
+
+  const std::size_t equalPos = text.find('=', namePos + name.size());
+  if (equalPos == llvm::StringRef::npos)
+    return std::nullopt;
+  std::size_t rowStart = equalPos + 1;
+  while (rowStart < text.size() &&
+         std::isspace(static_cast<unsigned char>(text[rowStart])))
+    ++rowStart;
+  std::size_t rowEnd = rowStart;
+  while (rowEnd < text.size() &&
+         std::isdigit(static_cast<unsigned char>(text[rowEnd])))
+    ++rowEnd;
+  if (rowEnd == rowStart || rowEnd >= text.size() || text[rowEnd] != 'x')
+    return std::nullopt;
+
+  const std::size_t colStart = rowEnd + 1;
+  std::size_t colEnd = colStart;
+  while (colEnd < text.size() &&
+         std::isdigit(static_cast<unsigned char>(text[colEnd])))
+    ++colEnd;
+  if (colEnd == colStart)
+    return std::nullopt;
+  return std::pair<int64_t, int64_t>{
+      std::stoll(text.substr(rowStart, rowEnd - rowStart).str()),
+      std::stoll(text.substr(colStart, colEnd - colStart).str())};
 }
 
 std::optional<TileShapeInfo> parseStaticTileShape(mlir::Type type) {
@@ -216,8 +259,12 @@ std::optional<TileShapeInfo> parseStaticTileShape(mlir::Type type) {
   TileShapeInfo info;
   info.physicalRows = std::stoll(rowsText);
   info.physicalCols = std::stoll(colsText);
-  info.rows = info.physicalRows;
-  info.cols = info.physicalCols;
+  bool hasValidShape = false;
+  const auto validShape = parseNamedShape(text, "valid", hasValidShape);
+  if (hasValidShape && !validShape)
+    return std::nullopt;
+  info.rows = validShape ? validShape->first : info.physicalRows;
+  info.cols = validShape ? validShape->second : info.physicalCols;
   if (!info.valid())
     return std::nullopt;
   info.dtype = parseTileDtype(text);
@@ -691,6 +738,11 @@ lowerTileGroupToCanonicalVfInfo(llvm::ArrayRef<PlannedTileOpIR> orderedOps) {
           tileOp.op->getName().getStringRef().str();
       return lowered;
     }
+    if (shape->dtype != "fp16" && shape->dtype != "fp32") {
+      lowered.unsupportedReason =
+          "unsupported tile dtype for VfSim: " + shape->dtype;
+      return lowered;
+    }
     if (!loopShape) {
       loopShape = *shape;
     } else if (loopShape->physicalRows != shape->physicalRows ||
@@ -730,8 +782,18 @@ lowerTileGroupToCanonicalVfInfo(llvm::ArrayRef<PlannedTileOpIR> orderedOps) {
 
   CanonicalTileBuilder builder(*loopShape, lowered.traversal);
   llvm::DenseMap<mlir::Value, std::string> valueToRegister;
-  llvm::DenseMap<mlir::Value, unsigned> internalUseCount;
-  llvm::SmallVector<mlir::Value, 8> producedValues;
+  struct TileWriteInstance {
+    mlir::Value storage;
+    mlir::Operation *producer = nullptr;
+    std::string registerId;
+    bool hasInternalConsumer = false;
+    bool escapesFusionGroup = false;
+  };
+  llvm::SmallVector<TileWriteInstance, 8> writeInstances;
+  llvm::DenseMap<mlir::Value, unsigned> currentWrite;
+  llvm::DenseSet<mlir::Operation *> groupOps;
+  for (const PlannedTileOpIR &tileOp : orderedOps)
+    groupOps.insert(tileOp.op);
   std::vector<CanonicalNode> body;
 
   for (size_t opIndex = 0; opIndex < orderedOps.size(); ++opIndex) {
@@ -741,8 +803,9 @@ lowerTileGroupToCanonicalVfInfo(llvm::ArrayRef<PlannedTileOpIR> orderedOps) {
         tileOp.op->getNumOperands() - elementwise.tileOutputs;
     for (unsigned input = 0; input < elementwise.tileInputs; ++input) {
       mlir::Value operand = tileOp.op->getOperand(input);
-      if (valueToRegister.find(operand) != valueToRegister.end())
-        ++internalUseCount[operand];
+      auto current = currentWrite.find(operand);
+      if (current != currentWrite.end())
+        writeInstances[current->second].hasInternalConsumer = true;
     }
 
     std::vector<std::string> inputs;
@@ -793,16 +856,45 @@ lowerTileGroupToCanonicalVfInfo(llvm::ArrayRef<PlannedTileOpIR> orderedOps) {
         builder.appendCompute(opcode, form, outputDtype, inputs, body);
     mlir::Value output = tileOp.op->getOperand(outputBase);
     valueToRegister[output] = outputRegister;
-    producedValues.push_back(output);
+    currentWrite[output] = writeInstances.size();
+    writeInstances.push_back(
+        TileWriteInstance{output, tileOp.op, outputRegister});
   }
 
-  for (mlir::Value value : producedValues) {
-    auto use = internalUseCount.find(value);
-    if (use != internalUseCount.end() && use->second > 0)
-      continue;
-    auto reg = valueToRegister.find(value);
-    if (reg != valueToRegister.end())
-      builder.appendStore(value, reg->second, body);
+  for (auto indexedWrite : llvm::enumerate(writeInstances)) {
+    TileWriteInstance &write = indexedWrite.value();
+    for (mlir::OpOperand &use : write.storage.getUses()) {
+      mlir::Operation *user = use.getOwner();
+      if (groupOps.contains(user))
+        continue;
+
+      unsigned reachingWrite = writeInstances.size();
+      for (auto candidate : llvm::enumerate(writeInstances)) {
+        if (candidate.value().storage != write.storage)
+          continue;
+        mlir::Operation *producer = candidate.value().producer;
+        if (producer->getBlock() != user->getBlock())
+          continue;
+        if (producer != user && producer->isBeforeInBlock(user))
+          reachingWrite = candidate.index();
+      }
+      if (reachingWrite == indexedWrite.index() ||
+          (reachingWrite == writeInstances.size() &&
+           write.producer->getBlock() != user->getBlock() &&
+           currentWrite.lookup(write.storage) == indexedWrite.index())) {
+        write.escapesFusionGroup = true;
+        break;
+      }
+    }
+  }
+
+  for (auto indexedWrite : llvm::enumerate(writeInstances)) {
+    const TileWriteInstance &write = indexedWrite.value();
+    const bool isLatestWrite =
+        currentWrite.lookup(write.storage) == indexedWrite.index();
+    if (write.escapesFusionGroup ||
+        (isLatestWrite && !write.hasInternalConsumer))
+      builder.appendStore(write.storage, write.registerId, body);
   }
 
   lowered.vfInfo = builder.takeVfInfo(std::move(body));
