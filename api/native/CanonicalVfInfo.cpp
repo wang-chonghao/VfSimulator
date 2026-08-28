@@ -617,6 +617,7 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
                 break;
               case CatalogArgumentKind::Predicate:
               case CatalogArgumentKind::Config:
+              case CatalogArgumentKind::AlignState:
                 break;
               }
               if (!storageMatches)
