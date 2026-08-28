@@ -44,11 +44,15 @@ struct ElementwiseTemplate {
 };
 
 struct TileShapeInfo {
+  int64_t physicalRows = 0;
+  int64_t physicalCols = 0;
   int64_t rows = 0;
   int64_t cols = 0;
   std::string dtype = "fp32";
 
-  bool valid() const { return rows > 0 && cols > 0; }
+  bool valid() const {
+    return physicalRows > 0 && physicalCols > 0 && rows > 0 && cols > 0;
+  }
 };
 
 struct SelectedTemplateInfo {
@@ -126,8 +130,64 @@ std::string typeToString(mlir::Type type) {
   return os.str();
 }
 
+std::optional<int64_t>
+parseNamedDimension(llvm::StringRef text, llvm::StringRef name, bool &present) {
+  const std::size_t namePos = text.find(name);
+  present = namePos != llvm::StringRef::npos;
+  if (!present)
+    return std::nullopt;
+  const std::size_t equalPos = text.find('=', namePos + name.size());
+  if (equalPos == llvm::StringRef::npos)
+    return std::nullopt;
+  std::size_t valueStart = equalPos + 1;
+  while (valueStart < text.size() &&
+         std::isspace(static_cast<unsigned char>(text[valueStart])))
+    ++valueStart;
+  std::size_t valueEnd = valueStart;
+  while (valueEnd < text.size() &&
+         std::isdigit(static_cast<unsigned char>(text[valueEnd])))
+    ++valueEnd;
+  if (valueEnd == valueStart)
+    return std::nullopt;
+  return std::stoll(text.substr(valueStart, valueEnd - valueStart).str());
+}
+
+std::string parseTileDtype(llvm::StringRef text) {
+  if (text.contains("xf16") || text.contains("xbf16") ||
+      text.contains("dtype=f16") || text.contains("dtype = f16") ||
+      text.contains("dtype=bf16") || text.contains("dtype = bf16"))
+    return "fp16";
+  return "fp32";
+}
+
 std::optional<TileShapeInfo> parseStaticTileShape(mlir::Type type) {
   const std::string text = typeToString(type);
+  bool hasRows = false;
+  bool hasCols = false;
+  bool hasValidRows = false;
+  bool hasValidCols = false;
+  const std::optional<int64_t> physicalRows =
+      parseNamedDimension(text, "rows", hasRows);
+  const std::optional<int64_t> physicalCols =
+      parseNamedDimension(text, "cols", hasCols);
+  const std::optional<int64_t> validRows =
+      parseNamedDimension(text, "v_row", hasValidRows);
+  const std::optional<int64_t> validCols =
+      parseNamedDimension(text, "v_col", hasValidCols);
+  if (hasRows || hasCols || hasValidRows || hasValidCols) {
+    if (!physicalRows || !physicalCols || (hasValidRows && !validRows) ||
+        (hasValidCols && !validCols))
+      return std::nullopt;
+    TileShapeInfo info;
+    info.physicalRows = *physicalRows;
+    info.physicalCols = *physicalCols;
+    info.rows = validRows.value_or(*physicalRows);
+    info.cols = validCols.value_or(*physicalCols);
+    info.dtype = parseTileDtype(text);
+    return info.valid() ? std::optional<TileShapeInfo>(std::move(info))
+                        : std::nullopt;
+  }
+
   const std::size_t xPos = text.find('x');
   const std::size_t dtypeSep =
       text.find('x', xPos == std::string::npos ? 0 : xPos + 1);
@@ -154,13 +214,13 @@ std::optional<TileShapeInfo> parseStaticTileShape(mlir::Type type) {
     return std::nullopt;
 
   TileShapeInfo info;
-  info.rows = std::stoll(rowsText);
-  info.cols = std::stoll(colsText);
-  if (info.rows <= 0 || info.cols <= 0)
+  info.physicalRows = std::stoll(rowsText);
+  info.physicalCols = std::stoll(colsText);
+  info.rows = info.physicalRows;
+  info.cols = info.physicalCols;
+  if (!info.valid())
     return std::nullopt;
-  if (text.find("xf16") != std::string::npos ||
-      text.find("xbf16") != std::string::npos)
-    info.dtype = "fp16";
+  info.dtype = parseTileDtype(text);
   return info;
 }
 
@@ -214,10 +274,21 @@ public:
       return std::move(vfInfo_);
     }
 
+    const int64_t colTripCount = (shape_.cols + lanes_ - 1) / lanes_;
+    if (colTripCount == 1) {
+      CanonicalLoop rowLoop;
+      rowLoop.loopId = "tile_row_loop";
+      rowLoop.induction.variableId = "tile_row_iv";
+      rowLoop.count = shape_.rows;
+      rowLoop.body = std::move(body);
+      vfInfo_.context.push_back(CanonicalNode::makeLoop(std::move(rowLoop)));
+      return std::move(vfInfo_);
+    }
+
     CanonicalLoop colLoop;
     colLoop.loopId = "tile_col_loop";
     colLoop.induction.variableId = "tile_col_iv";
-    colLoop.count = (shape_.cols + lanes_ - 1) / lanes_;
+    colLoop.count = colTripCount;
     colLoop.body = std::move(body);
 
     CanonicalLoop rowLoop;
@@ -304,7 +375,8 @@ public:
     const std::string storageObject = getOrCreateStorageObject(value);
     const std::string writtenValue = nextValueId("ub_write");
     registerValue(writtenValue, storageObject, CanonicalStorageKind::UB, dtype,
-                  {shape_.rows, shape_.cols}, instructionId, storageObject);
+                  {shape_.physicalRows, shape_.physicalCols}, instructionId,
+                  storageObject);
 
     CanonicalInstruction instruction;
     instruction.instructionId = instructionId;
@@ -363,7 +435,7 @@ private:
     CanonicalStorageObject object;
     object.objectId = objectId;
     object.storage = CanonicalStorageKind::UB;
-    object.shape = {shape_.rows, shape_.cols};
+    object.shape = {shape_.physicalRows, shape_.physicalCols};
     vfInfo_.storageObjects.emplace(objectId, std::move(object));
     storageObjects_.try_emplace(value, objectId);
     return objectId;
@@ -377,7 +449,8 @@ private:
     const std::string valueId = nextValueId("ub");
     const std::string dtype = dtypeOf(value).value_or(shape_.dtype);
     registerValue(valueId, objectId, CanonicalStorageKind::UB, dtype,
-                  {shape_.rows, shape_.cols}, std::nullopt, objectId);
+                  {shape_.physicalRows, shape_.physicalCols}, std::nullopt,
+                  objectId);
     externalUbValues_.try_emplace(value, valueId);
     return valueId;
   }
@@ -385,7 +458,9 @@ private:
   std::vector<CanonicalAffineTerm> addressTerms() const {
     if (traversal_ == TileTraversal::OneDimensional)
       return {{"tile_flat_iv", lanes_}};
-    return {{"tile_row_iv", shape_.cols}, {"tile_col_iv", lanes_}};
+    if ((shape_.cols + lanes_ - 1) / lanes_ == 1)
+      return {{"tile_row_iv", shape_.physicalCols}};
+    return {{"tile_row_iv", shape_.physicalCols}, {"tile_col_iv", lanes_}};
   }
 
   CanonicalOperand
@@ -618,7 +693,9 @@ lowerTileGroupToCanonicalVfInfo(llvm::ArrayRef<PlannedTileOpIR> orderedOps) {
     }
     if (!loopShape) {
       loopShape = *shape;
-    } else if (loopShape->rows != shape->rows ||
+    } else if (loopShape->physicalRows != shape->physicalRows ||
+               loopShape->physicalCols != shape->physicalCols ||
+               loopShape->rows != shape->rows ||
                loopShape->cols != shape->cols) {
       lowered.unsupportedReason =
           "fusion group selects TileOps with different iteration shapes";
@@ -632,20 +709,22 @@ lowerTileGroupToCanonicalVfInfo(llvm::ArrayRef<PlannedTileOpIR> orderedOps) {
   lowered.vectorLanes = lanesForDType(loopShape->dtype);
   const int64_t colTripCount =
       (loopShape->cols + lowered.vectorLanes - 1) / lowered.vectorLanes;
-  if (colTripCount == 1) {
-    lowered.unrollTripCount = loopShape->rows;
-    lowered.unrollDimension = UnrollLoopDimension::Row;
-  } else {
-    lowered.unrollTripCount = colTripCount;
-    lowered.unrollDimension = UnrollLoopDimension::Col;
-  }
   if (lowered.traversal == TileTraversal::OneDimensional) {
     lowered.modeledLoopTripCount =
         (loopShape->rows * loopShape->cols + lowered.vectorLanes - 1) /
         lowered.vectorLanes;
+    lowered.unrollTripCount = lowered.modeledLoopTripCount;
+    lowered.unrollDimension = UnrollLoopDimension::Col;
     lowered.unrollLoopId = "tile_flat_loop";
+  } else if (colTripCount == 1) {
+    lowered.modeledLoopTripCount = loopShape->rows;
+    lowered.unrollTripCount = loopShape->rows;
+    lowered.unrollDimension = UnrollLoopDimension::Row;
+    lowered.unrollLoopId = "tile_row_loop";
   } else {
     lowered.modeledLoopTripCount = colTripCount;
+    lowered.unrollTripCount = colTripCount;
+    lowered.unrollDimension = UnrollLoopDimension::Col;
     lowered.unrollLoopId = "tile_col_loop";
   }
 
