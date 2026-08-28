@@ -23,12 +23,18 @@ struct ProgramCanonicalizationStats {
   int64_t expandedInstructions = 0;
 };
 
+enum class UnrollInstructionOrder {
+  Abcabc,
+  Aabbcc,
+};
+
 std::vector<ProgramNode> canonicalizeSingleSuperIterationLoops(
     const std::vector<ProgramNode> &program,
     const ProgramAnalysis::ParamMap &params,
     const ParamDB &db,
     const std::string &dtype = "fp32",
-    ProgramCanonicalizationStats *stats = nullptr);
+    ProgramCanonicalizationStats *stats = nullptr,
+    UnrollInstructionOrder order = UnrollInstructionOrder::Abcabc);
 
 } // namespace vfsim
 

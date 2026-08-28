@@ -23,16 +23,24 @@ std::vector<std::string> renameLane(const std::vector<std::string> &values,
 }
 
 std::vector<ProgramNode> expandBody(const std::vector<ProgramNode> &body,
-                                    int64_t unroll) {
+                                    int64_t unroll,
+                                    UnrollInstructionOrder order) {
   std::vector<ProgramNode> expanded;
   expanded.reserve(body.size() * static_cast<size_t>(unroll));
-  for (int64_t lane = 0; lane < unroll; ++lane) {
-    for (const auto &node : body) {
-      ProgramInstNode clone = node.inst;
-      clone.src = renameLane(node.inst.src, lane);
-      clone.dst = renameLane(node.inst.dst, lane);
-      expanded.push_back(ProgramNode::makeInst(std::move(clone)));
-    }
+  auto appendClone = [&](const ProgramNode &node, int64_t lane) {
+    ProgramInstNode clone = node.inst;
+    clone.src = renameLane(node.inst.src, lane);
+    clone.dst = renameLane(node.inst.dst, lane);
+    expanded.push_back(ProgramNode::makeInst(std::move(clone)));
+  };
+  if (order == UnrollInstructionOrder::Abcabc) {
+    for (int64_t lane = 0; lane < unroll; ++lane)
+      for (const auto &node : body)
+        appendClone(node, lane);
+  } else {
+    for (const auto &node : body)
+      for (int64_t lane = 0; lane < unroll; ++lane)
+        appendClone(node, lane);
   }
   return expanded;
 }
@@ -47,7 +55,8 @@ bool isInstructionOnlyBody(const std::vector<ProgramNode> &body) {
 
 std::vector<ProgramNode> rewrite(const std::vector<ProgramNode> &nodes,
                                  const ProgramAnalysis &analysis,
-                                 ProgramCanonicalizationStats &stats) {
+                                 ProgramCanonicalizationStats &stats,
+                                 UnrollInstructionOrder order) {
   std::vector<ProgramNode> out;
   for (const auto &node : nodes) {
     if (node.kind != ProgramNode::Kind::Loop || !node.loop) {
@@ -61,7 +70,7 @@ std::vector<ProgramNode> rewrite(const std::vector<ProgramNode> &nodes,
     const bool shouldExpand =
         iters == 1 || (unroll > 1 && iters > 0 && iters % unroll == 0);
     if (isInstructionOnlyBody(loop.body) && shouldExpand) {
-      auto expanded = expandBody(loop.body, unroll);
+      auto expanded = expandBody(loop.body, unroll, order);
       ++stats.expandedLoops;
       stats.expandedInstructions += static_cast<int64_t>(expanded.size());
       if (iters > unroll) {
@@ -78,7 +87,7 @@ std::vector<ProgramNode> rewrite(const std::vector<ProgramNode> &nodes,
     }
 
     ProgramLoopNode rewritten = loop;
-    rewritten.body = rewrite(loop.body, analysis, stats);
+    rewritten.body = rewrite(loop.body, analysis, stats, order);
     out.push_back(ProgramNode::makeLoop(std::move(rewritten)));
   }
   return out;
@@ -89,12 +98,13 @@ std::vector<ProgramNode> rewrite(const std::vector<ProgramNode> &nodes,
 std::vector<ProgramNode> canonicalizeSingleSuperIterationLoops(
     const std::vector<ProgramNode> &program,
     const ProgramAnalysis::ParamMap &params, const ParamDB &db,
-    const std::string &dtype, ProgramCanonicalizationStats *stats) {
+    const std::string &dtype, ProgramCanonicalizationStats *stats,
+    UnrollInstructionOrder order) {
   (void)db;
   (void)dtype;
   ProgramCanonicalizationStats localStats;
   ProgramAnalysis analysis(params);
-  auto rewritten = rewrite(program, analysis, localStats);
+  auto rewritten = rewrite(program, analysis, localStats, order);
   if (stats != nullptr)
     *stats = localStats;
   return rewritten;

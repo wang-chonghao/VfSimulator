@@ -77,6 +77,29 @@ int main() {
               body[6].inst.src[0] == "v0_lane1",
           "lane-specific dependencies must be preserved");
 
+  const auto aabbcc = canonicalizeSingleSuperIterationLoops(
+      input, {{"C", 2}, {"U", 2}}, db, "fp32", nullptr,
+      UnrollInstructionOrder::Aabbcc);
+  const auto &aabbccBody = aabbcc[0].loop->body;
+  require(aabbccBody.size() == 10,
+          "expected five AABBCC instructions times two lanes");
+  require(aabbccBody[0].inst.op == "VLDS" &&
+              aabbccBody[1].inst.op == "VLDS" &&
+              aabbccBody[2].inst.op == "VADD" &&
+              aabbccBody[3].inst.op == "VADD" &&
+              aabbccBody[4].inst.op == "VLDS" &&
+              aabbccBody[5].inst.op == "VLDS" &&
+              aabbccBody[6].inst.op == "VSUB" &&
+              aabbccBody[7].inst.op == "VSUB" &&
+              aabbccBody[8].inst.op == "VSTS" &&
+              aabbccBody[9].inst.op == "VSTS",
+          "expanded order must be AABBCC");
+  require(aabbccBody[2].inst.src[0] == "v0_lane0" &&
+              aabbccBody[3].inst.src[0] == "v0_lane1" &&
+              aabbccBody[6].inst.src[0] == "v1_lane0" &&
+              aabbccBody[7].inst.src[0] == "v1_lane1",
+          "AABBCC must preserve lane-specific dependencies");
+
   const auto partial = canonicalizeSingleSuperIterationLoops(
       input, {{"C", 4}, {"U", 2}}, db, "fp32");
   require(partial[0].loop->body.size() == 1 &&

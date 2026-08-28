@@ -203,11 +203,30 @@ static std::vector<unsigned> enumerateUnrollCandidates(int64_t tripCount,
   return candidates;
 }
 
+enum class CandidateMode {
+  NoUnroll,
+  Abcabc,
+  Aabbcc,
+};
+
+static llvm::StringRef candidateModeName(CandidateMode mode) {
+  switch (mode) {
+  case CandidateMode::NoUnroll:
+    return "NO_UNROLL";
+  case CandidateMode::Abcabc:
+    return "ABCABC";
+  case CandidateMode::Aabbcc:
+    return "AABBCC";
+  }
+  return "UNKNOWN";
+}
+
 static void normalizeVregLiveRanges(std::vector<vfsim::ProgramNode> &program);
 
 static std::optional<int64_t>
 simulateCandidate(const vfsim::LoweredTileGroupProgram &lowered,
                   const vfsim::ParamDB &db, unsigned unroll,
+                  CandidateMode mode,
                   const std::filesystem::path *dumpDir,
                   int64_t groupId,
                   std::string *failureReason = nullptr) {
@@ -218,13 +237,19 @@ simulateCandidate(const vfsim::LoweredTileGroupProgram &lowered,
 
     vfsim::ProgramCanonicalizationStats stats;
     vfsim::VfInfo expanded = vfInfo;
+    const vfsim::UnrollInstructionOrder order =
+        mode == CandidateMode::Aabbcc
+            ? vfsim::UnrollInstructionOrder::Aabbcc
+            : vfsim::UnrollInstructionOrder::Abcabc;
     expanded.body = vfsim::canonicalizeSingleSuperIterationLoops(
-        vfInfo.body, vfInfo.params, db, vfInfo.defaultDtype, &stats);
+        vfInfo.body, vfInfo.params, db, vfInfo.defaultDtype, &stats, order);
     expanded.params.erase("vfsim_inner_unroll");
 
     if (dumpDir != nullptr) {
-      const std::string stem = "group" + std::to_string(groupId) +
-                               "_candidate_unroll" + std::to_string(unroll);
+      const std::string stem =
+          "group" + std::to_string(groupId) + "_candidate_" +
+          candidateModeName(mode).lower() + "_unroll" +
+          std::to_string(unroll);
       dumpVfInfo(vfInfo, *dumpDir / (stem + "_before_expand.json"),
                  "VfSim candidate before loop canonicalization");
       dumpVfInfo(expanded, *dumpDir / (stem + "_after_expand.json"),
@@ -444,7 +469,13 @@ static void normalizeVregLiveRanges(std::vector<vfsim::ProgramNode> &program) {
   }
 }
 
-static std::optional<unsigned>
+struct SelectedUnroll {
+  unsigned factor = 1;
+  CandidateMode mode = CandidateMode::NoUnroll;
+  int64_t cycles = 0;
+};
+
+static std::optional<SelectedUnroll>
 chooseBestUnroll(const vfsim::LoweredTileGroupProgram &lowered,
                  const vfsim::ParamDB &db, unsigned maxUnroll,
                  bool dumpCandidates,
@@ -454,40 +485,55 @@ chooseBestUnroll(const vfsim::LoweredTileGroupProgram &lowered,
   if (lowered.unrollTripCount <= 0)
     return std::nullopt;
 
-  std::optional<unsigned> bestUnroll;
+  std::optional<SelectedUnroll> best;
   int64_t bestCycles = std::numeric_limits<int64_t>::max();
   std::string lastFailureReason;
   for (unsigned unroll :
        enumerateUnrollCandidates(lowered.unrollTripCount, maxUnroll)) {
-    std::string candidateFailureReason;
-    std::optional<int64_t> cycles =
-        simulateCandidate(lowered, db, unroll, dumpDir, groupId,
-                          &candidateFailureReason);
-    if (dumpCandidates) {
-      llvm::errs() << "  unroll=" << unroll
-                   << " trip=" << lowered.unrollTripCount
-                   << " dtype=" << lowered.vfInfo.defaultDtype << " cycles=";
-      if (cycles)
-        llvm::errs() << *cycles;
-      else
-        llvm::errs() << "failed";
-      llvm::errs() << "\n";
+    llvm::SmallVector<CandidateMode, 2> modes;
+    if (unroll == 1)
+      modes.push_back(CandidateMode::NoUnroll);
+    else {
+      modes.push_back(CandidateMode::Abcabc);
+      modes.push_back(CandidateMode::Aabbcc);
     }
-    if (!cycles) {
-      if (!candidateFailureReason.empty())
-        lastFailureReason = candidateFailureReason;
-      continue;
-    }
-    if (*cycles < bestCycles) {
-      bestCycles = *cycles;
-      bestUnroll = unroll;
+    for (CandidateMode mode : modes) {
+      std::string candidateFailureReason;
+      std::optional<int64_t> cycles =
+          simulateCandidate(lowered, db, unroll, mode, dumpDir, groupId,
+                            &candidateFailureReason);
+      if (dumpCandidates) {
+        llvm::errs() << "  mode=" << candidateModeName(mode)
+                     << " unroll=" << unroll
+                     << " trip=" << lowered.unrollTripCount
+                     << " dtype=" << lowered.vfInfo.defaultDtype
+                     << " cycles=";
+        if (cycles)
+          llvm::errs() << *cycles;
+        else
+          llvm::errs() << "failed";
+        llvm::errs() << "\n";
+      }
+      if (!cycles) {
+        if (!candidateFailureReason.empty())
+          lastFailureReason = candidateFailureReason;
+        continue;
+      }
+      if (*cycles < bestCycles) {
+        bestCycles = *cycles;
+        best = SelectedUnroll{unroll, mode, *cycles};
+      }
     }
   }
-  if (!bestUnroll && failureReason != nullptr)
+  if (!best && failureReason != nullptr)
     *failureReason = lastFailureReason.empty()
                          ? "all unroll candidates failed"
                          : lastFailureReason;
-  return bestUnroll;
+  if (best && dumpCandidates)
+    llvm::errs() << "  selected mode=" << candidateModeName(best->mode)
+                 << " unroll=" << best->factor
+                 << " cycles=" << best->cycles << "\n";
+  return best;
 }
 
 } // namespace
@@ -552,7 +598,7 @@ mlir::LogicalResult planTileFusionIR(mlir::Operation *candidateIR,
     }
 
     std::string selectionFailureReason;
-    std::optional<unsigned> selectedUnroll =
+    std::optional<SelectedUnroll> selectedUnroll =
         chooseBestUnroll(lowered, *db, options.maxUnroll,
                          options.dumpCandidates,
                          dumpDir ? &*dumpDir : nullptr, entry.first,
@@ -569,10 +615,10 @@ mlir::LogicalResult planTileFusionIR(mlir::Operation *candidateIR,
     int64_t colUnroll = 1;
     switch (lowered.unrollDimension) {
     case UnrollLoopDimension::Row:
-      rowUnroll = *selectedUnroll;
+      rowUnroll = selectedUnroll->factor;
       break;
     case UnrollLoopDimension::Col:
-      colUnroll = *selectedUnroll;
+      colUnroll = selectedUnroll->factor;
       break;
     case UnrollLoopDimension::None:
       continue;
