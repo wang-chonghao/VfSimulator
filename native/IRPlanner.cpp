@@ -12,9 +12,7 @@
 
 #include "api/native/CanonicalVfInfo.h"
 #include "api/native/InstructionCatalog.h"
-#include "api/native/LegacyVfInfoAdapter.h"
 #include "native/ParamDB.h"
-#include "native/ProgramVregLiveRangeNormalization.h"
 #include "native/SimulatorRunner.h"
 #include "native/TileOpTemplates.h"
 
@@ -64,69 +62,154 @@ int64_t getI64Attr(mlir::Operation *operation, llvm::StringRef name,
 }
 
 std::vector<unsigned> enumerateLegacyUnrollCandidates(int64_t tripCount,
-                                                       unsigned maxUnroll) {
+                                                      unsigned maxUnroll) {
   std::vector<unsigned> candidates;
   const unsigned limit = std::max<unsigned>(
       1, std::min<unsigned>(maxUnroll == 0 ? 1 : maxUnroll,
                             static_cast<unsigned>(tripCount)));
-  for (unsigned factor = 1; factor <= limit; ++factor)
+  for (unsigned factor = 1; factor <= limit; ++factor) {
     if (tripCount % factor == 0)
       candidates.push_back(factor);
+  }
   return candidates;
+}
+
+enum class LegacyCandidateMode {
+  NoUnroll,
+  Abcabc,
+  Aabbcc,
+};
+
+llvm::StringRef legacyCandidateModeName(LegacyCandidateMode mode) {
+  switch (mode) {
+  case LegacyCandidateMode::NoUnroll:
+    return "NO_UNROLL";
+  case LegacyCandidateMode::Abcabc:
+    return "ABCABC";
+  case LegacyCandidateMode::Aabbcc:
+    return "AABBCC";
+  }
+  return "UNKNOWN";
+}
+
+llvm::StringRef legacyTraversalName(TileTraversal traversal) {
+  return traversal == TileTraversal::OneDimensional ? "1D" : "2D";
 }
 
 std::optional<int64_t>
 simulateLegacyCandidate(const LoweredTileGroupProgram &lowered,
-                        const ParamDB &db, unsigned unroll,
-                        std::string &reason) {
+                        const ParamDB &db, unsigned factor,
+                        LegacyCandidateMode mode, std::string *failureReason) {
   try {
-    VfInfo vfInfo = lowered.vfInfo;
-    vfInfo.params["vfsim_inner_unroll"] = static_cast<int64_t>(unroll);
-    normalizeProgramVregLiveRanges(vfInfo);
+    const TileUnrollOrder order = mode == LegacyCandidateMode::Aabbcc
+                                      ? TileUnrollOrder::Aabbcc
+                                      : TileUnrollOrder::Abcabc;
+    const CanonicalVfInfo candidate =
+        materializeTileUnrollCandidate(lowered, factor, order);
     const SimulationResult result =
-        runCanonicalVfInfo(adaptLegacyVfInfoToCanonical(vfInfo), db);
-    return std::max(result.vfEndCycle, result.cyclesExecuted);
-  } catch (const std::exception &error) {
-    reason = error.what();
-    return std::nullopt;
+        runCanonicalVfInfo(candidate, db, "", /*maxCycles=*/1000000);
+    return result.vfEndCycle;
+  } catch (const std::exception &exception) {
+    if (failureReason)
+      *failureReason = exception.what();
+  } catch (...) {
+    if (failureReason)
+      *failureReason = "unknown exception";
   }
+  return std::nullopt;
 }
 
-std::optional<unsigned>
-chooseLegacyUnroll(const LoweredTileGroupProgram &lowered, const ParamDB &db,
-                   unsigned maxUnroll, bool dumpCandidates) {
-  if (lowered.unrollTripCount <= 0)
+struct SelectedLegacyUnroll {
+  unsigned factor = 1;
+  LegacyCandidateMode mode = LegacyCandidateMode::NoUnroll;
+  int64_t cycles = 0;
+};
+
+std::optional<SelectedLegacyUnroll>
+chooseBestLegacyUnroll(const LoweredTileGroupProgram &lowered,
+                       const ParamDB &db, unsigned maxUnroll,
+                       bool dumpCandidates, int64_t groupId,
+                       std::string *failureReason) {
+  if (lowered.unrollTripCount <= 0 || lowered.modeledLoopTripCount <= 0)
     return std::nullopt;
 
-  std::optional<unsigned> bestUnroll;
-  int64_t bestCycles = std::numeric_limits<int64_t>::max();
-  for (unsigned unroll : enumerateLegacyUnrollCandidates(
-           lowered.unrollTripCount, maxUnroll)) {
-    std::string reason;
-    std::optional<int64_t> cycles =
-        simulateLegacyCandidate(lowered, db, unroll, reason);
-    if (dumpCandidates) {
-      llvm::errs() << "[VfSim] legacy unroll=" << unroll
-                   << " trip_count=" << lowered.unrollTripCount
-                   << " dtype=" << lowered.vfInfo.defaultDtype << " cycles=";
-      if (cycles)
-        llvm::errs() << *cycles;
-      else
-        llvm::errs() << "failed reason=" << reason;
-      llvm::errs() << "\n";
-    }
-    if (cycles && *cycles < bestCycles) {
-      bestCycles = *cycles;
-      bestUnroll = unroll;
+  if (dumpCandidates) {
+    llvm::errs() << "VfSim group=" << groupId
+                 << " template=" << lowered.selectedTemplate
+                 << " traversal=" << legacyTraversalName(lowered.traversal)
+                 << " modeled_trip=" << lowered.modeledLoopTripCount
+                 << " candidate_trip=" << lowered.unrollTripCount
+                 << " dtype=" << lowered.dtype << "\n";
+  }
+
+  std::string baselineFailure;
+  const std::optional<int64_t> baseline =
+      simulateLegacyCandidate(lowered, db, /*factor=*/1,
+                              LegacyCandidateMode::NoUnroll, &baselineFailure);
+  if (dumpCandidates) {
+    llvm::errs() << "  mode=NO_UNROLL unroll=1 trip=" << lowered.unrollTripCount
+                 << " dtype=" << lowered.dtype << " cycles=";
+    if (baseline)
+      llvm::errs() << *baseline;
+    else
+      llvm::errs() << "failed";
+    llvm::errs() << "\n";
+  }
+  if (!baseline) {
+    if (failureReason)
+      *failureReason = baselineFailure.empty() ? "baseline simulation failed"
+                                               : baselineFailure;
+    return std::nullopt;
+  }
+
+  SelectedLegacyUnroll best{/*factor=*/1, LegacyCandidateMode::NoUnroll,
+                            *baseline};
+  for (unsigned factor :
+       enumerateLegacyUnrollCandidates(lowered.unrollTripCount, maxUnroll)) {
+    if (factor == 1)
+      continue;
+    for (LegacyCandidateMode mode :
+         {LegacyCandidateMode::Abcabc, LegacyCandidateMode::Aabbcc}) {
+      std::string candidateFailure;
+      const std::optional<int64_t> cycles =
+          simulateLegacyCandidate(lowered, db, factor, mode, &candidateFailure);
+      if (dumpCandidates) {
+        llvm::errs() << "  mode=" << legacyCandidateModeName(mode)
+                     << " unroll=" << factor
+                     << " trip=" << lowered.unrollTripCount
+                     << " dtype=" << lowered.dtype << " cycles=";
+        if (cycles)
+          llvm::errs() << *cycles;
+        else
+          llvm::errs() << "failed";
+        llvm::errs() << "\n";
+      }
+      if (!cycles) {
+        llvm::errs() << "warning: VfSim planner skipped "
+                     << legacyCandidateModeName(mode) << " unroll=" << factor
+                     << " for fusion group " << groupId;
+        if (!candidateFailure.empty())
+          llvm::errs() << ": " << candidateFailure;
+        llvm::errs() << "\n";
+        continue;
+      }
+      if (*cycles < best.cycles)
+        best = SelectedLegacyUnroll{factor, mode, *cycles};
     }
   }
-  return bestUnroll;
+
+  if (dumpCandidates) {
+    llvm::errs() << "  selected mode=" << legacyCandidateModeName(best.mode)
+                 << " unroll=" << best.factor << " cycles=" << best.cycles
+                 << "\n";
+  }
+  return best;
 }
 
 void dumpLegacyPlannerGroups(
-    const llvm::DenseMap<
-        int64_t, llvm::SmallVector<PlannedTileOpIR, 8>> &groups) {
-  llvm::errs() << "[VfSim] legacy fusion_groups=" << groups.size() << "\n";
+    const llvm::DenseMap<int64_t, llvm::SmallVector<PlannedTileOpIR, 8>>
+        &groups) {
+  llvm::errs() << "VfSim IR planner: " << groups.size() << " fusion group(s)\n";
   for (const auto &entry : groups) {
     const int64_t rowUnroll =
         entry.second.empty()
@@ -136,9 +219,19 @@ void dumpLegacyPlannerGroups(
         entry.second.empty()
             ? -1
             : getI64Attr(entry.second.front().op, kFusionColUnrollAttr, -1);
-    llvm::errs() << "[VfSim] legacy group=" << entry.first
-                 << " row_unroll=" << rowUnroll
-                 << " col_unroll=" << colUnroll << "\n";
+    llvm::errs() << "  group " << entry.first << " row_unroll=" << rowUnroll
+                 << " col_unroll=" << colUnroll << ":";
+    llvm::SmallVector<PlannedTileOpIR, 8> ordered(entry.second.begin(),
+                                                  entry.second.end());
+    llvm::sort(ordered,
+               [](const PlannedTileOpIR &lhs, const PlannedTileOpIR &rhs) {
+                 return lhs.order < rhs.order;
+               });
+    for (const PlannedTileOpIR &tileOp : ordered) {
+      llvm::errs() << " " << tileOp.op->getName().getStringRef() << "#"
+                   << tileOp.order;
+    }
+    llvm::errs() << "\n";
   }
 }
 
@@ -1093,59 +1186,58 @@ void writePlan(mlir::Operation *loop, CandidateMode mode, int64_t factor) {
 
 mlir::LogicalResult planTileFusionIR(mlir::Operation *candidateIR,
                                      const PlannerOptions &options) {
-  if (candidateIR == nullptr)
+  if (!candidateIR)
     return mlir::failure();
 
   llvm::DenseMap<int64_t, llvm::SmallVector<PlannedTileOpIR, 8>> groups;
-  candidateIR->walk([&](mlir::Operation *operation) {
-    auto groupId =
-        operation->getAttrOfType<mlir::IntegerAttr>(kFusionGroupIdAttr);
+  candidateIR->walk([&](mlir::Operation *op) {
+    auto groupId = op->getAttrOfType<mlir::IntegerAttr>(kFusionGroupIdAttr);
     if (!groupId)
       return;
     groups[groupId.getInt()].push_back(
-        PlannedTileOpIR{operation,
-                        getI64Attr(operation, kFusionOrderAttr)});
+        PlannedTileOpIR{op, getI64Attr(op, kFusionOrderAttr)});
   });
   if (groups.empty())
     return mlir::success();
 
-  std::unique_ptr<ParamDB> db;
+  std::optional<ParamDB> db;
   try {
-    db = std::make_unique<ParamDB>(std::filesystem::path(VFSIM_SOURCE_ROOT));
-  } catch (const std::exception &error) {
-    candidateIR->emitError()
-        << "VfSim failed to load its parameter database: " << error.what();
-    return mlir::failure();
+    db.emplace(std::filesystem::path(VFSIM_SOURCE_ROOT));
+  } catch (const std::exception &exception) {
+    llvm::errs() << "warning: VfSim planner disabled: failed to load "
+                    "parameter database: "
+                 << exception.what() << "\n";
+    return mlir::success();
   }
 
-  mlir::Builder builder(candidateIR->getContext());
+  mlir::MLIRContext *context = candidateIR->getContext();
   for (auto &entry : groups) {
     if (entry.second.size() < 2)
       continue;
     llvm::SmallVector<PlannedTileOpIR, 8> ordered(entry.second.begin(),
                                                   entry.second.end());
-    llvm::sort(ordered, [](const PlannedTileOpIR &lhs,
-                           const PlannedTileOpIR &rhs) {
-      return lhs.order < rhs.order;
-    });
+    llvm::sort(ordered,
+               [](const PlannedTileOpIR &lhs, const PlannedTileOpIR &rhs) {
+                 return lhs.order < rhs.order;
+               });
 
-    LoweredTileGroupProgram lowered =
-        lowerTileGroupWithPerformanceTemplates(ordered);
+    LoweredTileGroupProgram lowered = lowerTileGroupToCanonicalVfInfo(ordered);
     if (!lowered.supported()) {
-      if (options.dumpCandidates)
-        ordered.front().op->emitWarning()
-            << "VfSim skipped legacy fusion group " << entry.first << ": "
-            << lowered.unsupportedReason;
+      llvm::errs() << "warning: VfSim planner skipped fusion group "
+                   << entry.first << ": " << lowered.unsupportedReason << "\n";
       continue;
     }
 
-    const std::optional<unsigned> selectedUnroll = chooseLegacyUnroll(
-        lowered, *db, options.maxUnrollFactor, options.dumpCandidates);
-    if (!selectedUnroll) {
-      ordered.front().op->emitWarning()
-          << "VfSim could not evaluate a legacy unroll candidate for fusion "
-             "group "
-          << entry.first;
+    std::string selectionFailure;
+    const std::optional<SelectedLegacyUnroll> selected = chooseBestLegacyUnroll(
+        lowered, *db, options.maxUnrollFactor, options.dumpCandidates,
+        entry.first, &selectionFailure);
+    if (!selected) {
+      llvm::errs() << "warning: VfSim planner skipped fusion group "
+                   << entry.first << ": failed to select unroll factor";
+      if (!selectionFailure.empty())
+        llvm::errs() << ": " << selectionFailure;
+      llvm::errs() << "\n";
       continue;
     }
 
@@ -1153,17 +1245,18 @@ mlir::LogicalResult planTileFusionIR(mlir::Operation *candidateIR,
     int64_t colUnroll = 1;
     switch (lowered.unrollDimension) {
     case UnrollLoopDimension::Row:
-      rowUnroll = *selectedUnroll;
+      rowUnroll = selected->factor;
       break;
     case UnrollLoopDimension::Col:
-      colUnroll = *selectedUnroll;
+      colUnroll = selected->factor;
       break;
     case UnrollLoopDimension::None:
       continue;
     }
-
-    const mlir::IntegerAttr rowAttr = builder.getI64IntegerAttr(rowUnroll);
-    const mlir::IntegerAttr colAttr = builder.getI64IntegerAttr(colUnroll);
+    const auto rowAttr =
+        mlir::IntegerAttr::get(mlir::IntegerType::get(context, 64), rowUnroll);
+    const auto colAttr =
+        mlir::IntegerAttr::get(mlir::IntegerType::get(context, 64), colUnroll);
     for (const PlannedTileOpIR &tileOp : ordered) {
       tileOp.op->setAttr(kFusionRowUnrollAttr, rowAttr);
       tileOp.op->setAttr(kFusionColUnrollAttr, colAttr);
