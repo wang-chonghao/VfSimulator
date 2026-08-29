@@ -45,8 +45,7 @@ namespace {
 
 constexpr llvm::StringLiteral kLoopFusedAttr = "pto.vmi.loop_fused";
 constexpr llvm::StringLiteral kLoopFusionIdAttr = "pto.vmi.loop_fusion.id";
-constexpr llvm::StringLiteral kAabbccAttr = "pto.vfsim.aabbcc_unroll_factor";
-constexpr llvm::StringLiteral kAbcabcAttr = "pto.vfsim.abcabc_unroll_factor";
+constexpr llvm::StringLiteral kVmiUnrollFactorAttr = "pto.fusion.unroll_factor";
 constexpr llvm::StringLiteral kFusionGroupIdAttr = "pto.fusion.group_id";
 constexpr llvm::StringLiteral kFusionOrderAttr = "pto.fusion.order";
 constexpr llvm::StringLiteral kFusionRowUnrollAttr =
@@ -1170,16 +1169,9 @@ evaluateCandidate(mlir::Operation *vectorScope, mlir::Operation *targetLoop,
   }
 }
 
-void writePlan(mlir::Operation *loop, CandidateMode mode, int64_t factor) {
+void writePlan(mlir::Operation *loop, int64_t factor) {
   mlir::Builder builder(loop->getContext());
-  int64_t abcabc = 1;
-  int64_t aabbcc = 1;
-  if (mode == CandidateMode::Abcabc)
-    abcabc = factor;
-  else if (mode == CandidateMode::Aabbcc)
-    aabbcc = factor;
-  loop->setAttr(kAbcabcAttr, builder.getI64IntegerAttr(abcabc));
-  loop->setAttr(kAabbccAttr, builder.getI64IntegerAttr(aabbcc));
+  loop->setAttr(kVmiUnrollFactorAttr, builder.getI64IntegerAttr(factor));
 }
 
 } // namespace
@@ -1353,7 +1345,7 @@ mlir::LogicalResult planVmiUnrollIR(mlir::Operation *scope,
       }
     }
 
-    writePlan(loop, best.mode, best.factor);
+    writePlan(loop, best.factor);
     if (options.dumpCandidates)
       llvm::errs() << "[VfSim] selected mode=" << modeName(best.mode)
                    << " factor=" << best.factor << " cycles=" << best.cycles
