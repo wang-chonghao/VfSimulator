@@ -92,6 +92,9 @@ public:
       lowered.dtype = value.dtype;
       lowered.shape = value.shape;
       runtime_.values.emplace(definitionId, std::move(lowered));
+      if (value.producerNodeId &&
+          value.storage == CanonicalStorageKind::Register)
+        registerViewsByProducer_[*value.producerNodeId].push_back(definitionId);
     }
     indexLoops(vfInfo.context, 0);
   }
@@ -131,6 +134,8 @@ private:
   std::unordered_map<std::string, std::string> bindings_;
   std::unordered_map<std::string, int64_t> loopNumericIds_;
   std::unordered_map<std::string, int64_t> loopTopBlockIds_;
+  std::unordered_map<std::string, std::vector<std::string>>
+      registerViewsByProducer_;
   std::vector<Frame> frames_;
   int64_t nextLoopId_ = 0;
   int64_t nextTopBlockId_ = 0;
@@ -232,6 +237,19 @@ private:
       const std::string identity = dynamicName(operand.valueId);
       dynamic.dst.push_back(identity);
       bindings_[operand.valueId] = identity;
+      // Typed register views share the dynamic identity of the producer's
+      // emitted definition, preserving dependencies without a bitcast node.
+      auto outputValue = vfInfo_.values.find(operand.valueId);
+      auto views = registerViewsByProducer_.find(instruction.instructionId);
+      if (outputValue != vfInfo_.values.end() &&
+          outputValue->second.storage == CanonicalStorageKind::Register &&
+          views != registerViewsByProducer_.end()) {
+        for (const std::string &viewDefinition : views->second) {
+          const CanonicalValue &view = vfInfo_.values.at(viewDefinition);
+          if (view.logicalId == outputValue->second.logicalId)
+            bindings_[viewDefinition] = identity;
+        }
+      }
     }
     runtime_.instructions.push_back(std::move(dynamic));
   }

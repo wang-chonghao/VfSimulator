@@ -593,6 +593,56 @@ private:
     return true;
   }
 
+  bool materializeCastPointerResult(mlir::Operation *operation,
+                                    std::string &reason) {
+    if (operation->getNumOperands() == 0 || operation->getNumResults() == 0) {
+      reason = "pto.castptr has no source/result";
+      return false;
+    }
+    for (mlir::Value result : operation->getResults()) {
+      const TypeInfo type = classifyType(result.getType());
+      if (!type.supported || type.storage != CanonicalStorageKind::UB) {
+        reason = "pto.castptr has unsupported result type " +
+                 printType(result.getType());
+        return false;
+      }
+      if (getOrCreateValue(result, reason).empty())
+        return false;
+    }
+    return true;
+  }
+
+  bool materializeBitcastView(mlir::Operation *operation, std::string &reason) {
+    if (operation->getNumOperands() != 1 || operation->getNumResults() != 1) {
+      reason = "pto.vbitcast requires one source and one result";
+      return false;
+    }
+    const std::string source =
+        getOrCreateValue(operation->getOperand(0), reason);
+    if (source.empty())
+      return false;
+    const CanonicalValue sourceValue = info_.values.at(source);
+    const TypeInfo resultType = classifyType(operation->getResult(0).getType());
+    if (sourceValue.storage != CanonicalStorageKind::Register ||
+        !resultType.supported ||
+        resultType.storage != CanonicalStorageKind::Register) {
+      reason = "pto.vbitcast requires register source/result types";
+      return false;
+    }
+
+    const std::string view = duplicateValue(source, sourceValue.producerNodeId,
+                                            reason, sourceValue.logicalId);
+    if (view.empty())
+      return false;
+    CanonicalValue &viewValue = info_.values.at(view);
+    viewValue.storage = resultType.storage;
+    viewValue.dtype = resultType.dtype;
+    viewValue.shape = resultType.shape;
+    viewValue.storageObjectId.reset();
+    values_[operation->getResult(0)] = view;
+    return true;
+  }
+
   bool isKnownZeroIdentity(mlir::Value value) const {
     mlir::Operation *splat = value.getDefiningOp();
     if (splat == nullptr || splat->getName().getStringRef() != "pto.vdup" ||
@@ -1132,8 +1182,10 @@ private:
         name == "pto.vecscope_yield")
       return true;
     if (name == "pto.vbitcast")
-      return aliasResult(operation, reason);
-    if (name == "pto.addptr" || name == "pto.castptr")
+      return materializeBitcastView(operation, reason);
+    if (name == "pto.castptr")
+      return materializeCastPointerResult(operation, reason);
+    if (name == "pto.addptr")
       return aliasResult(operation, reason);
     if (name.starts_with("arith.") || name == "pto.pset_b16" ||
         name == "pto.pset_b32" || name == "pto.pge_b16" ||
@@ -1408,7 +1460,8 @@ mlir::LogicalResult planVmiUnrollIR(mlir::Operation *scope,
     }
 
     std::vector<int64_t> factors;
-    const int64_t upper = options.maxUnrollFactor;
+    const int64_t upper =
+        std::min<int64_t>(options.maxUnrollFactor, *tripCount);
     for (int64_t factor = 2; factor <= upper; ++factor)
       factors.push_back(factor);
     if (factors.empty()) {

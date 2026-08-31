@@ -784,7 +784,22 @@ CanonicalValidationResult validateCanonicalVfInfo(const CanonicalVfInfo &vfInfo)
         ? 0
         : static_cast<int64_t>(
               std::count(emitted->second.begin(), emitted->second.end(), definitionId));
-    if (count == 0)
+    // Zero-cost bitcasts may expose another typed view of the same emitted
+    // physical register without adding a second instruction output.
+    bool isRegisterView = false;
+    if (count == 0 && value.storage == CanonicalStorageKind::Register &&
+        emitted != producedDefinitions.end()) {
+      isRegisterView = std::any_of(
+          emitted->second.begin(), emitted->second.end(),
+          [&](const std::string &emittedDefinition) {
+            auto emittedValue = vfInfo.values.find(emittedDefinition);
+            return emittedValue != vfInfo.values.end() &&
+                   emittedValue->second.storage ==
+                       CanonicalStorageKind::Register &&
+                   emittedValue->second.logicalId == value.logicalId;
+          });
+    }
+    if (count == 0 && !isRegisterView)
       error("producer_definition_not_emitted",
             "Producer node does not emit the claimed value definition",
             "values." + definitionId + ".producer_node_id", value.sourceLocation);
