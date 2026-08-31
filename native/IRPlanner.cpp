@@ -37,6 +37,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -45,7 +46,7 @@ namespace {
 
 constexpr llvm::StringLiteral kLoopFusedAttr = "pto.vmi.loop_fused";
 constexpr llvm::StringLiteral kLoopFusionIdAttr = "pto.vmi.loop_fusion.id";
-constexpr llvm::StringLiteral kVmiUnrollFactorAttr = "pto.fusion.unroll_factor";
+constexpr llvm::StringLiteral kVmiUnrollFactorAttr = "pto.unroll_factor";
 constexpr llvm::StringLiteral kFusionGroupIdAttr = "pto.fusion.group_id";
 constexpr llvm::StringLiteral kFusionOrderAttr = "pto.fusion.order";
 constexpr llvm::StringLiteral kFusionRowUnrollAttr =
@@ -373,12 +374,12 @@ std::optional<int64_t> staticTripCount(mlir::Operation *loop) {
   const auto lower = constantInteger(loop->getOperand(0));
   const auto upper = constantInteger(loop->getOperand(1));
   const auto step = constantInteger(loop->getOperand(2));
-  if (!lower || !upper || !step || *step <= 0 || *upper < *lower)
+  if (!lower || !upper || !step || *step <= 0)
     return std::nullopt;
+  if (*upper <= *lower)
+    return 0;
   const int64_t distance = *upper - *lower;
-  if (distance % *step != 0)
-    return std::nullopt;
-  return distance / *step;
+  return distance / *step + (distance % *step != 0 ? 1 : 0);
 }
 
 bool isVectorScope(mlir::Operation *operation) {
@@ -537,6 +538,21 @@ private:
     value.producerNodeId = std::move(producer);
     info_.values.emplace(id, std::move(value));
     return id;
+  }
+
+  std::string
+  createLoopEntry(const std::string &baseId, bool forceDistinct,
+                  std::unordered_set<std::string> &carriedLogicalIds,
+                  std::string &reason) {
+    const CanonicalValue &base = info_.values.at(baseId);
+    if (base.storage == CanonicalStorageKind::UB)
+      return baseId;
+    if (!forceDistinct && carriedLogicalIds.insert(base.logicalId).second)
+      return baseId;
+    const std::string duplicate = duplicateValue(baseId, std::nullopt, reason);
+    if (!duplicate.empty())
+      carriedLogicalIds.insert(info_.values.at(duplicate).logicalId);
+    return duplicate;
   }
 
   CanonicalOperand registerOperand(const std::string &id,
@@ -808,11 +824,100 @@ private:
     return true;
   }
 
+  bool createInitialLoopEntries(mlir::Operation *operation, size_t carriedCount,
+                                std::vector<std::string> &entries,
+                                std::string &reason) {
+    entries.clear();
+    entries.reserve(carriedCount);
+    std::unordered_set<std::string> carriedLogicalIds;
+    for (size_t index = 0; index < carriedCount; ++index) {
+      const std::string base =
+          getOrCreateValue(operation->getOperand(index + 3), reason);
+      if (base.empty())
+        return false;
+      const std::string entry = createLoopEntry(base, /*forceDistinct=*/false,
+                                                carriedLogicalIds, reason);
+      if (entry.empty())
+        return false;
+      entries.push_back(entry);
+    }
+    return true;
+  }
+
+  bool finishLoop(CanonicalLoop loop, const std::vector<std::string> &entries,
+                  const std::vector<std::string> &backEdges,
+                  std::vector<CanonicalNode> &nodes,
+                  std::vector<std::string> &exits, std::string &reason) {
+    exits.clear();
+    exits.reserve(entries.size());
+    for (size_t index = 0; index < entries.size(); ++index) {
+      const CanonicalValue &entry = info_.values.at(entries[index]);
+      if (entry.storage == CanonicalStorageKind::UB) {
+        exits.push_back(entries[index]);
+        continue;
+      }
+      const std::string exit =
+          duplicateValue(entries[index], loop.loopId, reason, entry.logicalId);
+      if (exit.empty())
+        return false;
+      CanonicalLoopCarriedValue carried;
+      carried.logicalId = entry.logicalId;
+      carried.entryValueId = entries[index];
+      carried.backEdgeValueId = backEdges[index];
+      carried.exitValueId = exit;
+      loop.carriedValues.push_back(std::move(carried));
+      exits.push_back(exit);
+    }
+    nodes.push_back(CanonicalNode::makeLoop(std::move(loop)));
+    return true;
+  }
+
+  bool convertLoopSegment(mlir::Block &body, int64_t count, int64_t start,
+                          int64_t step, const std::vector<std::string> &entries,
+                          int64_t bodyCopies, int64_t unroll,
+                          std::vector<CanonicalNode> &nodes,
+                          std::vector<std::string> &exits,
+                          std::string &reason) {
+    CanonicalLoop loop;
+    loop.loopId = "loop." + std::to_string(nextLoopId_++);
+    loop.induction.variableId = loop.loopId + ".iv";
+    loop.induction.start = start;
+    loop.induction.step = step;
+    loop.count = count;
+    loop.unroll = unroll;
+
+    std::vector<std::string> current = entries;
+    for (int64_t copy = 0; copy < bodyCopies; ++copy) {
+      for (size_t index = 0; index < entries.size(); ++index)
+        values_[body.getArgument(index + 1)] = current[index];
+      for (mlir::Operation &bodyOperation : body.without_terminator()) {
+        if (!convertOperation(&bodyOperation, loop.body, reason))
+          return false;
+      }
+      mlir::Operation *terminator = body.getTerminator();
+      if (terminator->getName().getStringRef() != "scf.yield" ||
+          terminator->getNumOperands() != entries.size()) {
+        reason = "scf.for terminator must be scf.yield with all carried values";
+        return false;
+      }
+      for (size_t index = 0; index < entries.size(); ++index) {
+        current[index] =
+            getOrCreateValue(terminator->getOperand(index), reason);
+        if (current[index].empty())
+          return false;
+      }
+    }
+
+    return finishLoop(std::move(loop), entries, current, nodes, exits, reason);
+  }
+
   bool convertLaneLocalTargetLoop(
       mlir::Operation *operation, mlir::Block &body, int64_t tripCount,
       const std::vector<std::optional<ReductionCarry>> &reductions,
       std::vector<CanonicalNode> &nodes, std::string &reason) {
     const size_t carriedCount = operation->getNumOperands() - 3;
+    const int64_t mainCount = tripCount / factor_;
+    const int64_t remainder = tripCount % factor_;
     CanonicalLoop loop;
     loop.loopId = "loop." + std::to_string(nextLoopId_++);
     loop.induction.variableId = loop.loopId + ".iv";
@@ -820,24 +925,24 @@ private:
         constantInteger(operation->getOperand(0)).value_or(0);
     loop.induction.step =
         constantInteger(operation->getOperand(2)).value_or(1) * factor_;
-    loop.count = tripCount / factor_;
+    loop.count = mainCount;
     loop.unroll = 1;
 
     std::vector<std::vector<std::string>> entries(carriedCount);
     std::vector<std::vector<std::string>> current(carriedCount);
+    std::unordered_set<std::string> carriedLogicalIds;
     for (size_t index = 0; index < carriedCount; ++index) {
       const std::string base =
           getOrCreateValue(operation->getOperand(index + 3), reason);
       if (base.empty())
         return false;
       const size_t lanes = reductions[index] ? factor_ : 1;
-      entries[index].push_back(base);
-      for (size_t lane = 1; lane < lanes; ++lane) {
-        const std::string duplicate =
-            duplicateValue(base, std::nullopt, reason);
-        if (duplicate.empty())
+      for (size_t lane = 0; lane < lanes; ++lane) {
+        const std::string entry = createLoopEntry(
+            base, /*forceDistinct=*/lane != 0, carriedLogicalIds, reason);
+        if (entry.empty())
           return false;
-        entries[index].push_back(duplicate);
+        entries[index].push_back(entry);
       }
       current[index] = entries[index];
     }
@@ -846,7 +951,12 @@ private:
     for (int64_t lane = 0; lane < factor_; ++lane) {
       for (size_t index = 0; index < carriedCount; ++index) {
         const size_t stateIndex = reductions[index] ? lane : 0;
-        values_[body.getArgument(index + 1)] = current[index][stateIndex];
+        const CanonicalValue &entry =
+            info_.values.at(entries[index][stateIndex]);
+        values_[body.getArgument(index + 1)] =
+            entry.storage == CanonicalStorageKind::UB
+                ? entries[index][stateIndex]
+                : current[index][stateIndex];
       }
       for (mlir::Operation &bodyOperation : body.without_terminator()) {
         if (!convertOperation(&bodyOperation, laneBodies[lane], reason))
@@ -884,6 +994,11 @@ private:
 
     std::vector<std::vector<std::string>> exits(carriedCount);
     for (size_t index = 0; index < carriedCount; ++index) {
+      const CanonicalValue &entryValue = info_.values.at(entries[index][0]);
+      if (entryValue.storage == CanonicalStorageKind::UB) {
+        exits[index].push_back(entries[index][0]);
+        continue;
+      }
       exits[index].reserve(entries[index].size());
       for (size_t state = 0; state < entries[index].size(); ++state) {
         const std::string entryLogicalId =
@@ -903,6 +1018,8 @@ private:
     }
 
     nodes.push_back(CanonicalNode::makeLoop(std::move(loop)));
+    std::vector<std::string> results;
+    results.reserve(carriedCount);
     for (size_t index = 0; index < carriedCount; ++index) {
       std::string result = exits[index].front();
       if (reductions[index]) {
@@ -913,8 +1030,25 @@ private:
             return false;
         }
       }
-      values_[operation->getResult(index)] = result;
+      results.push_back(result);
     }
+
+    if (remainder != 0) {
+      const int64_t step =
+          constantInteger(operation->getOperand(2)).value_or(1);
+      const int64_t tailStart =
+          constantInteger(operation->getOperand(0)).value_or(0) +
+          mainCount * factor_ * step;
+      std::vector<std::string> tailExits;
+      if (!convertLoopSegment(body, remainder, tailStart, step, results,
+                              /*bodyCopies=*/1, /*unroll=*/1, nodes, tailExits,
+                              reason))
+        return false;
+      results = std::move(tailExits);
+    }
+
+    for (size_t index = 0; index < carriedCount; ++index)
+      values_[operation->getResult(index)] = results[index];
     return true;
   }
 
@@ -937,77 +1071,54 @@ private:
     const bool isTarget = operation == targetLoop_;
     if (isTarget && mode_ != CandidateMode::Baseline) {
       auto reductions = findLaneLocalReductions(operation, body);
-      if (llvm::any_of(reductions, [](const auto &reduction) {
+      if (*tripCount / factor_ != 0 &&
+          llvm::any_of(reductions, [](const auto &reduction) {
             return reduction.has_value();
           }))
         return convertLaneLocalTargetLoop(operation, body, *tripCount,
                                           reductions, nodes, reason);
     }
 
-    const int64_t repeats =
-        isTarget && mode_ == CandidateMode::Abcabc ? factor_ : 1;
-    CanonicalLoop loop;
-    loop.loopId = "loop." + std::to_string(nextLoopId_++);
-    loop.induction.variableId = loop.loopId + ".iv";
-    loop.induction.start =
-        constantInteger(operation->getOperand(0)).value_or(0);
-    loop.induction.step = constantInteger(operation->getOperand(2)).value_or(1);
-    loop.count = isTarget && mode_ == CandidateMode::Abcabc
-                     ? *tripCount / factor_
-                     : *tripCount;
-    loop.unroll = isTarget && mode_ == CandidateMode::Aabbcc ? factor_ : 1;
-
     std::vector<std::string> entries;
-    std::vector<std::string> current;
-    entries.reserve(carriedCount);
-    current.reserve(carriedCount);
-    for (size_t index = 0; index < carriedCount; ++index) {
-      const std::string id =
-          getOrCreateValue(operation->getOperand(index + 3), reason);
-      if (id.empty())
-        return false;
-      entries.push_back(id);
-      current.push_back(id);
-    }
+    if (!createInitialLoopEntries(operation, carriedCount, entries, reason))
+      return false;
 
-    for (int64_t lane = 0; lane < repeats; ++lane) {
-      for (size_t index = 0; index < carriedCount; ++index)
-        values_[body.getArgument(index + 1)] = current[index];
-      for (mlir::Operation &bodyOperation : body.without_terminator()) {
-        if (!convertOperation(&bodyOperation, loop.body, reason))
+    const int64_t lower = constantInteger(operation->getOperand(0)).value_or(0);
+    const int64_t step = constantInteger(operation->getOperand(2)).value_or(1);
+    std::vector<std::string> current = entries;
+
+    if (!isTarget || mode_ == CandidateMode::Baseline) {
+      if (!convertLoopSegment(body, *tripCount, lower, step, entries,
+                              /*bodyCopies=*/1, /*unroll=*/1, nodes, current,
+                              reason))
+        return false;
+    } else {
+      const int64_t mainCount = *tripCount / factor_;
+      const int64_t remainder = *tripCount % factor_;
+      if (mainCount != 0) {
+        const int64_t count =
+            mode_ == CandidateMode::Abcabc ? mainCount : mainCount * factor_;
+        const int64_t mainStep =
+            mode_ == CandidateMode::Abcabc ? step * factor_ : step;
+        const int64_t bodyCopies = mode_ == CandidateMode::Abcabc ? factor_ : 1;
+        const int64_t unroll = mode_ == CandidateMode::Aabbcc ? factor_ : 1;
+        if (!convertLoopSegment(body, count, lower, mainStep, entries,
+                                bodyCopies, unroll, nodes, current, reason))
           return false;
       }
-      mlir::Operation *terminator = body.getTerminator();
-      if (terminator->getName().getStringRef() != "scf.yield" ||
-          terminator->getNumOperands() != carriedCount) {
-        reason = "scf.for terminator must be scf.yield with all carried values";
-        return false;
-      }
-      for (size_t index = 0; index < carriedCount; ++index) {
-        current[index] =
-            getOrCreateValue(terminator->getOperand(index), reason);
-        if (current[index].empty())
+      if (remainder != 0) {
+        const int64_t tailStart = lower + mainCount * factor_ * step;
+        std::vector<std::string> tailExits;
+        if (!convertLoopSegment(body, remainder, tailStart, step, current,
+                                /*bodyCopies=*/1, /*unroll=*/1, nodes,
+                                tailExits, reason))
           return false;
+        current = std::move(tailExits);
       }
     }
 
-    for (size_t index = 0; index < carriedCount; ++index) {
-      const CanonicalValue &entry = info_.values.at(entries[index]);
-      const std::string exitId = defineValue(
-          operation->getResult(index), loop.loopId, reason, entry.logicalId);
-      if (exitId.empty())
-        return false;
-      CanonicalValue &exit = info_.values.at(exitId);
-      exit.storageObjectId = entry.storageObjectId;
-      CanonicalLoopCarriedValue carried;
-      carried.logicalId = entry.logicalId;
-      carried.entryValueId = entries[index];
-      carried.backEdgeValueId = current[index];
-      carried.exitValueId = exitId;
-      loop.carriedValues.push_back(std::move(carried));
-    }
-
-    nodes.push_back(CanonicalNode::makeLoop(std::move(loop)));
+    for (size_t index = 0; index < carriedCount; ++index)
+      values_[operation->getResult(index)] = current[index];
     return true;
   }
 
@@ -1171,7 +1282,7 @@ evaluateCandidate(mlir::Operation *vectorScope, mlir::Operation *targetLoop,
 
 void writePlan(mlir::Operation *loop, int64_t factor) {
   mlir::Builder builder(loop->getContext());
-  loop->setAttr(kVmiUnrollFactorAttr, builder.getI64IntegerAttr(factor));
+  loop->setAttr(kVmiUnrollFactorAttr, builder.getI32IntegerAttr(factor));
 }
 
 } // namespace
@@ -1297,15 +1408,13 @@ mlir::LogicalResult planVmiUnrollIR(mlir::Operation *scope,
     }
 
     std::vector<int64_t> factors;
-    const int64_t upper =
-        std::min<int64_t>(options.maxUnrollFactor, *tripCount);
+    const int64_t upper = options.maxUnrollFactor;
     for (int64_t factor = 2; factor <= upper; ++factor)
-      if (*tripCount % factor == 0)
-        factors.push_back(factor);
+      factors.push_back(factor);
     if (factors.empty()) {
       if (options.dumpCandidates)
         llvm::errs() << "[VfSim] loop trip_count=" << *tripCount
-                     << " skipped: no divisible factor in [2, "
+                     << " skipped: no candidate factor in [2, "
                      << options.maxUnrollFactor << "]\n";
       continue;
     }
