@@ -46,7 +46,8 @@ namespace {
 
 constexpr llvm::StringLiteral kLoopFusedAttr = "pto.vmi.loop_fused";
 constexpr llvm::StringLiteral kLoopFusionIdAttr = "pto.vmi.loop_fusion.id";
-constexpr llvm::StringLiteral kVmiUnrollFactorAttr = "pto.unroll_factor";
+constexpr llvm::StringLiteral kVfSimUnrollFactorAttr =
+    "pto.vfsim.unroll_factor";
 constexpr llvm::StringLiteral kFusionGroupIdAttr = "pto.fusion.group_id";
 constexpr llvm::StringLiteral kFusionOrderAttr = "pto.fusion.order";
 constexpr llvm::StringLiteral kFusionRowUnrollAttr =
@@ -1334,7 +1335,7 @@ evaluateCandidate(mlir::Operation *vectorScope, mlir::Operation *targetLoop,
 
 void writePlan(mlir::Operation *loop, int64_t factor) {
   mlir::Builder builder(loop->getContext());
-  loop->setAttr(kVmiUnrollFactorAttr, builder.getI32IntegerAttr(factor));
+  loop->setAttr(kVfSimUnrollFactorAttr, builder.getI32IntegerAttr(factor));
 }
 
 } // namespace
