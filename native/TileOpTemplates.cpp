@@ -61,6 +61,17 @@ struct SelectedTemplateInfo {
   int64_t loopDepth = 0;
 };
 
+bool candidateHasTag(mlir::DictionaryAttr candidate, llvm::StringRef tag) {
+  auto tags = candidate.getAs<mlir::ArrayAttr>("tags");
+  if (!tags) {
+    return false;
+  }
+  return llvm::any_of(tags, [tag](mlir::Attribute attr) {
+    auto value = mlir::dyn_cast<mlir::StringAttr>(attr);
+    return value && value.getValue() == tag;
+  });
+}
+
 std::string stripPtoPrefix(llvm::StringRef opName) {
   if (opName.starts_with("pto."))
     return opName.drop_front(4).str();
@@ -93,13 +104,25 @@ std::optional<SelectedTemplateInfo>
 getSelectedTemplate(mlir::Operation *op, std::string &failureReason) {
   auto candidates = op->getAttrOfType<mlir::ArrayAttr>(kCandidatesAttr);
   if (!candidates || candidates.empty()) {
-    failureReason = "missing selected TileLib candidate on " +
+    failureReason = "missing TileLib candidates on " +
                     op->getName().getStringRef().str();
     return std::nullopt;
   }
-  auto selected = mlir::dyn_cast<mlir::DictionaryAttr>(candidates[0]);
+
+  mlir::DictionaryAttr selected;
+  for (mlir::Attribute attr : candidates) {
+    auto candidate = mlir::dyn_cast<mlir::DictionaryAttr>(attr);
+    if (!candidate || !candidate.getAs<mlir::StringAttr>(kCandidateName)) {
+      failureReason = "malformed TileLib candidate on " +
+                      op->getName().getStringRef().str();
+      return std::nullopt;
+    }
+    if (!selected && !candidateHasTag(candidate, "vmi")) {
+      selected = candidate;
+    }
+  }
   if (!selected) {
-    failureReason = "malformed selected TileLib candidate on " +
+    failureReason = "missing ordinary TileLib candidate on " +
                     op->getName().getStringRef().str();
     return std::nullopt;
   }
