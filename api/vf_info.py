@@ -79,6 +79,7 @@ class VFMemoryAccess:
     access_offset_bytes: int | str | None = None
     post_update_delta_bytes: int | str | None = None
     span_bytes: int | None = None
+    unresolved_reason: str | None = None
 
 
 @dataclass

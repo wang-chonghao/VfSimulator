@@ -490,6 +490,7 @@ class ValueVersioningPass:
                     access_kind=access.access_kind,
                     span_bytes=span_bytes,
                     access_mode=access.mode,
+                    unresolved_reason=access.unresolved_reason,
                 )
             )
         if static_accesses:

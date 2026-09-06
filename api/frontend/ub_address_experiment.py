@@ -27,6 +27,7 @@ class UbStaticAccess:
     access_kind: str
     span_bytes: int | None
     access_mode: str | None = None
+    unresolved_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -213,6 +214,7 @@ class ExperimentalCanonicalCoreLowering:
                         "access_kind": access.access_kind,
                         "span_bytes": access.span_bytes,
                         "access_mode": access.access_mode,
+                        "unresolved_reason": access.unresolved_reason,
                     }
                     for access in accesses
                 ]

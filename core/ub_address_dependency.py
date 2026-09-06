@@ -100,7 +100,12 @@ class UbDynamicAddressGenerator:
                 access.get("post_update_delta_bytes", {}), symbols
             )
             span = access.get("span_bytes")
-            reason = initial_error or offset_error or update_error
+            reason = (
+                access.get("unresolved_reason")
+                or initial_error
+                or offset_error
+                or update_error
+            )
             if span is None:
                 reason = reason or "unknown_span"
             else:

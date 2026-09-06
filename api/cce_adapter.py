@@ -793,9 +793,12 @@ class _VFScopeParser:
             and args[update_operand.argument_index].strip() == "POST_UPDATE"
         )
         raw_call_offset = "0"
+        unresolved_reason = None
         if offset_operand is not None and offset_operand.argument_index < len(args):
             raw_offset = args[offset_operand.argument_index].strip()
-            if not re.fullmatch(r"vag_b(?:16|32)\s*\(.*\)", raw_offset, re.DOTALL):
+            if re.fullmatch(r"vag_b(?:16|32)\s*\(.*\)", raw_offset, re.DOTALL):
+                unresolved_reason = "vag_address_generator_not_modeled"
+            else:
                 raw_call_offset = self._expand_offset_expression(raw_offset)
         append_count = None
         if (
@@ -857,6 +860,7 @@ class _VFScopeParser:
                 access_offset_bytes=access_offset_bytes,
                 post_update_delta_bytes=post_update_delta_bytes,
                 span_bytes=mode_span_bytes,
+                unresolved_reason=unresolved_reason,
             ),
         )
 

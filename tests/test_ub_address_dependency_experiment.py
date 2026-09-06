@@ -170,6 +170,45 @@ class UbAddressDependencyExperimentTest(unittest.TestCase):
         self.assertEqual(memory_range["byte_start"], 2)
         self.assertEqual(memory_range["byte_end"], 4)
 
+    def test_vag_access_is_unresolved_instead_of_false_exact_range(self):
+        source = """
+        void vag_loop(__ubuf__ float *scores) {
+          __VEC_SCOPE__ {
+            vector_f32 value;
+            for (int i = 0; i < 2; ++i) {
+              vlds(value, scores, vag_b32(256), NORM);
+            }
+          }
+        }
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "vag_loop.cce"
+            path.write_text(source, encoding="utf-8")
+            canonical, metadata = parse_cce_canonical_with_ub_experiment_metadata(
+                path, "vag_loop"
+            )
+        payload = ExperimentalCanonicalCoreLowering().lower(canonical, metadata)
+        ifu = IFUUnroll(
+            Flattener({}).flatten(payload["program"]),
+            {},
+            structured_value_identity=True,
+            ub_dependency_mode="range_overlap",
+        )
+        ranges = []
+        while not ifu.done():
+            inst = ifu.next_inst()
+            if inst is not None:
+                ranges.append(inst["memory_ranges"][0])
+        self.assertEqual(len(ranges), 2)
+        self.assertTrue(all(not item["resolved"] for item in ranges))
+        self.assertTrue(
+            all(
+                item["unresolved_reason"]
+                == "vag_address_generator_not_modeled"
+                for item in ranges
+            )
+        )
+
     def test_unknown_ub_element_width_is_rejected_in_experiment_mode(self):
         source = """
         void unknown_pointer(__ubuf__ custom_t *scores) {
